@@ -10,7 +10,7 @@ build the primitives the later ones need.
 | # | Feature | Tier | Status |
 |---|---------|------|--------|
 | 1 | Map as text grid | Data | ✅ Done |
-| 2 | Event flow analysis | Data | Planned |
+| 2 | Event flow analysis | Data | ✅ Done |
 | 3 | Map connection graph | Data | Planned |
 | 4 | Logic consistency checker | Data | Planned |
 | 5 | Procedural map generation | Data + autotiles | Planned |
@@ -42,17 +42,24 @@ a tile reported passable here may still be blocked in-game by an event on it.
 
 ---
 
-## 2. Event flow analysis
+## 2. Event flow analysis ✅
 
-A read-only tool summarizing what events actually *do*: per page, the trigger type, the
-conditions gating it (switch / variable / self-switch / item / actor), and the command flow
-in readable form.
+`describe_event` and `describe_map_events` explain what events actually *do*: per page, the
+trigger type, the conditions gating it, and the command flow in readable form.
 
-The event command parsing already exists in `src/schemas/event.ts` — this is mostly a new
-output shape over data the server already understands, plus page-condition decoding.
+- `src/core/event-flow.ts` — command-code decoding, condition/trigger naming, reference
+  collection (pure, unit-tested)
+- `src/tools/event-flow-tools.ts` — the two MCP tools
 
-Useful on its own, and it's the readable layer that makes #4 diagnosable rather than just
-a list of raw findings.
+`src/schemas/event.ts` only converted human-readable → codes; this is the reverse direction.
+Command descriptions follow `Game_Interpreter` in the corescript (`command111`, `command122`,
+`command201`, ...) so the wording matches engine behavior rather than editor-UI phrasing.
+
+**Built for later phases:** `collectReferences(event)` returns the switches, variables,
+self-switches, common events, and transfer destinations an event touches, splitting *reads*
+from *writes* — that's the traversal machinery #3 and #4 need. It also flags
+variable-driven transfers separately (`hasDynamicTransfer`) rather than recording a
+bogus map ID, which is exactly the case #3 has to report as "dynamic".
 
 ## 3. Map connection graph
 
@@ -63,6 +70,9 @@ map (`System.json` → `startMapId`), and one-way connections.
 Pure static analysis over data already being read. The main subtlety is that transfer
 destinations can be specified by variable rather than literal map ID — those can't be
 resolved statically and should be reported as "dynamic" rather than silently dropped.
+
+`collectReferences` from #2 already extracts `transfersTo` and `hasDynamicTransfer` per
+event, so this phase is mostly graph assembly and reachability over map files.
 
 ## 4. Logic consistency checker
 
@@ -78,7 +88,13 @@ A linter for RPG Maker-specific footguns. Candidate rules:
 - Tilesets whose `flags[0]` lacks the star bit (see [Engine reference](#engine-reference)) —
   ground-layer impassability silently has no effect
 
-Depends on #2 and #3 for the traversal machinery.
+Depends on #2 and #3 for the traversal machinery. The read/write split in
+`collectReferences` is what makes the first two rules expressible: a switch in
+`switchesRead` but never in any event's `switchesWritten` is a dead condition.
+
+Note this needs *project-wide* collection — common events (`CommonEvents.json`) and troop
+pages also read and write switches, so a rule that only scans map events will produce false
+positives.
 
 ## 5. Procedural map generation
 

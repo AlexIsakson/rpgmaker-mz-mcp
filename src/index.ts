@@ -8,6 +8,7 @@ import { registerDatabaseTools } from './tools/database-tools.js';
 import { registerMapTools } from './tools/map-tools.js';
 import { registerMapGridTools } from './tools/map-grid-tools.js';
 import { registerEventTools } from './tools/event-tools.js';
+import { registerEventFlowTools } from './tools/event-flow-tools.js';
 import { registerScenarioTools } from './tools/scenario-tools.js';
 
 async function main(): Promise<void> {
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
   registerMapTools(server);
   registerMapGridTools(server);
   registerEventTools(server);
+  registerEventFlowTools(server);
   registerScenarioTools(server);
 
   logger.info('All tools registered');

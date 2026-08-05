@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-52%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-72%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (24 total)
+## 🛠 Available Tools (26 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -95,6 +95,35 @@ Events:
 | `delete_event` | Delete an event |
 
 **40+ supported command types** including `show_text`, `show_choices`, `transfer_player`, `control_switches`, `play_bgm`, `battle_processing`, `shop_processing`, and more.
+
+### Event Flow Analysis (2)
+| Tool | Description |
+|------|-------------|
+| `describe_map_events` | Overview of every event on a map — one line per page: trigger + gating conditions |
+| `describe_event` | Full breakdown of one event: per-page trigger, conditions, readable command flow, and everything it touches |
+
+Where `list_events` tells you an event *exists*, these tell you what it **does** — decoding
+raw command codes into readable logic and surfacing the switches, variables, self-switches,
+common events, and map transfers involved.
+
+```
+Event [3] "Shopkeeper" at (8, 6) — 2 page(s)
+
+── Page 2 ──
+Trigger: Action Button
+Conditions: self-switch A is ON
+
+Show Text: "Back again? Take a look."
+If switch 12 is ON
+  Shop Processing
+Else
+  Show Text: "Come back when you have coin."
+End If
+
+── References ──
+Reads switches: 12
+Writes self-switches: A
+```
 
 ### AI Scenario Generation (3)
 | Tool | Description |
@@ -194,6 +223,7 @@ src/
 │   ├── database-manager.ts     # Generic CRUD for all entity types
 │   ├── tileset-reader.ts       # Tileset passability flag loading
 │   ├── map-grid.ts             # Tile decoding + ASCII grid rendering
+│   ├── event-flow.ts           # Command-code decoding + reference collection
 │   └── version-sync.ts         # System.json versionId auto-sync
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
@@ -207,6 +237,7 @@ src/
 │   ├── map-tools.ts            # 5 map management tools
 │   ├── map-grid-tools.ts       # 1 spatial/grid analysis tool
 │   ├── event-tools.ts          # 5 event editing tools
+│   ├── event-flow-tools.ts     # 2 event flow analysis tools
 │   └── scenario-tools.ts       # 3 AI scenario tools
 └── templates/
     └── defaults.ts             # RPG Maker MZ default data templates
@@ -278,7 +309,7 @@ You are free to use, modify, and distribute this software, provided that derivat
 - **stderr 日誌**：MCP 使用 stdout 進行 JSON-RPC 通訊，任何 `console.log` 都會破壞協議。本專案只用 `console.error`
 - **版本同步**：每次修改資料檔案後自動更新 `System.json` 的 `versionId`，強制 RPG Maker MZ 編輯器重新載入
 
-### 可用工具（共 24 個）
+### 可用工具（共 26 個）
 
 | 類別 | 工具數 | 說明 |
 |------|:---:|------|
@@ -286,6 +317,7 @@ You are free to use, modify, and distribute this software, provided that derivat
 | 資料庫 CRUD | 6 | 列出 / 取得 / 新增 / 更新 / 刪除 / 搜尋（支援角色、職業、技能、道具、武器、防具、敵人、狀態） |
 | 地圖管理 | 6 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊） |
 | 事件編輯 | 5 | 列出 / 建立 / 更新 / 新增指令 / 刪除事件（支援 40+ 種人類可讀指令格式） |
+| 事件流程分析 | 2 | 解析事件實際行為：各頁的觸發條件、指令流程，以及所使用的開關 / 變數 / 獨立開關 / 公共事件 / 場所移動 |
 | AI 劇情生成 | 3 | 生成遊戲劇情大綱 / NPC 對話 / 任務設計 |
 
 ### 使用範例
@@ -353,7 +385,7 @@ npm test  # 42 個測試應全部通過
 - **stderr 専用ログ**：MCP は stdout を JSON-RPC 通信に使用。`console.log` はプロトコルを破壊するため、`console.error` のみ使用
 - **バージョン同期**：データファイル変更のたびに `System.json` の `versionId` を自動更新し、RPGツクールMZ エディタに再読み込みを強制
 
-### 利用可能なツール（全 24 個）
+### 利用可能なツール（全 26 個）
 
 | カテゴリ | ツール数 | 説明 |
 |---------|:---:|------|
@@ -361,6 +393,7 @@ npm test  # 42 個測試應全部通過
 | データベース CRUD | 6 | 一覧 / 取得 / 作成 / 更新 / 削除 / 検索（アクター、職業、スキル、アイテム、武器、防具、敵キャラ、ステート対応） |
 | マップ管理 | 6 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報） |
 | イベント編集 | 5 | 一覧 / 作成 / 更新 / コマンド追加 / 削除（40以上の人間が読めるコマンド形式対応） |
+| イベントフロー解析 | 2 | イベントの実際の動作を解析：各ページのトリガー・出現条件・コマンドの流れ、使用しているスイッチ / 変数 / セルフスイッチ / コモンイベント / 場所移動 |
 | AI シナリオ生成 | 3 | ゲームシナリオ概要 / NPC 会話 / クエスト設計の生成 |
 
 ### 使用例
