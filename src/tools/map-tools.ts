@@ -15,7 +15,7 @@ async function writeMapInfos(dataPath: string, infos: (MapInfo | null)[]): Promi
   await FileHandler.writeJson(path.join(dataPath, 'MapInfos.json'), infos);
 }
 
-function mapFilename(id: number): string {
+export function mapFilename(id: number): string {
   return `Map${String(id).padStart(3, '0')}.json`;
 }
 

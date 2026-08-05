@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-42%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-52%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -30,7 +30,13 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (23 total)
+> **This is a fork** of [a951753abc/rpgmaker-mz-mcp](https://github.com/a951753abc/rpgmaker-mz-mcp),
+> extended with map/project *understanding* tools on top of the original's data editing.
+> See [ROADMAP.md](ROADMAP.md) for what's planned. Licensed GPL-3.0, same as upstream.
+
+---
+
+## 🛠 Available Tools (24 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -52,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (5)
+### Map Management (6)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -60,6 +66,24 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `get_map` | Get map details including events |
 | `update_map` | Update map properties |
 | `delete_map` | Delete a map |
+| `get_map_grid` | Render a map as a text grid — walls, ladders, bushes, counters, damage floors, and event positions |
+
+`get_map_grid` lets the AI reason about **spatial layout** rather than just map metadata.
+Passability is decoded from tileset flags exactly as `Game_Map` does in the engine corescript.
+Large maps can be windowed with `x` / `y` / `width` / `height`.
+
+```
+   00000000001111111
+   01234567890123456
+ 0 #################
+ 1 #...............#
+ 2 #......1........#
+ 3 #...............#
+ 4 #################
+
+Events:
+1 = event [1] "Shopkeeper" at (7, 2)
+```
 
 ### Event Editing (5)
 | Tool | Description |
@@ -168,16 +192,20 @@ src/
 │   ├── file-handler.ts         # Atomic writes + backups + Zod validation
 │   ├── project-manager.ts      # Project loading / validation
 │   ├── database-manager.ts     # Generic CRUD for all entity types
+│   ├── tileset-reader.ts       # Tileset passability flag loading
+│   ├── map-grid.ts             # Tile decoding + ASCII grid rendering
 │   └── version-sync.ts         # System.json versionId auto-sync
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
 │   ├── map.ts                  # Map & audio schemas
 │   ├── event.ts                # Event & command schemas + converter
+│   ├── tileset.ts              # Tilesets.json schema
 │   └── system.ts               # System.json schema
 ├── tools/
 │   ├── project-tools.ts        # 4 project management tools
 │   ├── database-tools.ts       # 6 database CRUD tools
 │   ├── map-tools.ts            # 5 map management tools
+│   ├── map-grid-tools.ts       # 1 spatial/grid analysis tool
 │   ├── event-tools.ts          # 5 event editing tools
 │   └── scenario-tools.ts       # 3 AI scenario tools
 └── templates/
@@ -250,13 +278,13 @@ You are free to use, modify, and distribute this software, provided that derivat
 - **stderr 日誌**：MCP 使用 stdout 進行 JSON-RPC 通訊，任何 `console.log` 都會破壞協議。本專案只用 `console.error`
 - **版本同步**：每次修改資料檔案後自動更新 `System.json` 的 `versionId`，強制 RPG Maker MZ 編輯器重新載入
 
-### 可用工具（共 23 個）
+### 可用工具（共 24 個）
 
 | 類別 | 工具數 | 說明 |
 |------|:---:|------|
 | 專案管理 | 4 | 載入 / 建立 / 查詢專案資訊 / 列出素材資源 |
 | 資料庫 CRUD | 6 | 列出 / 取得 / 新增 / 更新 / 刪除 / 搜尋（支援角色、職業、技能、道具、武器、防具、敵人、狀態） |
-| 地圖管理 | 5 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 |
+| 地圖管理 | 6 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊） |
 | 事件編輯 | 5 | 列出 / 建立 / 更新 / 新增指令 / 刪除事件（支援 40+ 種人類可讀指令格式） |
 | AI 劇情生成 | 3 | 生成遊戲劇情大綱 / NPC 對話 / 任務設計 |
 
@@ -325,13 +353,13 @@ npm test  # 42 個測試應全部通過
 - **stderr 専用ログ**：MCP は stdout を JSON-RPC 通信に使用。`console.log` はプロトコルを破壊するため、`console.error` のみ使用
 - **バージョン同期**：データファイル変更のたびに `System.json` の `versionId` を自動更新し、RPGツクールMZ エディタに再読み込みを強制
 
-### 利用可能なツール（全 23 個）
+### 利用可能なツール（全 24 個）
 
 | カテゴリ | ツール数 | 説明 |
 |---------|:---:|------|
 | プロジェクト管理 | 4 | 読み込み / 作成 / 情報取得 / リソース一覧 |
 | データベース CRUD | 6 | 一覧 / 取得 / 作成 / 更新 / 削除 / 検索（アクター、職業、スキル、アイテム、武器、防具、敵キャラ、ステート対応） |
-| マップ管理 | 5 | 一覧 / 作成 / 詳細 / 更新 / 削除 |
+| マップ管理 | 6 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報） |
 | イベント編集 | 5 | 一覧 / 作成 / 更新 / コマンド追加 / 削除（40以上の人間が読めるコマンド形式対応） |
 | AI シナリオ生成 | 3 | ゲームシナリオ概要 / NPC 会話 / クエスト設計の生成 |
 

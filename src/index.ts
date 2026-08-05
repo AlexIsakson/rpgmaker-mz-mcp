@@ -6,6 +6,7 @@ import { logger } from './logger.js';
 import { registerProjectTools } from './tools/project-tools.js';
 import { registerDatabaseTools } from './tools/database-tools.js';
 import { registerMapTools } from './tools/map-tools.js';
+import { registerMapGridTools } from './tools/map-grid-tools.js';
 import { registerEventTools } from './tools/event-tools.js';
 import { registerScenarioTools } from './tools/scenario-tools.js';
 
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
   registerProjectTools(server);
   registerDatabaseTools(server);
   registerMapTools(server);
+  registerMapGridTools(server);
   registerEventTools(server);
   registerScenarioTools(server);
 
