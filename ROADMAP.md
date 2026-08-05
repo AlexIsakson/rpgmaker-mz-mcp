@@ -11,7 +11,7 @@ build the primitives the later ones need.
 |---|---------|------|--------|
 | 1 | Map as text grid | Data | ✅ Done |
 | 2 | Event flow analysis | Data | ✅ Done |
-| 3 | Map connection graph | Data | Planned |
+| 3 | Map connection graph | Data | ✅ Done |
 | 4 | Logic consistency checker | Data | Planned |
 | 5 | Procedural map generation | Data + autotiles | Planned |
 | 6 | Battle simulation | Engine | Exploratory |
@@ -61,18 +61,24 @@ from *writes* — that's the traversal machinery #3 and #4 need. It also flags
 variable-driven transfers separately (`hasDynamicTransfer`) rather than recording a
 bogus map ID, which is exactly the case #3 has to report as "dynamic".
 
-## 3. Map connection graph
+## 3. Map connection graph ✅
 
-Scan every map's events for transfer/teleport commands (code `201`) and build a graph of
-how maps link together. Also worth surfacing: which maps are unreachable from the starting
-map (`System.json` → `startMapId`), and one-way connections.
+`get_map_graph` builds the world graph from Transfer Player commands (code `201`) and
+reports: connections, one-way routes, maps unreachable from `System.json` → `startMapId`,
+transfers to maps with no data file, and variable-driven transfers.
 
-Pure static analysis over data already being read. The main subtlety is that transfer
-destinations can be specified by variable rather than literal map ID — those can't be
-resolved statically and should be reported as "dynamic" rather than silently dropped.
+- `src/core/map-graph.ts` — graph assembly, common-event resolution, reachability (pure)
+- `src/tools/map-graph-tools.ts` — the MCP tool (handles all file loading)
 
-`collectReferences` from #2 already extracts `transfersTo` and `hasDynamicTransfer` per
-event, so this phase is mostly graph assembly and reachability over map files.
+**Transfers can live in common events**, so a map that only calls a common event still gets
+an edge — `resolveCommonEventTransfers` walks Call Common Event chains transitively with a
+cycle guard. Without this, maps reached only via a common event are falsely reported
+unreachable.
+
+**Known limitations**, surfaced in the tool's own output rather than hidden:
+
+- Variable-driven transfers can't be resolved statically, so reachability may be understated.
+- Vehicle travel (boat / ship / airship) doesn't use a transfer command and isn't modeled.
 
 ## 4. Logic consistency checker
 
@@ -81,7 +87,7 @@ A linter for RPG Maker-specific footguns. Candidate rules:
 - Switches/variables read but never written (and vice versa)
 - Self-switches checked but never set (a classic soft-lock: an event whose page condition
   can never become true)
-- Transfers targeting a map ID that doesn't exist
+- Transfers targeting a map ID that doesn't exist *(already reported by #3)*
 - Events with an autorun page and no way to turn it off — locks the player
 - Unreachable maps (from #3)
 - Items/skills/enemies referencing IDs that no longer exist
@@ -94,7 +100,8 @@ Depends on #2 and #3 for the traversal machinery. The read/write split in
 
 Note this needs *project-wide* collection — common events (`CommonEvents.json`) and troop
 pages also read and write switches, so a rule that only scans map events will produce false
-positives.
+positives. `collectCommandReferences` (added in #2) already handles the bare-command-list
+shape those use; the remaining work is loading them and unioning the results.
 
 ## 5. Procedural map generation
 

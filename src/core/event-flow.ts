@@ -344,72 +344,141 @@ export interface EventReferences {
 
 const sortUnique = <T,>(values: T[]): T[] => [...new Set(values)].sort();
 
+/** Mutable accumulator shared by the page-based and flat-list scanners. */
+interface RefAccumulator {
+  switchesRead: number[];
+  switchesWritten: number[];
+  variablesRead: number[];
+  variablesWritten: number[];
+  selfSwitchesRead: string[];
+  selfSwitchesWritten: string[];
+  commonEvents: number[];
+  transfersTo: number[];
+  hasDynamicTransfer: boolean;
+}
+
+function newAccumulator(): RefAccumulator {
+  return {
+    switchesRead: [],
+    switchesWritten: [],
+    variablesRead: [],
+    variablesWritten: [],
+    selfSwitchesRead: [],
+    selfSwitchesWritten: [],
+    commonEvents: [],
+    transfersTo: [],
+    hasDynamicTransfer: false,
+  };
+}
+
+function scanCommandList(list: EventCommand[], acc: RefAccumulator): void {
+  for (const cmd of list) {
+    const p = cmd.parameters;
+    switch (cmd.code) {
+      case 121:
+        for (let id = asNumber(p[0]); id <= asNumber(p[1]); id++) acc.switchesWritten.push(id);
+        break;
+      case 122:
+        for (let id = asNumber(p[0]); id <= asNumber(p[1]); id++) acc.variablesWritten.push(id);
+        if (asNumber(p[3]) === 1) acc.variablesRead.push(asNumber(p[4]));
+        break;
+      case 123:
+        acc.selfSwitchesWritten.push(asString(p[0]));
+        break;
+      case 117:
+        acc.commonEvents.push(asNumber(p[0]));
+        break;
+      case 111: {
+        const type = asNumber(p[0]);
+        if (type === 0) acc.switchesRead.push(asNumber(p[1]));
+        else if (type === 1) {
+          acc.variablesRead.push(asNumber(p[1]));
+          if (asNumber(p[2]) === 1) acc.variablesRead.push(asNumber(p[3]));
+        } else if (type === 2) acc.selfSwitchesRead.push(asString(p[1]));
+        break;
+      }
+      case 201:
+        if (asNumber(p[0]) === 0) acc.transfersTo.push(asNumber(p[1]));
+        else acc.hasDynamicTransfer = true;
+        break;
+    }
+  }
+}
+
+function finalize(acc: RefAccumulator): EventReferences {
+  return {
+    switchesRead: sortUnique(acc.switchesRead),
+    switchesWritten: sortUnique(acc.switchesWritten),
+    variablesRead: sortUnique(acc.variablesRead),
+    variablesWritten: sortUnique(acc.variablesWritten),
+    selfSwitchesRead: sortUnique(acc.selfSwitchesRead),
+    selfSwitchesWritten: sortUnique(acc.selfSwitchesWritten),
+    commonEvents: sortUnique(acc.commonEvents),
+    transfersTo: sortUnique(acc.transfersTo),
+    hasDynamicTransfer: acc.hasDynamicTransfer,
+  };
+}
+
 /**
  * Collect the switches / variables / self-switches / common events an event
  * touches. Foundation for the map connection graph and consistency checker.
  */
 export function collectReferences(event: Event): EventReferences {
-  const switchesRead: number[] = [];
-  const switchesWritten: number[] = [];
-  const variablesRead: number[] = [];
-  const variablesWritten: number[] = [];
-  const selfSwitchesRead: string[] = [];
-  const selfSwitchesWritten: string[] = [];
-  const commonEvents: number[] = [];
-  const transfersTo: number[] = [];
-  let hasDynamicTransfer = false;
+  const acc = newAccumulator();
 
   for (const page of event.pages) {
     const c = page.conditions;
-    if (c.switch1Valid) switchesRead.push(c.switch1Id);
-    if (c.switch2Valid) switchesRead.push(c.switch2Id);
-    if (c.variableValid) variablesRead.push(c.variableId);
-    if (c.selfSwitchValid) selfSwitchesRead.push(c.selfSwitchCh);
+    if (c.switch1Valid) acc.switchesRead.push(c.switch1Id);
+    if (c.switch2Valid) acc.switchesRead.push(c.switch2Id);
+    if (c.variableValid) acc.variablesRead.push(c.variableId);
+    if (c.selfSwitchValid) acc.selfSwitchesRead.push(c.selfSwitchCh);
 
-    for (const cmd of page.list) {
-      const p = cmd.parameters;
-      switch (cmd.code) {
-        case 121:
-          for (let id = asNumber(p[0]); id <= asNumber(p[1]); id++) switchesWritten.push(id);
-          break;
-        case 122:
-          for (let id = asNumber(p[0]); id <= asNumber(p[1]); id++) variablesWritten.push(id);
-          if (asNumber(p[3]) === 1) variablesRead.push(asNumber(p[4]));
-          break;
-        case 123:
-          selfSwitchesWritten.push(asString(p[0]));
-          break;
-        case 117:
-          commonEvents.push(asNumber(p[0]));
-          break;
-        case 111: {
-          const type = asNumber(p[0]);
-          if (type === 0) switchesRead.push(asNumber(p[1]));
-          else if (type === 1) {
-            variablesRead.push(asNumber(p[1]));
-            if (asNumber(p[2]) === 1) variablesRead.push(asNumber(p[3]));
-          } else if (type === 2) selfSwitchesRead.push(asString(p[1]));
-          break;
-        }
-        case 201:
-          if (asNumber(p[0]) === 0) transfersTo.push(asNumber(p[1]));
-          else hasDynamicTransfer = true;
-          break;
-      }
-    }
+    scanCommandList(page.list, acc);
   }
 
-  return {
-    switchesRead: sortUnique(switchesRead),
-    switchesWritten: sortUnique(switchesWritten),
-    variablesRead: sortUnique(variablesRead),
-    variablesWritten: sortUnique(variablesWritten),
-    selfSwitchesRead: sortUnique(selfSwitchesRead),
-    selfSwitchesWritten: sortUnique(selfSwitchesWritten),
-    commonEvents: sortUnique(commonEvents),
-    transfersTo: sortUnique(transfersTo),
-    hasDynamicTransfer,
-  };
+  return finalize(acc);
+}
+
+/**
+ * Same collection over a bare command list — for common events and troop pages,
+ * which have no page conditions.
+ */
+export function collectCommandReferences(list: EventCommand[]): EventReferences {
+  const acc = newAccumulator();
+  scanCommandList(list, acc);
+  return finalize(acc);
+}
+
+export interface TransferTarget {
+  /** null when the destination is resolved from variables at runtime. */
+  mapId: number | null;
+  x: number;
+  y: number;
+  dynamic: boolean;
+}
+
+/** Every Transfer Player (201) in a command list, in order. */
+export function extractTransfers(list: EventCommand[]): TransferTarget[] {
+  const out: TransferTarget[] = [];
+  for (const cmd of list) {
+    if (cmd.code !== 201) continue;
+    const p = cmd.parameters;
+    const dynamic = asNumber(p[0]) !== 0;
+    out.push({
+      mapId: dynamic ? null : asNumber(p[1]),
+      x: asNumber(p[2]),
+      y: asNumber(p[3]),
+      dynamic,
+    });
+  }
+  return out;
+}
+
+/** Every Call Common Event (117) target in a command list. */
+export function extractCommonEventCalls(list: EventCommand[]): number[] {
+  return list
+    .filter((cmd) => cmd.code === 117)
+    .map((cmd) => asNumber(cmd.parameters[0]));
 }
 
 /** Full multi-page breakdown of one event. */
