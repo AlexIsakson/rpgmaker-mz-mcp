@@ -385,6 +385,41 @@ describe('fillRect', () => {
     expect(getAutotileShape(after[1][1])).toBe(43); // W, N, S edges — open to the east
   });
 
+  it('only rewrites tiles within one step of the painted area', () => {
+    // A distant tile whose neighbourhood did not change must keep its exact id,
+    // shape included — filling a corner should not rewrite the whole map.
+    const before = grid([
+      [GRASS, GRASS, EMPTY, EMPTY, EMPTY],
+      [GRASS, GRASS, EMPTY, EMPTY, EMPTY],
+      [EMPTY, EMPTY, EMPTY, EMPTY, EMPTY],
+      [EMPTY, EMPTY, EMPTY, EMPTY, EMPTY],
+      [EMPTY, EMPTY, EMPTY, EMPTY, EMPTY],
+    ]);
+    // Deliberately wrong shape on a far-away tile.
+    before[0][0] = makeAutotileId(16, 46);
+
+    const after = fillRect(before, { x: 4, y: 4, width: 1, height: 1 }, GRASS);
+
+    expect(after[0][0]).toBe(makeAutotileId(16, 46)); // untouched, still "wrong"
+    expect(getAutotileKind(after[4][4])).toBe(16); // painted
+  });
+
+  it('produces the same result as a full refresh inside the affected area', () => {
+    const before = grid([
+      [EMPTY, EMPTY, EMPTY, EMPTY],
+      [EMPTY, EMPTY, EMPTY, EMPTY],
+      [EMPTY, EMPTY, EMPTY, EMPTY],
+      [EMPTY, EMPTY, EMPTY, EMPTY],
+    ]);
+
+    const scoped = fillRect(before, { x: 1, y: 1, width: 2, height: 2 }, GRASS);
+    const full = refreshAutotileShapes(
+      fillRect(before, { x: 1, y: 1, width: 2, height: 2 }, GRASS)
+    );
+
+    expect(scoped).toEqual(full);
+  });
+
   it('clips a rectangle that runs past the edge', () => {
     const before = grid([[EMPTY, EMPTY], [EMPTY, EMPTY]]);
     const after = fillRect(before, { x: 1, y: 1, width: 5, height: 5 }, GRASS);

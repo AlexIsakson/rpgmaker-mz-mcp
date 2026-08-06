@@ -13,7 +13,7 @@ build the primitives the later ones need.
 | 2 | Event flow analysis | Data | ✅ Done |
 | 3 | Map connection graph | Data | ✅ Done |
 | 4 | Logic consistency checker | Data | ✅ Done |
-| 5 | Procedural map generation | Data + autotiles | 🚧 Step 1 of 3 |
+| 5 | Procedural map generation | Data + autotiles | 🚧 Step 2 of 3 |
 | 6 | Battle simulation | Engine | Exploratory |
 | 7 | Live engine automation | Engine | Exploratory |
 
@@ -163,10 +163,21 @@ configurations** — decoding the shape our code picks back into geometry and as
 matches the neighbours. That makes the mapping verified against the engine's own definition,
 not merely self-consistent.
 
-### Step 2 — `fill_map_region` tool (next)
+### Step 2 — `fill_map_region` tool ✅
 
-Paint a rectangle with a material, auto-fixing neighbours, writing to a real map file.
-**This is the first visual checkpoint** — see the caveat below.
+Paints a rectangle with a material, computes shapes, and fixes up the tiles already around
+the area, writing to a real map file.
+
+- `src/core/map-layers.ts` — read/write one tile layer of the flat `data` array
+- `src/tools/map-paint-tools.ts` — the MCP tool
+
+Refresh is scoped to the painted rect plus a one-tile margin: only tiles within one step of
+the change can need a new shape, so filling a corner does not rewrite the whole map. A test
+asserts the scoped result is identical to a full refresh.
+
+Verified in the editor with a scene built from **seven separate calls** — the case that
+matters, since a later paint has to join tiles written by an earlier one. Includes a
+three-material junction (stone / sand / grass meeting at a point), which came out correct.
 
 ### Step 3 — generators
 
@@ -177,10 +188,10 @@ Rooms, corridors, towns, interiors, on top of a proven autotile layer.
 - **A2 ground family only.** Walls (A3/A4) use `WALL_AUTOTILE_TABLE` with different rules and
   vertical top/bottom pairing; waterfalls use a third table. Non-A2 tiles pass through
   untouched rather than being mangled.
-- **Out-of-bounds handling is an assumption.** `refreshAutotileShapes` defaults to treating
-  neighbours outside the map as the same material, so a filled map has no edge drawn at its
-  border. That matches how filled maps look in the editor but is not verified from source —
-  the `outOfBounds: 'different'` option exists if it turns out to be wrong.
+- **Out-of-bounds handling is confirmed.** `refreshAutotileShapes` treats neighbours outside
+  the map as the same material, so a material runs to the map border with no edge drawn
+  there. Checked against the editor: painting a block into a map corner by hand produces the
+  identical result. (`outOfBounds: 'different'` remains available.)
 - **Shape 47 is never emitted.** Isolated tiles use shape 46 (edges on all four sides).
   Shape 47 draws from the template's top-left tile; its role for A2 is unconfirmed.
 
@@ -188,7 +199,13 @@ Rooms, corridors, towns, interiors, on top of a proven autotile layer.
 
 Unlike items #1–#4, this cannot be fully proven from data. Tile ids can be checked against the
 engine's tables — and are — but "does the map actually look right" needs a human opening it in
-RPG Maker MZ. Build in a visual checkpoint at step 2 before layering generators on top.
+RPG Maker MZ.
+
+**Pick the test material carefully.** The first visual check used A2 column 0, which is the
+plain seamless fill — its edge pieces look identical to its middle pieces, so the render could
+not have revealed an error either way. Columns 1–4 are patch materials with visible outlines;
+use one of those. A control shape placed away from the map border, next to one touching it,
+makes border behaviour a direct comparison rather than a judgement call.
 
 ## 6. Battle simulation *(engine tier)*
 

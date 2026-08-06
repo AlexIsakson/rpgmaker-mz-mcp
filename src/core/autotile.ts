@@ -135,14 +135,28 @@ export function computeFloorShape(c: Connections): number {
 /**
  * How to treat neighbours outside the map.
  *
- * 'same' makes a material run to the map border without drawing an edge there,
- * which matches how a filled map looks in the editor. 'different' draws a
- * border edge instead.
+ * 'same' makes a material run to the map border without drawing an edge there.
+ * Confirmed against the editor: painting a block into a map corner by hand
+ * produces the same result, so this is the default. 'different' draws a border
+ * edge instead.
  */
 export type OutOfBounds = 'same' | 'different';
 
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface RefreshOptions {
   outOfBounds?: OutOfBounds;
+  /**
+   * Limit recomputation to this rectangle. Neighbours are still read from the
+   * whole grid, so results match a full refresh — this only avoids rewriting
+   * tiles whose neighbourhood cannot have changed.
+   */
+  region?: Rect;
 }
 
 function connectionsAt(
@@ -186,9 +200,18 @@ export function refreshAutotileShapes(
   options: RefreshOptions = {}
 ): number[][] {
   const outOfBounds = options.outOfBounds ?? 'same';
+  const region = options.region;
+
+  const inRegion = (x: number, y: number): boolean =>
+    !region ||
+    (x >= region.x &&
+      x < region.x + region.width &&
+      y >= region.y &&
+      y < region.y + region.height);
 
   return grid.map((row, y) =>
     row.map((tileId, x) => {
+      if (!inRegion(x, y)) return tileId;
       if (!isTileA2(tileId)) return tileId;
       const connections = connectionsAt(grid, x, y, tileId, outOfBounds);
       return makeAutotileId(getAutotileKind(tileId), computeFloorShape(connections));
@@ -204,7 +227,7 @@ export function refreshAutotileShapes(
  */
 export function fillRect(
   grid: number[][],
-  rect: { x: number; y: number; width: number; height: number },
+  rect: Rect,
   tileId: number,
   options: RefreshOptions = {}
 ): number[][] {
@@ -220,5 +243,15 @@ export function fillRect(
     }
   }
 
-  return refreshAutotileShapes(painted, options);
+  // Only tiles within one step of the change can need a new shape, so refresh
+  // the painted rect plus a one-tile margin rather than the whole layer.
+  return refreshAutotileShapes(painted, {
+    ...options,
+    region: options.region ?? {
+      x: rect.x - 1,
+      y: rect.y - 1,
+      width: rect.width + 2,
+      height: rect.height + 2,
+    },
+  });
 }

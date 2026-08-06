@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-137%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-144%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (28 total)
+## 🛠 Available Tools (29 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (6)
+### Map Management (8)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -68,15 +68,11 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_map` | Delete a map |
 | `get_map_grid` | Render a map as a text grid — walls, ladders, bushes, counters, damage floors, and event positions |
 | `get_map_graph` | Map connection graph — links, one-way routes, unreachable maps, broken and dynamic transfers |
+| `fill_map_region` | Paint a rectangle with a material, computing autotile shapes so edges and corners join correctly |
 
 `get_map_grid` lets the AI reason about **spatial layout** rather than just map metadata.
 Passability is decoded from tileset flags exactly as `Game_Map` does in the engine corescript.
 Large maps can be windowed with `x` / `y` / `width` / `height`.
-
-`get_map_graph` answers **"how does this world fit together?"** — and catches structural bugs:
-a map nothing links to, a door pointing at a deleted map, a pit with no way out. Transfers
-inside called common events are followed transitively, so maps reached only that way aren't
-falsely reported unreachable.
 
 ```
    00000000001111111
@@ -90,6 +86,24 @@ falsely reported unreachable.
 Events:
 1 = event [1] "Shopkeeper" at (7, 2)
 ```
+
+`get_map_graph` answers **"how does this world fit together?"** — and catches structural bugs:
+a map nothing links to, a door pointing at a deleted map, a pit with no way out. Transfers
+inside called common events are followed transitively, so maps reached only that way aren't
+falsely reported unreachable.
+
+`fill_map_region` writes tiles. In RPG Maker you paint a *material*, not a picture — the tile
+id packs both the material and which of 48 edge/corner variants to draw, and placing a tile
+changes what its neighbours should look like. This computes all of that, including fixing up
+the tiles already around the area, so separate calls join together seamlessly:
+
+```
+fill_map_region  mapId=1  x=10 y=7  width=9 height=7   autotileKind=18   # a stone plaza
+fill_map_region  mapId=1  x=13 y=2  width=2 height=5   autotileKind=17   # a path into it
+```
+
+Shapes are computed for the **A2 ground family** (`autotileKind` 16-47). Other tiles are
+written as-is — walls (A3/A4) and waterfalls follow different rules and aren't supported yet.
 
 ### Event Editing (5)
 | Tool | Description |
@@ -257,7 +271,8 @@ src/
 │   ├── event-flow.ts           # Command-code decoding + reference collection
 │   ├── map-graph.ts            # Transfer graph + reachability analysis
 │   ├── consistency.ts          # Project-wide static consistency rules
-│   ├── autotile.ts             # Floor autotile shape computation (no tool yet)
+│   ├── autotile.ts             # Floor autotile shape computation
+│   ├── map-layers.ts           # Tile layer read/write over the flat data array
 │   └── version-sync.ts         # System.json versionId auto-sync
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
@@ -271,6 +286,7 @@ src/
 │   ├── map-tools.ts            # 5 map management tools
 │   ├── map-grid-tools.ts       # 1 spatial/grid analysis tool
 │   ├── map-graph-tools.ts      # 1 map connection graph tool
+│   ├── map-paint-tools.ts      # 1 tile painting tool
 │   ├── event-tools.ts          # 5 event editing tools
 │   ├── event-flow-tools.ts     # 2 event flow analysis tools
 │   ├── consistency-tools.ts    # 1 project consistency checker
@@ -345,13 +361,13 @@ You are free to use, modify, and distribute this software, provided that derivat
 - **stderr 日誌**：MCP 使用 stdout 進行 JSON-RPC 通訊，任何 `console.log` 都會破壞協議。本專案只用 `console.error`
 - **版本同步**：每次修改資料檔案後自動更新 `System.json` 的 `versionId`，強制 RPG Maker MZ 編輯器重新載入
 
-### 可用工具（共 28 個）
+### 可用工具（共 29 個）
 
 | 類別 | 工具數 | 說明 |
 |------|:---:|------|
 | 專案管理 | 4 | 載入 / 建立 / 查詢專案資訊 / 列出素材資源 |
 | 資料庫 CRUD | 6 | 列出 / 取得 / 新增 / 更新 / 刪除 / 搜尋（支援角色、職業、技能、道具、武器、防具、敵人、狀態） |
-| 地圖管理 | 7 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊）/ 地圖連線圖（單向通道、無法抵達的地圖、失效的場所移動） |
+| 地圖管理 | 8 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊）/ 地圖連線圖（單向通道、無法抵達的地圖、失效的場所移動） |
 | 事件編輯 | 5 | 列出 / 建立 / 更新 / 新增指令 / 刪除事件（支援 40+ 種人類可讀指令格式） |
 | 事件流程分析 | 2 | 解析事件實際行為：各頁的觸發條件、指令流程，以及所使用的開關 / 變數 / 獨立開關 / 公共事件 / 場所移動 |
 | 專案一致性檢查 | 1 | 全專案靜態檢查：無法停止的自動執行、永遠無法開啟的獨立開關、失效的場所移動與公共事件、從未設定的開關 / 變數、無法抵達的地圖、未設定通行度的圖塊組 |
@@ -422,13 +438,13 @@ npm test  # 42 個測試應全部通過
 - **stderr 専用ログ**：MCP は stdout を JSON-RPC 通信に使用。`console.log` はプロトコルを破壊するため、`console.error` のみ使用
 - **バージョン同期**：データファイル変更のたびに `System.json` の `versionId` を自動更新し、RPGツクールMZ エディタに再読み込みを強制
 
-### 利用可能なツール（全 28 個）
+### 利用可能なツール（全 29 個）
 
 | カテゴリ | ツール数 | 説明 |
 |---------|:---:|------|
 | プロジェクト管理 | 4 | 読み込み / 作成 / 情報取得 / リソース一覧 |
 | データベース CRUD | 6 | 一覧 / 取得 / 作成 / 更新 / 削除 / 検索（アクター、職業、スキル、アイテム、武器、防具、敵キャラ、ステート対応） |
-| マップ管理 | 7 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報）/ マップ接続グラフ（一方通行・到達不能マップ・無効な場所移動） |
+| マップ管理 | 8 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報）/ マップ接続グラフ（一方通行・到達不能マップ・無効な場所移動） |
 | イベント編集 | 5 | 一覧 / 作成 / 更新 / コマンド追加 / 削除（40以上の人間が読めるコマンド形式対応） |
 | イベントフロー解析 | 2 | イベントの実際の動作を解析：各ページのトリガー・出現条件・コマンドの流れ、使用しているスイッチ / 変数 / セルフスイッチ / コモンイベント / 場所移動 |
 | プロジェクト整合性チェック | 1 | プロジェクト全体の静的解析：停止できない自動実行、絶対にONにならないセルフスイッチ、存在しないマップ / コモンイベントへの参照、未設定のスイッチ / 変数、到達不能マップ、通行設定が未構成のタイルセット |
