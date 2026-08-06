@@ -13,7 +13,7 @@ build the primitives the later ones need.
 | 2 | Event flow analysis | Data | ✅ Done |
 | 3 | Map connection graph | Data | ✅ Done |
 | 4 | Logic consistency checker | Data | ✅ Done |
-| 5 | Procedural map generation | Data + autotiles | 🚧 Step 2 of 3 |
+| 5 | Procedural map generation | Data + autotiles | ✅ Done |
 | 6 | Battle simulation | Engine | Exploratory |
 | 7 | Live engine automation | Engine | Exploratory |
 
@@ -179,9 +179,35 @@ Verified in the editor with a scene built from **seven separate calls** — the 
 matters, since a later paint has to join tiles written by an earlier one. Includes a
 three-material junction (stone / sand / grass meeting at a point), which came out correct.
 
-### Step 3 — generators
+### Step 3 — generators ✅
 
-Rooms, corridors, towns, interiors, on top of a proven autotile layer.
+`generate_map_layout` fills a map with a `dungeon` (rooms joined by L-shaped corridors) or a
+`cave` (cellular automata).
+
+- `src/core/mapgen.ts` — seeded RNG, both algorithms, layout → tile grid, ASCII preview
+- `src/tools/mapgen-tools.ts` — the MCP tool
+
+**Connectivity is guaranteed by construction, not by luck.** The dungeon connects each new
+room to the previous one as it places it; the cave discards everything except its largest
+connected region, so there are no sealed-off pockets. Tests assert `fullyConnected` across
+many seeds for both — the property most likely to break silently and the one that would
+produce an unplayable map.
+
+Generation is driven by a seeded mulberry32 RNG, so a given seed always reproduces the same
+layout — reproducible for the caller, and testable here.
+
+### Still open
+
+- **Passability is not generated.** The generator paints materials; whether the player can
+  walk on them comes from the tileset's passage flags, which are a tileset setting rather
+  than map data. A generated "wall" only blocks if that material is configured impassable.
+  `get_map_grid` shows what is actually walkable, and `check_project` flags tilesets whose
+  passage was never configured.
+- **No wall height.** True RPG Maker walls are A3/A4, which need `WALL_AUTOTILE_TABLE` and
+  vertical top/bottom pairing. A2-only layouts read as floor-vs-surround, not as rooms with
+  raised walls.
+- **Town and interior generators.** Building plots, roads, and furnished rooms are a
+  different problem from cave/dungeon carving and were left out.
 
 ### Scope and open questions
 

@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-144%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-167%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (29 total)
+## 🛠 Available Tools (30 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (8)
+### Map Management (9)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -69,6 +69,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `get_map_grid` | Render a map as a text grid — walls, ladders, bushes, counters, damage floors, and event positions |
 | `get_map_graph` | Map connection graph — links, one-way routes, unreachable maps, broken and dynamic transfers |
 | `fill_map_region` | Paint a rectangle with a material, computing autotile shapes so edges and corners join correctly |
+| `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
 
 `get_map_grid` lets the AI reason about **spatial layout** rather than just map metadata.
 Passability is decoded from tileset flags exactly as `Game_Map` does in the engine corescript.
@@ -104,6 +105,25 @@ fill_map_region  mapId=1  x=13 y=2  width=2 height=5   autotileKind=17   # a pat
 
 Shapes are computed for the **A2 ground family** (`autotileKind` 16-47). Other tiles are
 written as-is — walls (A3/A4) and waterfalls follow different rules and aren't supported yet.
+
+`generate_map_layout` builds a whole map at once — `dungeon` places rooms joined by L-shaped
+corridors, `cave` grows an organic cavern by cellular automata. Both are **guaranteed fully
+connected**: the dungeon connects each room to the previous one as it goes, and the cave keeps
+only its largest region so there are no sealed-off pockets. The same `seed` always reproduces
+the same layout.
+
+```
+####################....########......##
+#############....###....########......##
+#############......................@..##
+#############....###....#####.##......##
+#......######################.##......##
+#.............................######.###
+```
+
+It reports the open-tile count, room count, a suggested start position, and an ASCII preview.
+**It paints materials only** — whether the player can actually walk on them comes from the
+tileset's passage settings, so check the result with `get_map_grid`.
 
 ### Event Editing (5)
 | Tool | Description |
@@ -273,6 +293,7 @@ src/
 │   ├── consistency.ts          # Project-wide static consistency rules
 │   ├── autotile.ts             # Floor autotile shape computation
 │   ├── map-layers.ts           # Tile layer read/write over the flat data array
+│   ├── mapgen.ts               # Dungeon / cave layout generation
 │   └── version-sync.ts         # System.json versionId auto-sync
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
@@ -287,6 +308,7 @@ src/
 │   ├── map-grid-tools.ts       # 1 spatial/grid analysis tool
 │   ├── map-graph-tools.ts      # 1 map connection graph tool
 │   ├── map-paint-tools.ts      # 1 tile painting tool
+│   ├── mapgen-tools.ts         # 1 layout generation tool
 │   ├── event-tools.ts          # 5 event editing tools
 │   ├── event-flow-tools.ts     # 2 event flow analysis tools
 │   ├── consistency-tools.ts    # 1 project consistency checker
@@ -361,13 +383,13 @@ You are free to use, modify, and distribute this software, provided that derivat
 - **stderr 日誌**：MCP 使用 stdout 進行 JSON-RPC 通訊，任何 `console.log` 都會破壞協議。本專案只用 `console.error`
 - **版本同步**：每次修改資料檔案後自動更新 `System.json` 的 `versionId`，強制 RPG Maker MZ 編輯器重新載入
 
-### 可用工具（共 29 個）
+### 可用工具（共 30 個）
 
 | 類別 | 工具數 | 說明 |
 |------|:---:|------|
 | 專案管理 | 4 | 載入 / 建立 / 查詢專案資訊 / 列出素材資源 |
 | 資料庫 CRUD | 6 | 列出 / 取得 / 新增 / 更新 / 刪除 / 搜尋（支援角色、職業、技能、道具、武器、防具、敵人、狀態） |
-| 地圖管理 | 8 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊）/ 地圖連線圖（單向通道、無法抵達的地圖、失效的場所移動） |
+| 地圖管理 | 9 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊）/ 地圖連線圖（單向通道、無法抵達的地圖、失效的場所移動）/ 繪製區域（自動計算 autotile 接邊）/ 產生地城或洞窟地形 |
 | 事件編輯 | 5 | 列出 / 建立 / 更新 / 新增指令 / 刪除事件（支援 40+ 種人類可讀指令格式） |
 | 事件流程分析 | 2 | 解析事件實際行為：各頁的觸發條件、指令流程，以及所使用的開關 / 變數 / 獨立開關 / 公共事件 / 場所移動 |
 | 專案一致性檢查 | 1 | 全專案靜態檢查：無法停止的自動執行、永遠無法開啟的獨立開關、失效的場所移動與公共事件、從未設定的開關 / 變數、無法抵達的地圖、未設定通行度的圖塊組 |
@@ -438,13 +460,13 @@ npm test  # 42 個測試應全部通過
 - **stderr 専用ログ**：MCP は stdout を JSON-RPC 通信に使用。`console.log` はプロトコルを破壊するため、`console.error` のみ使用
 - **バージョン同期**：データファイル変更のたびに `System.json` の `versionId` を自動更新し、RPGツクールMZ エディタに再読み込みを強制
 
-### 利用可能なツール（全 29 個）
+### 利用可能なツール（全 30 個）
 
 | カテゴリ | ツール数 | 説明 |
 |---------|:---:|------|
 | プロジェクト管理 | 4 | 読み込み / 作成 / 情報取得 / リソース一覧 |
 | データベース CRUD | 6 | 一覧 / 取得 / 作成 / 更新 / 削除 / 検索（アクター、職業、スキル、アイテム、武器、防具、敵キャラ、ステート対応） |
-| マップ管理 | 8 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報）/ マップ接続グラフ（一方通行・到達不能マップ・無効な場所移動） |
+| マップ管理 | 9 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報）/ マップ接続グラフ（一方通行・到達不能マップ・無効な場所移動）/ 領域の塗りつぶし（オートタイル形状を自動計算）/ ダンジョン・洞窟の自動生成 |
 | イベント編集 | 5 | 一覧 / 作成 / 更新 / コマンド追加 / 削除（40以上の人間が読めるコマンド形式対応） |
 | イベントフロー解析 | 2 | イベントの実際の動作を解析：各ページのトリガー・出現条件・コマンドの流れ、使用しているスイッチ / 変数 / セルフスイッチ / コモンイベント / 場所移動 |
 | プロジェクト整合性チェック | 1 | プロジェクト全体の静的解析：停止できない自動実行、絶対にONにならないセルフスイッチ、存在しないマップ / コモンイベントへの参照、未設定のスイッチ / 変数、到達不能マップ、通行設定が未構成のタイルセット |
