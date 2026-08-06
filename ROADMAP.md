@@ -13,7 +13,7 @@ build the primitives the later ones need.
 | 2 | Event flow analysis | Data | ✅ Done |
 | 3 | Map connection graph | Data | ✅ Done |
 | 4 | Logic consistency checker | Data | ✅ Done |
-| 5 | Procedural map generation | Data + autotiles | ✅ Done |
+| 5 | Procedural map generation | Data + autotiles | 🚧 In progress |
 | 6 | Battle simulation | Engine | Exploratory |
 | 7 | Live engine automation | Engine | Exploratory |
 
@@ -132,6 +132,11 @@ needs the remaining database files loaded and their valid ID sets checked.
 
 ## 5. Procedural map generation 🚧
 
+> **Status: in progress.** Steps 1 and 2 are done and confirmed against the editor. Step 3
+> generates connected, correctly-shaped layouts, but a visual review of the output found the
+> resulting maps need work before this can be called finished. The specific problems have not
+> been written down yet — capture them here before picking this back up.
+
 Generate the `data` tile array algorithmically — rooms and corridors, town layouts, interiors.
 The generation algorithms themselves (BSP, cellular automata) are well-trodden; the hard part
 is **autotiles**.
@@ -179,7 +184,7 @@ Verified in the editor with a scene built from **seven separate calls** — the 
 matters, since a later paint has to join tiles written by an earlier one. Includes a
 three-material junction (stone / sand / grass meeting at a point), which came out correct.
 
-### Step 3 — generators ✅
+### Step 3 — generators 🚧 needs work
 
 `generate_map_layout` fills a map with a `dungeon` (rooms joined by L-shaped corridors) or a
 `cave` (cellular automata).
@@ -195,6 +200,19 @@ produce an unplayable map.
 
 Generation is driven by a seeded mulberry32 RNG, so a given seed always reproduces the same
 layout — reproducible for the caller, and testable here.
+
+**What is verified:** layouts are fully connected, shapes are computed correctly, and output
+is deterministic per seed. Those are the mechanical properties, and they hold.
+
+**What is not settled:** whether the maps are actually any *good* to look at and play. A
+visual review said they are not there yet. Mechanical correctness was never going to
+establish that — see the verification caveat below.
+
+**To pick this back up:** get the specific complaints written down first, then decide whether
+they are generator-quality problems (room shapes, corridor routing, cave silhouette, density)
+or the structural gaps already listed under "Still open" — most likely the missing wall
+height, since an A2-only layout reads as a flat floor pattern rather than a room with walls,
+which is probably the single biggest reason a generated map looks unlike a hand-made one.
 
 ### Still open
 
