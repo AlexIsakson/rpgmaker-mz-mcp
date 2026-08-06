@@ -12,7 +12,7 @@ build the primitives the later ones need.
 | 1 | Map as text grid | Data | ✅ Done |
 | 2 | Event flow analysis | Data | ✅ Done |
 | 3 | Map connection graph | Data | ✅ Done |
-| 4 | Logic consistency checker | Data | Planned |
+| 4 | Logic consistency checker | Data | ✅ Done |
 | 5 | Procedural map generation | Data + autotiles | Planned |
 | 6 | Battle simulation | Engine | Exploratory |
 | 7 | Live engine automation | Engine | Exploratory |
@@ -80,28 +80,55 @@ unreachable.
 - Variable-driven transfers can't be resolved statically, so reachability may be understated.
 - Vehicle travel (boat / ship / airship) doesn't use a transfer command and isn't modeled.
 
-## 4. Logic consistency checker
+## 4. Logic consistency checker ✅
 
-A linter for RPG Maker-specific footguns. Candidate rules:
+`check_project` runs static analysis across maps, common events, troop pages and tilesets,
+reporting findings by severity (filterable with `minSeverity`).
 
-- Switches/variables read but never written (and vice versa)
-- Self-switches checked but never set (a classic soft-lock: an event whose page condition
-  can never become true)
-- Transfers targeting a map ID that doesn't exist *(already reported by #3)*
-- Events with an autorun page and no way to turn it off — locks the player
-- Unreachable maps (from #3)
-- Items/skills/enemies referencing IDs that no longer exist
-- Tilesets whose `flags[0]` lacks the star bit (see [Engine reference](#engine-reference)) —
-  ground-layer impassability silently has no effect
+- `src/core/consistency.ts` — the rules (pure, unit-tested)
+- `src/tools/consistency-tools.ts` — the MCP tool
 
-Depends on #2 and #3 for the traversal machinery. The read/write split in
-`collectReferences` is what makes the first two rules expressible: a switch in
-`switchesRead` but never in any event's `switchesWritten` is a dead condition.
+| Rule | Severity |
+|------|:---:|
+| `autorun-cannot-stop` | error |
+| `self-switch-never-set` | error |
+| `transfer-to-missing-map` | error |
+| `missing-common-event` | error |
+| `switch-read-never-written` | warning |
+| `variable-read-never-written` | warning |
+| `unreachable-map` | warning |
+| `tileset-passage-unconfigured` | warning |
+| `switch-written-never-read` | info |
 
-Note this needs *project-wide* collection — common events (`CommonEvents.json`) and troop
-pages also read and write switches, so a rule that only scans map events will produce false
-positives. `collectCommandReferences` (added in #2) already handles the bare-command-list
-shape those use; the remaining work is loading them and unioning the results.
+### Design principle: conservative over clever
+
+A linter that cries wolf gets ignored, so every rule errs toward silence:
+
+- **Script (355/655) and Plugin Commands (356/357) are opaque.** They can set any switch or
+  self-switch, so events containing them are skipped by the self-switch and autorun rules,
+  and the report states that results are incomplete rather than asserting false confidence.
+- **`autorun-cannot-stop` only fires when a page contains none of** Erase Event, Control
+  Switch, Control Self Switch, Control Variable, or Transfer Player. Any one of those could
+  plausibly end the loop, so their presence silences the rule.
+- **`\V[n]` escapes in message text count as variable reads**, otherwise every display-only
+  counter would be falsely reported as written-but-never-read.
+
+### Scoping subtleties that would otherwise cause false positives
+
+- **Self-switches are per-(map, event)** — `command123` keys on `[mapId, eventId, ch]`. Only
+  the event itself can set its own self-switch, so the rule is per-event, not project-wide.
+- **A called common event inherits the caller's `eventId`** (`command117` passes
+  `this._eventId`), so its Control Self Switch writes the *caller's* self-switch.
+  `resolveCommonEventSelfSwitchWrites` follows those chains transitively with a cycle guard.
+- **Switch reads come from more than map events** — common event trigger switches
+  (trigger 1/2 use `switchId`) and troop page conditions are reads too. Missing them would
+  produce false `switch-written-never-read` findings.
+
+### Still open
+
+Broader database integrity — event commands referencing items, skills, actors, enemies or
+troops that no longer exist. The pattern is the same as `missing-common-event`; it just
+needs the remaining database files loaded and their valid ID sets checked.
 
 ## 5. Procedural map generation
 

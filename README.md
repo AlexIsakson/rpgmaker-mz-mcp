@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-88%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-115%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (27 total)
+## 🛠 Available Tools (28 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -130,6 +130,31 @@ End If
 Reads switches: 12
 Writes self-switches: A
 ```
+
+### Consistency Checking (1)
+| Tool | Description |
+|------|-------------|
+| `check_project` | Static analysis across the whole project — finds bugs before you playtest |
+
+Catches the failure modes that are painful to find by hand:
+
+| Rule | Severity | What it catches |
+|------|:---:|-----------------|
+| `autorun-cannot-stop` | error | An Autorun page with no way to end — freezes the game on map entry |
+| `self-switch-never-set` | error | A page gated on a self-switch nothing can ever set — that page is dead |
+| `transfer-to-missing-map` | error | A door pointing at a deleted map |
+| `missing-common-event` | error | Call Common Event targeting an ID that doesn't exist |
+| `switch-read-never-written` | warning | A condition that can never change |
+| `variable-read-never-written` | warning | A variable that will always be 0 |
+| `unreachable-map` | warning | A map with no route from the start map |
+| `tileset-passage-unconfigured` | warning | Tileset passage never set up, so ground-layer walls don't block |
+| `switch-written-never-read` | info | A dead write |
+
+Filter with `minSeverity` (`error` / `warning` / `info`).
+
+**Rules are conservative by design** — a linter that cries wolf gets ignored. Script and
+Plugin Commands can do anything, so events containing them are skipped by the self-switch
+and autorun rules, and the report says so rather than reporting confident nonsense.
 
 ### AI Scenario Generation (3)
 | Tool | Description |
@@ -231,6 +256,7 @@ src/
 │   ├── map-grid.ts             # Tile decoding + ASCII grid rendering
 │   ├── event-flow.ts           # Command-code decoding + reference collection
 │   ├── map-graph.ts            # Transfer graph + reachability analysis
+│   ├── consistency.ts          # Project-wide static consistency rules
 │   └── version-sync.ts         # System.json versionId auto-sync
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
@@ -246,6 +272,7 @@ src/
 │   ├── map-graph-tools.ts      # 1 map connection graph tool
 │   ├── event-tools.ts          # 5 event editing tools
 │   ├── event-flow-tools.ts     # 2 event flow analysis tools
+│   ├── consistency-tools.ts    # 1 project consistency checker
 │   └── scenario-tools.ts       # 3 AI scenario tools
 └── templates/
     └── defaults.ts             # RPG Maker MZ default data templates
@@ -317,7 +344,7 @@ You are free to use, modify, and distribute this software, provided that derivat
 - **stderr 日誌**：MCP 使用 stdout 進行 JSON-RPC 通訊，任何 `console.log` 都會破壞協議。本專案只用 `console.error`
 - **版本同步**：每次修改資料檔案後自動更新 `System.json` 的 `versionId`，強制 RPG Maker MZ 編輯器重新載入
 
-### 可用工具（共 27 個）
+### 可用工具（共 28 個）
 
 | 類別 | 工具數 | 說明 |
 |------|:---:|------|
@@ -326,6 +353,7 @@ You are free to use, modify, and distribute this software, provided that derivat
 | 地圖管理 | 7 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊）/ 地圖連線圖（單向通道、無法抵達的地圖、失效的場所移動） |
 | 事件編輯 | 5 | 列出 / 建立 / 更新 / 新增指令 / 刪除事件（支援 40+ 種人類可讀指令格式） |
 | 事件流程分析 | 2 | 解析事件實際行為：各頁的觸發條件、指令流程，以及所使用的開關 / 變數 / 獨立開關 / 公共事件 / 場所移動 |
+| 專案一致性檢查 | 1 | 全專案靜態檢查：無法停止的自動執行、永遠無法開啟的獨立開關、失效的場所移動與公共事件、從未設定的開關 / 變數、無法抵達的地圖、未設定通行度的圖塊組 |
 | AI 劇情生成 | 3 | 生成遊戲劇情大綱 / NPC 對話 / 任務設計 |
 
 ### 使用範例
@@ -393,7 +421,7 @@ npm test  # 42 個測試應全部通過
 - **stderr 専用ログ**：MCP は stdout を JSON-RPC 通信に使用。`console.log` はプロトコルを破壊するため、`console.error` のみ使用
 - **バージョン同期**：データファイル変更のたびに `System.json` の `versionId` を自動更新し、RPGツクールMZ エディタに再読み込みを強制
 
-### 利用可能なツール（全 27 個）
+### 利用可能なツール（全 28 個）
 
 | カテゴリ | ツール数 | 説明 |
 |---------|:---:|------|
@@ -402,6 +430,7 @@ npm test  # 42 個測試應全部通過
 | マップ管理 | 7 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報）/ マップ接続グラフ（一方通行・到達不能マップ・無効な場所移動） |
 | イベント編集 | 5 | 一覧 / 作成 / 更新 / コマンド追加 / 削除（40以上の人間が読めるコマンド形式対応） |
 | イベントフロー解析 | 2 | イベントの実際の動作を解析：各ページのトリガー・出現条件・コマンドの流れ、使用しているスイッチ / 変数 / セルフスイッチ / コモンイベント / 場所移動 |
+| プロジェクト整合性チェック | 1 | プロジェクト全体の静的解析：停止できない自動実行、絶対にONにならないセルフスイッチ、存在しないマップ / コモンイベントへの参照、未設定のスイッチ / 変数、到達不能マップ、通行設定が未構成のタイルセット |
 | AI シナリオ生成 | 3 | ゲームシナリオ概要 / NPC 会話 / クエスト設計の生成 |
 
 ### 使用例
