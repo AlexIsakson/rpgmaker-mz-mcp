@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-115%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-137%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -257,6 +257,7 @@ src/
 │   ├── event-flow.ts           # Command-code decoding + reference collection
 │   ├── map-graph.ts            # Transfer graph + reachability analysis
 │   ├── consistency.ts          # Project-wide static consistency rules
+│   ├── autotile.ts             # Floor autotile shape computation (no tool yet)
 │   └── version-sync.ts         # System.json versionId auto-sync
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types

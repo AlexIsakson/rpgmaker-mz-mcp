@@ -13,7 +13,7 @@ build the primitives the later ones need.
 | 2 | Event flow analysis | Data | ✅ Done |
 | 3 | Map connection graph | Data | ✅ Done |
 | 4 | Logic consistency checker | Data | ✅ Done |
-| 5 | Procedural map generation | Data + autotiles | Planned |
+| 5 | Procedural map generation | Data + autotiles | 🚧 Step 1 of 3 |
 | 6 | Battle simulation | Engine | Exploratory |
 | 7 | Live engine automation | Engine | Exploratory |
 
@@ -130,19 +130,65 @@ Broader database integrity — event commands referencing items, skills, actors,
 troops that no longer exist. The pattern is the same as `missing-common-event`; it just
 needs the remaining database files loaded and their valid ID sets checked.
 
-## 5. Procedural map generation
+## 5. Procedural map generation 🚧
 
 Generate the `data` tile array algorithmically — rooms and corridors, town layouts, interiors.
 The generation algorithms themselves (BSP, cellular automata) are well-trodden; the hard part
 is **autotiles**.
 
-RPG Maker autotile IDs (≥ 2048) encode which neighbors they connect to, so writing a tile is
-not "pick an ID" — every placement has to fix up the shape bits of its neighbors, or the map
-renders with broken edges and corners. Worth isolating in its own module (`src/core/autotile.ts`)
-with heavy unit tests, independent of any generator that calls it.
+A tile id packs *material* and *shape* together: `kind = (id - 2048) / 48`,
+`shape = (id - 2048) % 48`. Writing shape 0 everywhere yields a field of centre pieces with
+no edges, which renders as hard seams. Worse, placing one tile changes what its neighbours
+should look like, so every write needs a fix-up pass around it.
 
-Recommended: build and test the autotile fixer *first*, as a tool for painting regions
-(`fill_map_region`), then layer generators on top of it.
+Built in three steps so the riskiest part is proven before anything depends on it:
+
+### Step 1 — autotile module ✅
+
+`src/core/autotile.ts` — `computeFloorShape` (neighbours → shape), `refreshAutotileShapes`
+(recompute a whole layer), `fillRect` (paint + refresh).
+
+The shape numbering was derived from `Tilemap.FLOOR_AUTOTILE_TABLE` in the corescript. That
+table maps shape → which quadrants of the source image to draw, and the geometry of those
+quadrants is what defines each shape's meaning:
+
+- half-tile `x=0` → left edge, `x=3` → right edge, `y=2` → top edge, `y=5` → bottom edge
+- `(2,0)` `(3,0)` `(3,1)` `(2,1)` → inner-corner pieces for TL / TR / BR / BL
+
+Which yields: shapes 0–15 corner bits (TL=1, TR=2, BR=4, BL=8), 16–31 single edges plus their
+free corners, 32–45 edge combinations, 46 fully isolated.
+
+`tests/core/autotile.test.ts` embeds a copy of that table and checks **all 256 neighbour
+configurations** — decoding the shape our code picks back into geometry and asserting it
+matches the neighbours. That makes the mapping verified against the engine's own definition,
+not merely self-consistent.
+
+### Step 2 — `fill_map_region` tool (next)
+
+Paint a rectangle with a material, auto-fixing neighbours, writing to a real map file.
+**This is the first visual checkpoint** — see the caveat below.
+
+### Step 3 — generators
+
+Rooms, corridors, towns, interiors, on top of a proven autotile layer.
+
+### Scope and open questions
+
+- **A2 ground family only.** Walls (A3/A4) use `WALL_AUTOTILE_TABLE` with different rules and
+  vertical top/bottom pairing; waterfalls use a third table. Non-A2 tiles pass through
+  untouched rather than being mangled.
+- **Out-of-bounds handling is an assumption.** `refreshAutotileShapes` defaults to treating
+  neighbours outside the map as the same material, so a filled map has no edge drawn at its
+  border. That matches how filled maps look in the editor but is not verified from source —
+  the `outOfBounds: 'different'` option exists if it turns out to be wrong.
+- **Shape 47 is never emitted.** Isolated tiles use shape 46 (edges on all four sides).
+  Shape 47 draws from the template's top-left tile; its role for A2 is unconfirmed.
+
+### Verification caveat
+
+Unlike items #1–#4, this cannot be fully proven from data. Tile ids can be checked against the
+engine's tables — and are — but "does the map actually look right" needs a human opening it in
+RPG Maker MZ. Build in a visual checkpoint at step 2 before layering generators on top.
 
 ## 6. Battle simulation *(engine tier)*
 
