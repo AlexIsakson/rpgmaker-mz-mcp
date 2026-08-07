@@ -345,23 +345,71 @@ batching writes would remove the exposure entirely.
 | 3 — no wall shape computation | `src/core/wall-autotile.ts`; `fill_map_region` now takes A3/A4 kinds and dispatches to the right table |
 | 4, 11, 13 — roof/wall pairing, nine-slice roofs, doors as events | `place_building` (`src/core/blueprint.ts`) — see [Building blueprints](#building-blueprints) |
 | ergonomics — 440 of 526 calls were 1x1 rectangles | `paint_tiles` (`src/core/tile-batch.ts`) — see [Batched tile writes](#batched-tile-writes) |
+| 12 — per-tileset prop knowledge | `list_tileset_props` / `place_prop` (`src/core/props.ts`) — see [The prop catalogue](#the-prop-catalogue) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
-**Deliberately not in the server**, because it is per-tileset content rather than a rule, and
-belongs in a prop catalogue that does not exist yet:
+**Still not in the server:**
 
-- finding 12 — how to compose a tree mass from the single tree's quadrants. **Rendering a test
-  case sharpened the rule:** "dense tile where every neighbour is woodland" is not enough. The
-  dense tile is drawn to tile seamlessly against *other dense tiles*; a single dense tile ringed
-  by the round single-tree sprites reads as a hard-edged square patch cut into the canopy — see
-  the 3x3 woodland block in the `paint_tiles` verification. The dense tile needs neighbours that
-  are dense too, so a woodland has to be at least 3x3 *dense* cells before any of it can be used.
 - findings 5-9 — the generator itself still writes layer 0 only, emits hard rectangles, does
   not frame the map edge, and places no props or events. `generate_map_layout` is unchanged.
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
 
-Still to build: a per-tileset prop catalogue, and the town generator.
+Still to build: the town generator, and interiors.
+
+### The prop catalogue
+
+`list_tileset_props` and `place_prop` address objects by name — 1,628 of them across the twelve
+object sheets the editor ships.
+
+- `scripts/build-prop-catalogue.mjs` — the generator
+- `src/core/prop-catalogue.ts` — generated data, committed
+- `src/core/props.ts` — resolution, search, sub-rectangles (pure, unit-tested)
+- `src/tools/prop-tools.ts` — the two MCP tools
+
+**The names did not have to be invented, which is the whole reason this is tractable.** RPG
+Maker ships a `.txt` beside every tileset PNG holding one line per tile id — the editor's own
+label, in English and Japanese. A prop is a connected run of tiles sharing a label, computed in
+the sheet's *drawn* layout rather than in tile-id order, because that is where adjacency means
+anything. Spot-checked by rendering the props the labels name — barrel, well, palm tree, tent,
+INN sign, snowman — and they match.
+
+**Projects do not ship those files; only the editor's `newdata` does.** So the catalogue is
+generated once and committed, and the generator takes a path so DLC or custom sheets can be
+folded in. A tileset naming a sheet the catalogue has never seen contributes nothing rather
+than failing, and the listing says which sheets those were.
+
+Addressing is the same `topLeft + row * 8 + col` the nine-slice roofs use, and for the same
+reason — the object sheets are 16 tiles wide but read as two 8-wide halves. No prop straddles
+that boundary; the generator asserts it, and a test re-checks every prop against the
+corescript's own source-rect formula.
+
+**What the labels revealed that tile ids hide:** a name often covers an object *together with
+its filler variants*. `Tree` is a 2x2 box holding a 1x2 tree and a canopy filler beside it —
+with a hole, because the fourth cell belongs to `Bush`. `Large Tree` is 4x2: a 2x2 tree plus
+the mass that fills the middle of a grove. That is the correct reading of finding 12, and a
+better one than the roadmap previously had: the "dense many-trees tile" is not a separate
+material to be used where neighbours are woodland, it is `Large Tree`'s own interior filler.
+Rendering `place_prop "Tree"` whole against `part={x:0,y:0,width:1,height:2}` shows the
+difference directly — the first leaves a canopy square floating beside the trunk. Where a prop
+has a hole, the result names the prop that owns it, so `Tent A`'s gap reports as
+`Tent A (Entrance)`.
+
+**It also corrected earlier work.** `OUTSIDE_C_ROOF_SETS` recorded brown as having no
+inner-corner pieces, because an earlier pass looked for them in the columns the other three
+sets use. The labels put `Roof D (Wood)` in one 3x5 group whose extras sit *below* the block
+instead, and rendering that region confirmed the corners are there — 446 and 447. The two
+derivations are independent, so a test now asserts every roof set's block and corners fall
+inside the group the sheet labels for it.
+
+Object tiles are cut out around their edges, so `place_prop` runs the same "is there anything
+beneath this?" check `place_building` runs for a roof's sloped corners. That check now lives in
+one place (`hasTileBelow` in `src/core/map-layers.ts`) rather than being written a third time.
+
+**Not covered:** the A5 sheet, whose tiles are ground textures rather than objects, and the
+A1-A4 name files, which label autotile *materials* — those would let
+`describe_tileset_materials` say "Grass" instead of "kind 16", and the generator already knows
+how to read them.
 
 ### Building blueprints
 

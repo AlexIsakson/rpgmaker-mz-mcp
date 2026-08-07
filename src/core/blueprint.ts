@@ -111,9 +111,11 @@ export const OUTSIDE_C_ROOF_SETS: RoofSet[] = [
   { name: 'green', topLeft: 384, innerCorners: [395, 396] },
   { name: 'white', topLeft: 389, innerCorners: [411, 412] },
   { name: 'gold', topLeft: 408, innerCorners: [427, 428] },
-  // The strip beside the brown set holds green and gold dormer variants rather
-  // than brown corners, so brown has no inner corners to offer.
-  { name: 'brown', topLeft: 413, innerCorners: null },
+  // Brown's extras sit *below* its block rather than beside it, which is why an
+  // earlier pass looked at the columns the other three use, found green and gold
+  // dormers there, and recorded brown as having none. The sheet's own tile
+  // labels put the whole set in one group and the render confirms the corners.
+  { name: 'brown', topLeft: 413, innerCorners: [446, 447] },
 ];
 
 export const ROOF_SET_NAMES = OUTSIDE_C_ROOF_SETS.map((s) => s.name);

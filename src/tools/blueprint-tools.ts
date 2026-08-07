@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { FileHandler } from '../core/file-handler.js';
-import { readLayer, writeLayer, TILE_LAYERS } from '../core/map-layers.js';
+import { readLayer, writeLayer, hasTileBelow, TILE_LAYERS } from '../core/map-layers.js';
 import { fillWallRect } from '../core/wall-autotile.js';
 import { applyWallShadows } from '../core/shadows.js';
 import { TilesetReader } from '../core/tileset-reader.js';
@@ -226,11 +226,9 @@ export function registerBlueprintTools(server: McpServer): void {
             ? await loadTransparentObjectTiles(project.path, roofSheetName, uniqueRoofTiles)
             : null;
 
-          const lower: number[][][] = [];
-          for (let z = 0; z < roofLayer; z++) {
-            lower.push(z === 0 ? ground : readLayer(mapData, z));
-          }
-
+          // The walls are painted above but not yet written back; they occupy
+          // rows disjoint from the roof, and a shape refresh never turns an
+          // empty cell into a full one, so reading mapData here is equivalent.
           const bare: string[] = [];
           for (let j = 0; j < plan.roofRect.height; j++) {
             for (let i = 0; i < plan.roofRect.width; i++) {
@@ -238,7 +236,7 @@ export function registerBlueprintTools(server: McpServer): void {
               if (cut && !cut.has(tileId)) continue;
               const gx = plan.roofRect.x + i;
               const gy = plan.roofRect.y + j;
-              if (!lower.some((layer) => (layer[gy]?.[gx] ?? 0) !== 0)) bare.push(`(${gx}, ${gy})`);
+              if (!hasTileBelow(mapData, gx, gy, roofLayer)) bare.push(`(${gx}, ${gy})`);
             }
           }
 

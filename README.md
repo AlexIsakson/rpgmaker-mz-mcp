@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (14)
+### Map Management (16)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -71,6 +71,8 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `fill_map_region` | Paint a rectangle with a material, computing autotile shapes so edges and corners join correctly |
 | `paint_tiles` | Write many individual tiles at once — props, windows, a whole decoration pass |
 | `place_building` | Place a whole building — roof, walls and a working door event — in one call |
+| `list_tileset_props` | What named objects this tileset offers — barrels, signs, trees, windows |
+| `place_prop` | Place a named object by name, however many tiles it is made of |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
 | `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
 | `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
@@ -190,6 +192,31 @@ nothing under them, naming the coordinates. Fill the ground first, or pass
 
 Not covered: roofs are rectangles. The sets carry inner-corner pieces for L-shaped roofs
 (recorded in `src/core/blueprint.ts`) and nothing uses them yet.
+
+`list_tileset_props` and `place_prop` address objects **by name** rather than by tile id:
+
+```
+place_prop  mapId=1  name="Shop Sign (Inn)"  x=14 y=9
+place_prop  mapId=1  name="Tree"  x=20 y=4  part={x:0, y:0, width:1, height:2}
+```
+
+The names are not invented. RPG Maker ships a `.txt` beside every tileset image holding the
+editor's own label for each of its 256 tiles, and a prop is a connected run of tiles sharing a
+label — 1,628 of them across the twelve object sheets. **Projects do not ship those files**, so
+`scripts/build-prop-catalogue.mjs` reads them from the editor and generates
+`src/core/prop-catalogue.ts`; run it again to pick up DLC or custom sheets.
+
+One thing the labels reveal that raw ids hide: **a name often covers an object together with
+its filler variants.** `Tree` is a 2x2 box holding a 1x2 tree and a canopy filler beside it —
+and a hole, because the fourth cell belongs to `Bush`. `Large Tree` is 4x2: a 2x2 tree plus the
+mass that fills the middle of a grove. So placing a whole prop is right for the 1x1 objects that
+make up most of a sheet, and `part` takes the object out of the bundle for the rest. Where a
+prop has a hole, the result says which prop owns it, so `Tent A`'s gap reports as
+`Tent A (Entrance)`.
+
+Object tiles are cut out around their edges, so they need something painted beneath them —
+the same check `place_building` makes for a roof's sloped corners, and it names the cells that
+would show through.
 
 `apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
 rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of

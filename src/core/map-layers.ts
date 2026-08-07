@@ -15,6 +15,23 @@ export function tileIndex(width: number, height: number, x: number, y: number, z
   return (z * height + y) * width + x;
 }
 
+/**
+ * Whether any layer below `layer` has something painted at (x, y).
+ *
+ * Anything with transparent pixels — a roof's cut corner, a tree's canopy, most
+ * object tiles — shows whatever is underneath it, and with nothing underneath
+ * that is the map background, which renders black in game. So this is the check
+ * that stands between a partly-transparent tile and a hole in the map.
+ */
+export function hasTileBelow(mapData: MapData, x: number, y: number, layer: number): boolean {
+  const { width, height, data } = mapData;
+  if (x < 0 || y < 0 || x >= width || y >= height) return false;
+  for (let z = 0; z < layer; z++) {
+    if ((data[tileIndex(width, height, x, y, z)] ?? 0) !== 0) return true;
+  }
+  return false;
+}
+
 /** Extract one layer as `grid[y][x]`. */
 export function readLayer(mapData: MapData, z: number): number[][] {
   const { width, height, data } = mapData;
