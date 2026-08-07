@@ -134,8 +134,8 @@ needs the remaining database files loaded and their valid ID sets checked.
 
 > **Status: in progress.** Steps 1 and 2 are done and confirmed against the editor. Step 3
 > generates connected, correctly-shaped layouts, but a visual review of the output found the
-> resulting maps need work before this can be called finished. The specific problems have not
-> been written down yet — capture them here before picking this back up.
+> resulting maps need work before this can be called finished. The specific problems are now
+> written down — see [Visual review findings](#visual-review-findings).
 
 Generate the `data` tile array algorithmically — rooms and corridors, town layouts, interiors.
 The generation algorithms themselves (BSP, cellular automata) are well-trodden; the hard part
@@ -208,11 +208,178 @@ is deterministic per seed. Those are the mechanical properties, and they hold.
 visual review said they are not there yet. Mechanical correctness was never going to
 establish that — see the verification caveat below.
 
-**To pick this back up:** get the specific complaints written down first, then decide whether
-they are generator-quality problems (room shapes, corridor routing, cave silhouette, density)
-or the structural gaps already listed under "Still open" — most likely the missing wall
-height, since an A2-only layout reads as a flat floor pattern rather than a room with walls,
-which is probably the single biggest reason a generated map looks unlike a hand-made one.
+### Visual review findings
+
+Method: every map below was built by driving the real server over stdio MCP, then rendered to
+a PNG by a script that ports `Tilemap._addAutotile` / `_addNormalTile` from `rmmz_core.js` and
+reads `FLOOR_/WALL_/WATERFALL_AUTOTILE_TABLE` straight out of the corescript, so the render is
+what the engine would draw. Ground truth for "what a good map looks like" is the 293 hand-made
+sample maps shipped with the editor (`RPG Maker MZ/samplemaps/`), which are readable map JSON
+and can be measured, not just looked at.
+
+Ordered by how much each one costs the finished map.
+
+**1. Transparent A2 materials written to layer 0 leave holes.** Only some A2 kinds are opaque
+ground; the rest are overlays whose edge pieces are transparent and are meant to sit on an
+upper layer above a ground tile. Painted on layer 0 they render as the map background — which
+is black in game. Measuring edge-piece alpha in `Outside_A2`: kinds 16-19, 24-27, 32-35, 40-43
+and 45 are opaque; 20, 22, 28, 30, 36-39, 44, 46, 47 are overlays; 21, 23, 29, 31 are nearly
+empty. **The split is per-tileset, not a fixed column rule** — `World_A2` has overlays in
+completely different slots and `Dungeon_A2` is almost all opaque — so this cannot be hardcoded.
+The server would have to read the tileset PNG from `img/tilesets/`, or ship a per-tileset
+material catalogue. This is the direct cause of the black streets in the earlier hand-built
+"City Level 5" test map.
+
+**2. The shadow plane (z=4) is never written, and cannot be.** 285 of the 293 sample maps use
+it. Across 16,829 sample shadow tiles, **81.6% use bit pattern `5`** (the left half of the tile
+darkened) and **83.7% sit immediately to the right of a wall tile** — that is the editor's
+auto-shadow, and it is a dozen lines to reproduce:
+
+> for every tile that is not itself an A3/A4 tile but whose left neighbour is one, set
+> `data[(4 * height + y) * width + x] = 5`.
+
+`fill_map_region` caps `layer` at 0-3, so the shadow plane is unreachable through the tools at
+all. Adding shadows to a generated town was the single largest visual improvement of anything
+tried here.
+
+**3. No walls means no buildings.** Already listed under "Still open", and confirmed as the
+biggest gap: a town is roof blocks sitting on wall blocks, both A3. The shape rule is
+straightforward and was verified by rendering — `WALL_AUTOTILE_TABLE`, shape bits left `1`,
+up `2`, right `4`, down `8`, set on each side whose neighbour is a different material.
+
+**4. A3 pairs each roof with the wall 8 kinds below it.** The sheet is laid out as
+roof row / wall row / roof row / wall row, and the sample maps follow the pairing
+overwhelmingly: kind 49 sits above 57 (105 tiles), 52 above 60 (74), 67 above 75 (119), 50
+above 58 (37). `wallKind = roofKind + 8` is the right default; picking the two independently
+is what makes hand-assembled buildings look mismatched.
+
+**5. Only layer 0 is used.** Sample town maps carry 10-60% of their tiles on layers 2 and 3 —
+tree canopies, props, awnings, anything the player walks behind. A single-layer map cannot
+have depth no matter how good the layout is.
+
+**6. Cave and dungeon silhouettes.** The cave defaults (`fillProbability 0.45`,
+`smoothingSteps 4`) over-smooth into one large open blob with a nearly convex outline; there is
+no interior structure and nothing to navigate around. The dungeon is axis-aligned rectangles
+joined by one-tile corridors, all at one elevation, with no doorways, no variation in room
+shape and no dead ends worth exploring.
+
+**7. Everything the generator emits is a hard-edged rectangle.** Hand-made maps have almost no
+straight material boundaries. Ground patches want ragged edges, roads want to bend and change
+width, and rooms want to be something other than perfect rectangles.
+
+**8. Nothing frames the map edge.** Generated maps run to the border and stop. Sample maps are
+enclosed by trees, cliffs or water so the player never sees the boundary.
+
+**9. There is no decoration pass and there are no events.** A layout with no props and nobody
+standing in it does not read as a place. Both are mechanical to add once layers 2/3 and a
+per-tileset prop catalogue exist.
+
+### Second review — what a closer look at the town turned up
+
+**10. The tileset's passage flags were never configured, so nothing was solid.** `flags[0]`
+was `0` instead of `0x10`, and only the A3 range carried flags at all (1536 of 8192 entries).
+With no star bit on tile 0, passage resolves on the empty upper layers and returns "open"
+everywhere — the player walks straight into buildings and gets stuck inside them.
+`get_map_grid` rendered the entire 40x30 town as open floor, which is correct output for a
+broken tileset and exactly the symptom to look for.
+
+**`check_project` already detects this** — rule `tileset-passage-unconfigured` tests precisely
+`(flags[0] & 0x10) === 0`. The rule was right; nothing in the map-building path consulted it.
+Any generator that writes a map should run that check first and refuse, or at least warn,
+rather than emit a map where geometry has no effect.
+
+Fixed here by copying the flags array from the reference database at
+`RPG Maker MZ/newdata/data/Tilesets.json`, which has all 8192 entries. **No tool can write
+tileset flags**, so that had to be done outside the server.
+
+**11. Roofs need the nine-slice sets from the B/C sheets, not a rectangle of A3 texture.** The
+A3 roof materials are uniform textures — `Outside_A3` kind 52's whole 2x2 block is shingle with
+no edge art, so a correctly-shaped A3 rectangle still renders as a flat slab. Real roofs come
+from `Outside_C` as 3x3 blocks with sloped left/right sides and a shingled eave, addressed as
+`topLeft + row * 8 + col`. Verified by rendering: **384** (green), **389** (white), **408**
+(gold), **413** (brown). Two neighbouring columns of each set are inner-corner pieces for
+L-shaped roofs.
+
+**12. The dense "many trees" tile is interior-only.** `Outside_B` 178/179/186/187 draw a canopy
+that runs off the tile edges so it can overlap its neighbours; placed on its own it is a green
+blob with a hard cut edge. A tree mass has to be drawn with the *single* tree's quadrants
+(176/177/184/185) around the rim and the dense tile only where every neighbour is also woodland.
+
+**13. Doors are events, not tiles.** The tile used for them (`Outside_B` 114/122) is a pair of
+shuttered windows — it floats above the wall base and never reaches the ground. RPG Maker doors
+are events carrying a `!Door1` / `!Door2` character sprite, whose three frames are the opening
+animation. Any town generator has to emit events, not just tiles.
+
+**14. Nothing validated placement.** Props, tree quadrants and NPCs were landing on top of
+building walls and roofs — a log on a bakery wall, a tree canopy across a roof, border trees
+cutting through two buildings. Two passes fix it and both belong in the generator:
+
+- an occupancy grid of building footprints, so decoration can only go where nothing is built
+  (with an explicit exception for windows, signs and doors, which *should* be on the wall);
+- a walkability audit implementing `Game_Map.checkPassage` and `Game_CharacterBase.canPass`,
+  flood-filling the map and reporting events on impassable tiles, events walled off from the
+  rest of the map, and doors with no reachable tile in front of them.
+
+After both, the town reports 834 of 838 standable tiles reachable, every door approachable and
+no event stranded. The four unreachable tiles are canopy squares boxed in between a building
+and the tree line, which the player can never see.
+
+### Robustness
+
+Three of 508 `fill_map_region` calls failed transiently during one run and all three succeeded
+when replayed immediately afterwards; a 300-call stress run afterwards produced none. Every
+call rewrites the whole map file, and `FileHandler.writeJson` does copy-to-`.bak` →
+write-`.tmp` → `rename` each time, so a Windows lock/rename race is the obvious suspect. Not
+reproduced often enough to be sure — but a retry around the rename would cost nothing, and
+batching writes would remove the exposure entirely.
+
+### What has been built from these findings
+
+| Finding | Now in the server |
+|---|---|
+| 1 — transparent materials on layer 0 | `src/core/tileset-image.ts` measures the A2 sheet; `fill_map_region` refuses an overlay material on layer 0 unless `allowOverlayOnGround` |
+| 1b — seamless fills have no boundary | same classifier; `fill_map_region` warns when a seamless material is used for a patch rather than a whole-map fill |
+| 2 — no shadow plane | `apply_wall_shadows` (`src/core/shadows.ts`) |
+| 10 — passage flags unconfigured | `describe_tileset_materials` warns when `flags[0]` has no star bit; `check_project` already had the rule |
+| 14 — nothing validated placement | `check_map_walkability` (`src/core/walkability.ts`); `fill_map_region` gained `skipOccupied` and reports upper-layer overwrites |
+| 3 — no wall shape computation | `src/core/wall-autotile.ts`; `fill_map_region` now takes A3/A4 kinds and dispatches to the right table |
+| robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
+| verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
+
+**Deliberately not in the server**, because it is per-tileset content rather than a rule, and
+belongs in a prop/blueprint catalogue that does not exist yet:
+
+- findings 4, 11, 12, 13 — the A3 roof/wall `+8` pairing, the `Outside_C` nine-slice roof sets,
+  how to compose a tree mass, and doors being events. The wall-paint result mentions the
+  pairing, but nothing enforces or supplies any of it.
+- findings 5-9 — the generator itself still writes layer 0 only, emits hard rectangles, does
+  not frame the map edge, and places no props or events. `generate_map_layout` is unchanged.
+- Nothing can write tileset passage flags; the tools can only detect that they are missing.
+
+Still to build: building blueprints so a house is one call rather than a dozen, a per-tileset
+prop catalogue, and the town generator.
+
+`describe_tileset_materials` classifies by comparing **mean colours** rather than pixels.
+That detail matters: a cobblestone texture differs from itself pixel by pixel about as much as
+it differs from grass, so a per-pixel metric calls it "outlined" against its own middle. The
+mean is stable under noise, and on the real RTP sheets the separation is clean — seamless
+fills score 0.000-0.002 edge contrast, outlined patches 0.10-0.17.
+
+### Tool ergonomics, from building a town by hand
+
+A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.
+That is the honest measure of what is missing:
+
+- `fill_map_region` paints one tile id per call, so every non-A2 object — every door, window,
+  sign, barrel, half of every tree — is its own call. A `paint_tiles` taking a list of
+  `{x, y, tileId, layer}`, or a stamp/blueprint primitive, would collapse almost all of it.
+- A3 shapes had to be computed outside the server and written as raw tile ids, because shape
+  computation is A2-only.
+- `autotileKind`'s description says "columns 1-4 are patch materials with visible outlines".
+  Column 4 is the first *overlay* material, so a caller following the description lands
+  directly in finding 1.
+- The shadow (z=4) and region (z=5) planes have no tool at all.
+- A1 (water, waterfalls) is not supported, so a generated map can have no water.
 
 ### Still open
 
@@ -242,8 +409,13 @@ which is probably the single biggest reason a generated map looks unlike a hand-
 ### Verification caveat
 
 Unlike items #1–#4, this cannot be fully proven from data. Tile ids can be checked against the
-engine's tables — and are — but "does the map actually look right" needs a human opening it in
-RPG Maker MZ.
+engine's tables — and are — but "does the map actually look right" needs someone looking at it.
+
+That no longer means opening the editor. A standalone renderer that ports `Tilemap`'s drawing
+from `rmmz_core.js` turns any map file into a PNG, which closes the loop: generate, render,
+look, change something, render again. It is worth landing as a dev script — every finding above
+came out of that loop, and several of them (the transparent-material holes especially) are
+invisible in a text grid.
 
 **Pick the test material carefully.** The first visual check used A2 column 0, which is the
 plain seamless fill — its edge pieces look identical to its middle pieces, so the render could

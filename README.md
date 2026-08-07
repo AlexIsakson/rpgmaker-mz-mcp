@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (30 total)
+## 🛠 Available Tools (33 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (9)
+### Map Management (12)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -70,6 +70,9 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `get_map_graph` | Map connection graph — links, one-way routes, unreachable maps, broken and dynamic transfers |
 | `fill_map_region` | Paint a rectangle with a material, computing autotile shapes so edges and corners join correctly |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
+| `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
+| `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
+| `describe_tileset_materials` | Which A2 materials are safe on layer 0, and which have a visible outline |
 
 `get_map_grid` lets the AI reason about **spatial layout** rather than just map metadata.
 Passability is decoded from tileset flags exactly as `Game_Map` does in the engine corescript.
@@ -103,8 +106,52 @@ fill_map_region  mapId=1  x=10 y=7  width=9 height=7   autotileKind=18   # a sto
 fill_map_region  mapId=1  x=13 y=2  width=2 height=5   autotileKind=17   # a path into it
 ```
 
-Shapes are computed for the **A2 ground family** (`autotileKind` 16-47). Other tiles are
-written as-is — walls (A3/A4) and waterfalls follow different rules and aren't supported yet.
+Shapes are computed for the **A2 ground family** (`autotileKind` 16-47) and the **A3/A4 wall
+family** (48-127), each with its own table. Walls use `WALL_AUTOTILE_TABLE`, where the four bits
+mean "draw an edge on this side" — so a painted rectangle comes out with proper corners and a
+building is one call instead of a dozen hand-computed tile ids. Overlapping rectangles of the
+same material merge, so an L-shaped building is two calls. Not every A4 kind is a wall: odd
+block rows are, even rows are wall *tops* drawn with the floor table, and the tool tells them
+apart. A1 water and waterfalls use a third table and aren't supported yet.
+
+Two mistakes are easy to make and invisible in a text grid, so the tool checks for both by
+reading the tileset image. Roughly half of an A2 sheet is **overlay material** whose edge
+pieces are transparent: painted on layer 0 those edges show the map background, which renders
+black in game — that is refused unless you pass `allowOverlayOnGround`. And column 0 of each
+row is a **seamless fill** whose edges are drawn identically to its middle, so a patch of it
+has no boundary and reads as a floating slab rather than a path — that is reported as advice.
+Which slots are which differs between tilesets, so `describe_tileset_materials` measures them
+rather than assuming a layout:
+
+```
+Ground materials (opaque — safe as the base layer 0 fill):
+  seamless, no visible boundary: 16, 24, 32, 40
+  outlined, reads as a distinct patch or path: 17, 18, 19, 25, 26, 27, 33, 34, 35, 41, 42, 43, 45
+Overlay materials (transparent edges — layer 1 or above): 20, 22, 28, 30, 36, 37, 38, 39, 44, 46, 47
+```
+
+`skipOccupied` paints only cells that are currently empty, which is what a decoration pass
+wants — without it a later object silently overwrites an earlier one. When a paint does
+overwrite something on an upper layer, the result says so.
+
+`apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
+rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of
+their 16,829 shadow tiles 81.6% carry the value `5` while 83.7% sit immediately right of a
+wall. So every non-wall tile with an A3/A4 tile to its left gets its left half darkened.
+Without it, buildings read as flat cut-outs pasted onto the ground.
+
+`check_map_walkability` answers the question a tile-by-tile view cannot: **can the player
+actually get there?** It floods the map following `Game_CharacterBase.canPass` and reports
+NPCs standing in walls, NPCs sealed inside buildings, doors with no reachable tile in front of
+them, and areas cut off from the rest of the map.
+
+```
+Walkability — 40x30
+  Standable tiles: 832 of 1200
+  Largest connected area: 832 (from 0, 0)
+
+No unreachable events, blocked doors or cut-off areas.
+```
 
 `generate_map_layout` builds a whole map at once — `dungeon` places rooms joined by L-shaped
 corridors, `cave` grows an organic cavern by cellular automata. Both are **guaranteed fully
