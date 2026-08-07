@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (12)
+### Map Management (13)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -69,6 +69,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `get_map_grid` | Render a map as a text grid — walls, ladders, bushes, counters, damage floors, and event positions |
 | `get_map_graph` | Map connection graph — links, one-way routes, unreachable maps, broken and dynamic transfers |
 | `fill_map_region` | Paint a rectangle with a material, computing autotile shapes so edges and corners join correctly |
+| `place_building` | Place a whole building — roof, walls and a working door event — in one call |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
 | `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
 | `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
@@ -133,6 +134,43 @@ Overlay materials (transparent edges — layer 1 or above): 20, 22, 28, 30, 36, 
 `skipOccupied` paints only cells that are currently empty, which is what a decoration pass
 wants — without it a later object silently overwrites an earlier one. When a paint does
 overwrite something on an upper layer, the result says so.
+
+`place_building` is the level above painting: a footprint, a roof and a wall material in,
+roof tiles, wall tiles, a door event and shadows out.
+
+```
+place_building  mapId=1  x=10 y=6  width=5 height=6  roofSet=green  wallKind=57
+                interiorMapId=4  interiorX=8 interiorY=11
+```
+
+It exists because a building is not a rectangle of texture, and the three facts that make it
+one are per-tileset content rather than engine rules — which is why they had to be measured:
+
+- **A roof block sits on a wall block, and the wall is the A3 kind 8 below the roof.** The A3
+  sheet runs roof row / wall row / roof row / wall row, and 81% of the sample maps' roof-over-
+  wall columns use that `+8` pairing. Give `roofKind` and the wall follows automatically; give
+  a mismatched `wallKind` and the tool says so rather than silently building something that
+  looks wrong.
+- **A3 roof materials are flat texture with no edge art**, so a correctly-shaped A3 rectangle
+  still renders as a slab. Real roofs are nine-slice sets on the `Outside_C` sheet with sloped
+  sides and a shingled eave — `roofSet` takes `green`, `white`, `gold` or `brown`, and any
+  other sheet's block can be given as `roofTopLeftTileId`. Those sheets are 16 tiles wide but
+  addressed as two 8-wide halves, so a set is `topLeft + row * 8 + col` and one starting too
+  near a half's edge would wrap; that is refused.
+- **Doors are events, not tiles.** The tile people reach for is a pair of shuttered windows
+  that never touches the ground. A real door is an event carrying a `!Door` sprite whose four
+  "directions" are its animation frames, and the emitted page is the one the shipped maps use —
+  play the open SE, turn through the three opening frames, switch Through on, walk the player
+  in, transfer. 60 of the 107 sample door pages are that exact sequence.
+
+A nine-slice roof's corner pieces are cut away diagonally, so they show whatever is on the
+layer beneath — which on layer 0 is the map background, black in game. The tool measures the
+sheet to find *which* cells are actually cut and refuses only when those specific cells have
+nothing under them, naming the coordinates. Fill the ground first, or pass
+`allowRoofOverEmptyGround`.
+
+Not covered: roofs are rectangles. The sets carry inner-corner pieces for L-shaped roofs
+(recorded in `src/core/blueprint.ts`) and nothing uses them yet.
 
 `apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
 rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of

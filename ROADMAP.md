@@ -343,21 +343,84 @@ batching writes would remove the exposure entirely.
 | 10 — passage flags unconfigured | `describe_tileset_materials` warns when `flags[0]` has no star bit; `check_project` already had the rule |
 | 14 — nothing validated placement | `check_map_walkability` (`src/core/walkability.ts`); `fill_map_region` gained `skipOccupied` and reports upper-layer overwrites |
 | 3 — no wall shape computation | `src/core/wall-autotile.ts`; `fill_map_region` now takes A3/A4 kinds and dispatches to the right table |
+| 4, 11, 13 — roof/wall pairing, nine-slice roofs, doors as events | `place_building` (`src/core/blueprint.ts`) — see [Building blueprints](#building-blueprints) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
 **Deliberately not in the server**, because it is per-tileset content rather than a rule, and
-belongs in a prop/blueprint catalogue that does not exist yet:
+belongs in a prop catalogue that does not exist yet:
 
-- findings 4, 11, 12, 13 — the A3 roof/wall `+8` pairing, the `Outside_C` nine-slice roof sets,
-  how to compose a tree mass, and doors being events. The wall-paint result mentions the
-  pairing, but nothing enforces or supplies any of it.
+- finding 12 — how to compose a tree mass from the single tree's quadrants.
 - findings 5-9 — the generator itself still writes layer 0 only, emits hard rectangles, does
   not frame the map edge, and places no props or events. `generate_map_layout` is unchanged.
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
 
-Still to build: building blueprints so a house is one call rather than a dozen, a per-tileset
-prop catalogue, and the town generator.
+Still to build: a per-tileset prop catalogue, and the town generator.
+
+### Building blueprints
+
+`place_building` takes a footprint, a roof and a wall material and writes the roof tiles, the
+wall tiles, a door event and the shadows in one call.
+
+- `src/core/blueprint.ts` — sheet geometry, the roof set catalogue, `planBuilding`, the door
+  page (pure, unit-tested)
+- `src/tools/blueprint-tools.ts` — the MCP tool
+- `findTransparentTiles` in `src/core/tileset-image.ts` — which roof cells are cut away
+
+This is where findings 4, 11 and 13 stopped being prose. Each of them is per-tileset *content*
+rather than an engine rule, so each had to be measured rather than derived, and the numbers are
+recorded beside the code:
+
+**The `+8` pairing (finding 4).** The A3 sheet runs roof row / wall row / roof row / wall row,
+so block rows 0 and 2 are roofs and 1 and 3 are walls. Counting every sample-map column where
+an A3 roof run has an A3 run directly beneath it: 497 of 614 (81%) use `roofKind + 8`. Passing
+`roofKind` derives the wall; passing a wall from the wrong row, or a mismatched pair, is
+reported rather than silently built. Two rows is the default height for both parts because that
+is what the samples use most (roof runs: 2 rows 304 times, 1 row 225, 3 rows 127; wall runs:
+2 rows 774, 1 row 423, 3 rows 121).
+
+**Nine-slice roofs (finding 11).** `roofSet` takes `green` (384), `white` (389), `gold` (408)
+or `brown` (413) on `Outside_C`; any other sheet's block can be given as `roofTopLeftTileId`.
+The addressing is `topLeft + row * 8 + col` because `Tilemap._addNormalTile` computes the
+source column as `(floor(tileId / 128) % 2) * 8 + tileId % 8` — the object sheets are 16 tiles
+wide but read as two 8-wide halves, so a block starting within two columns of a half's edge
+wraps to the other side of the sheet, and that is refused. `tests/core/blueprint.test.ts`
+checks the nine-slice arithmetic against that formula for all 1024 object tile ids rather than
+against a restatement of itself.
+
+The catalogue also records each set's **inner-corner pieces**, which are what an L-shaped roof
+needs. Nothing uses them: footprints are rectangles.
+
+**Roof corners are cut away.** The sloped corner pieces are diagonally transparent, so they
+show whatever is on the layer below — on layer 0 that is the map background, black in game.
+This is finding 1 in a second place, and it is handled the same way: measure the sheet, and
+refuse. But only the cut cells need ground, not the whole roof, so `findTransparentTiles`
+measures which ones they are — for a 5x3 green roof that is exactly 2 tiles, the two top
+corners, and the refusal names them. Nine-slice roofs default to layer 2, which also matches
+the samples: of 537 roof-corner tiles, **0 are on layer 0**, 58 on layer 2 and 477 on layer 3,
+and 98.1% have something painted beneath them. (Layer 2 rather than 3 so that layer 3 stays
+free for anything that should draw in front of the roof.)
+
+**Doors as events (finding 13).** The emitted page is the one the shipped maps use — 60 of the
+107 sample door pages are the exact command sequence `250, 205, 505×6, 205, 505, 250, 201`:
+play `Open1`, step the sprite through its opening frames, turn Through on, walk the player
+forward, play `Move1`, transfer. A door sprite stores its three frames as *directions*, so the
+animation is three turn commands, not a graphic change. A Set Movement Route is also stored
+twice — inside the 205 command and again as one 505 line per step, minus the end marker — and
+writing only the 205 leaves the editor showing an empty route. The door goes on the bottom wall
+row, where 98 of 107 sample doors stand, and the player approaches from the tile below. Without
+`interiorMapId` the door still animates, and the result says it leads nowhere.
+
+**Verified by rendering, not only by tests.** A map of nine buildings — all four roof sets, a
+2-row roof, a 9-wide one, the minimum 2x2, an A3 roof for comparison, and a deliberately
+mismatched pair — was built by driving the real server over stdio and rendered with
+`scripts/render-map.mjs`. The buildings read as buildings; the A3 roof reads as the flat slab
+finding 11 predicted; the mismatched pair reads as mismatched; `check_map_walkability` reports
+every door approachable and one connected area.
+
+**Still open here:** roofs are rectangles, so no L-shapes and no inner corners. The dormer and
+window variants that sit beside each roof set on the sheet are not offered. Interiors are not
+generated, so `interiorMapId` has to point at a map you made yourself.
 
 `describe_tileset_materials` classifies by comparing **mean colours** rather than pixels.
 That detail matters: a cobblestone texture differs from itself pixel by pixel about as much as
@@ -372,13 +435,15 @@ That is the honest measure of what is missing:
 
 - `fill_map_region` paints one tile id per call, so every non-A2 object — every door, window,
   sign, barrel, half of every tree — is its own call. A `paint_tiles` taking a list of
-  `{x, y, tileId, layer}`, or a stamp/blueprint primitive, would collapse almost all of it.
-- A3 shapes had to be computed outside the server and written as raw tile ids, because shape
-  computation is A2-only.
+  `{x, y, tileId, layer}` would collapse almost all of what is left. ~~*Fixed for buildings:*~~
+  `place_building` replaces the dozen-odd calls a house used to take with one.
+- ~~A3 shapes had to be computed outside the server and written as raw tile ids, because shape
+  computation is A2-only.~~ *Fixed:* `src/core/wall-autotile.ts`.
 - `autotileKind`'s description says "columns 1-4 are patch materials with visible outlines".
   Column 4 is the first *overlay* material, so a caller following the description lands
   directly in finding 1.
-- The shadow (z=4) and region (z=5) planes have no tool at all.
+- ~~The shadow (z=4) plane has no tool at all.~~ *Fixed:* `apply_wall_shadows`, and
+  `place_building` runs it. The region plane (z=5) still has none.
 - A1 (water, waterfalls) is not supported, so a generated map can have no water.
 
 ### Still open
@@ -388,11 +453,14 @@ That is the honest measure of what is missing:
   than map data. A generated "wall" only blocks if that material is configured impassable.
   `get_map_grid` shows what is actually walkable, and `check_project` flags tilesets whose
   passage was never configured.
-- **No wall height.** True RPG Maker walls are A3/A4, which need `WALL_AUTOTILE_TABLE` and
-  vertical top/bottom pairing. A2-only layouts read as floor-vs-surround, not as rooms with
-  raised walls.
+- **The generators still don't use any of this.** `fill_map_region` handles A3/A4 walls and
+  `place_building` assembles them into houses, but `generate_map_layout` writes A2 on layer 0
+  only — its dungeons and caves still read as floor-vs-surround rather than rooms with raised
+  walls.
 - **Town and interior generators.** Building plots, roads, and furnished rooms are a
-  different problem from cave/dungeon carving and were left out.
+  different problem from cave/dungeon carving and were left out. `place_building` is the
+  primitive a town generator would place; nothing chooses *where* to place them yet, and
+  interiors are not generated at all, so a door's destination has to be a map you made.
 
 ### Scope and open questions
 

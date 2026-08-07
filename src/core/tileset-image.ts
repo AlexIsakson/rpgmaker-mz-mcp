@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { PNG } from 'pngjs';
 import { TILE_ID_A2, TILE_ID_A3, getAutotileKind } from './autotile.js';
+import { sheetColumn, sheetRow } from './blueprint.js';
 
 /**
  * Two properties of an A2 ground material decide whether painting it will look
@@ -61,7 +62,7 @@ export interface A2Material {
   edgeContrast: number;
 }
 
-interface Rgba {
+export interface Rgba {
   width: number;
   height: number;
   data: Buffer;
@@ -201,4 +202,75 @@ export async function loadA2Materials(
 
 export function clearMaterialCache(): void {
   cache.clear();
+  objectSheetCache.clear();
+}
+
+// --- Object sheets (B/C/D/E) ------------------------------------------------
+
+const TILE_SIZE = 48;
+
+/**
+ * Which of the given object tiles have transparent pixels.
+ *
+ * This is the same problem finding 1 raised for A2 overlays, in a different
+ * place: a roof set's sloped corner pieces are cut diagonally, so wherever the
+ * slope has been cut away the tile shows whatever is on the layer below. With
+ * nothing below, that is the map background — black in game. Knowing *which*
+ * cells of a set are cut means only those cells need ground beneath them, rather
+ * than refusing to place a roof over any empty tile.
+ */
+export function findTransparentTiles(img: Rgba, tileIds: number[]): Set<number> {
+  const transparent = new Set<number>();
+
+  for (const tileId of tileIds) {
+    const ox = sheetColumn(tileId) * TILE_SIZE;
+    const oy = sheetRow(tileId) * TILE_SIZE;
+    let holes = 0;
+
+    for (let y = 0; y < TILE_SIZE; y++) {
+      for (let x = 0; x < TILE_SIZE; x++) {
+        const px = ox + x;
+        const py = oy + y;
+        if (px >= img.width || py >= img.height) continue;
+        if (img.data[(py * img.width + px) * 4 + 3] <= OPAQUE_ALPHA) holes++;
+      }
+    }
+
+    // A handful of soft edge pixels is antialiasing; a cut corner is thousands.
+    if (holes > TILE_SIZE * 2) transparent.add(tileId);
+  }
+
+  return transparent;
+}
+
+const objectSheetCache = new Map<string, PNG | null>();
+
+async function loadSheet(projectPath: string, sheetName: string): Promise<PNG | null> {
+  const file = path.join(projectPath, 'img', 'tilesets', `${sheetName}.png`);
+  if (objectSheetCache.has(file)) return objectSheetCache.get(file) ?? null;
+
+  let png: PNG | null = null;
+  try {
+    png = PNG.sync.read(await fs.readFile(file));
+  } catch {
+    png = null;
+  }
+
+  objectSheetCache.set(file, png);
+  return png;
+}
+
+/**
+ * Which of `tileIds` are cut away in the given sheet. Returns null when the
+ * image is missing or unreadable, so a caller can degrade to "no advice" rather
+ * than refuse to place a building over a missing PNG.
+ */
+export async function loadTransparentObjectTiles(
+  projectPath: string,
+  sheetName: string,
+  tileIds: number[]
+): Promise<Set<number> | null> {
+  const png = await loadSheet(projectPath, sheetName);
+  if (!png) return null;
+  return findTransparentTiles(png, tileIds);
 }
