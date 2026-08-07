@@ -50,8 +50,36 @@ export class FileHandler {
     // Atomic write: write to tmp, then rename
     const json = JSON.stringify(data, null, 2) + '\n';
     await fs.writeFile(tmpPath, json, 'utf-8');
-    await fs.rename(tmpPath, filePath);
+    await FileHandler.renameWithRetry(tmpPath, filePath);
     logger.debug(`Written: ${filePath}`);
+  }
+
+  /**
+   * Rename, retrying briefly on the transient errors Windows raises when
+   * something else holds a handle on the target — a virus scanner or the
+   * indexer catching the file between the write and the rename.
+   *
+   * Observed in practice: three of 508 consecutive map writes failed and all
+   * three succeeded on an immediate replay. The failure was never reproduced on
+   * demand, so this is a mitigation rather than a diagnosis; if it ever fires
+   * repeatedly for the same file, the cause is something else and the final
+   * error still propagates.
+   */
+  private static async renameWithRetry(from: string, to: string): Promise<void> {
+    const retryableCodes = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await fs.rename(from, to);
+        if (attempt > 0) logger.debug(`Rename of ${to} succeeded on attempt ${attempt + 1}`);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? '';
+        if (attempt >= 4 || !retryableCodes.has(code)) throw error;
+        logger.debug(`Rename of ${to} failed with ${code}, retrying`);
+        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+      }
+    }
   }
 
   /**
