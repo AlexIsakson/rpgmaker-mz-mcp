@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (13)
+### Map Management (14)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -69,6 +69,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `get_map_grid` | Render a map as a text grid — walls, ladders, bushes, counters, damage floors, and event positions |
 | `get_map_graph` | Map connection graph — links, one-way routes, unreachable maps, broken and dynamic transfers |
 | `fill_map_region` | Paint a rectangle with a material, computing autotile shapes so edges and corners join correctly |
+| `paint_tiles` | Write many individual tiles at once — props, windows, a whole decoration pass |
 | `place_building` | Place a whole building — roof, walls and a working door event — in one call |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
 | `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
@@ -134,6 +135,24 @@ Overlay materials (transparent edges — layer 1 or above): 20, 22, 28, 30, 36, 
 `skipOccupied` paints only cells that are currently empty, which is what a decoration pass
 wants — without it a later object silently overwrites an earlier one. When a paint does
 overwrite something on an upper layer, the result says so.
+
+`paint_tiles` is the other half of painting: not a rectangle of one material, but a few hundred
+individual tiles, each a different object — a window here, a barrel there, half of every tree.
+Each entry carries its own tile and layer, so one call can span several layers.
+
+```
+paint_tiles  mapId=1  tiles=[{x:4, y:8, tileId:114, layer:1},
+                             {x:4, y:9, tileId:122, layer:1}, ...]
+```
+
+It is deliberately not a new behaviour: painting the same tiles one at a time lands on exactly
+the same grid, and a test asserts that. What it removes is one whole-map file write and one
+shape refresh **per tile** — a 144-tile decoration pass is one call instead of 144. Both shape
+tables are run rather than one being picked from the material, so a batch touching ground and
+wall autotiles at once comes out right, and `skipOccupied` counts the batch's own writes so a
+later entry cannot clobber an earlier one. A bad entry — an overlay material bound for layer 0 —
+refuses the whole batch rather than applying part of it, because a partial write leaves no way
+to tell what landed.
 
 `place_building` is the level above painting: a footprint, a roof and a wall material in,
 roof tiles, wall tiles, a door event and shadows out.

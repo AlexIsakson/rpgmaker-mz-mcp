@@ -19,6 +19,7 @@ import {
   usesWallAutotileTable,
   isTileA3,
 } from '../core/wall-autotile.js';
+import { applyPlacements, type Placement } from '../core/tile-batch.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import { TilesetReader } from '../core/tileset-reader.js';
@@ -32,6 +33,13 @@ const A2_KIND_MIN = getAutotileKind(TILE_ID_A2);
 const A2_KIND_MAX = getAutotileKind(TILE_ID_A3) - 1;
 /** A3 walls and roofs are 48-79, A4 walls and wall tops 80-127. */
 const AUTOTILE_KIND_MAX = getAutotileKind(TILE_ID_MAX) - 1;
+
+/**
+ * Cap on one paint_tiles call. A decoration pass over a 40x30 town runs to a few
+ * hundred tiles, so this is well clear of real use while keeping a runaway list
+ * from producing a response nothing can read.
+ */
+const BATCH_LIMIT = 4096;
 
 export function registerMapPaintTools(server: McpServer): void {
   server.tool(
@@ -233,6 +241,204 @@ export function registerMapPaintTools(server: McpServer): void {
         lines.push('Use get_map_grid to see the result as a text grid.');
 
         logger.info(`Filled map ${mapId} layer ${layer} at (${x},${y}) ${clippedWidth}x${clippedHeight}`);
+
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    'paint_tiles',
+    'Write many individual tiles in one call — the counterpart to ' +
+      'fill_map_region, for the scattered work: props, windows, signs, the ' +
+      'quadrants of a tree, a decoration pass. Each entry names its own tile and ' +
+      'layer, so one call can cover several layers at once. The result is exactly ' +
+      'what painting the same tiles one at a time would produce — it just takes ' +
+      'one file write and one shape refresh instead of hundreds.',
+    {
+      mapId: z.number().int().positive().describe('Map ID'),
+      tiles: z.array(
+        z.object({
+          x: z.number().int().describe('X position in tiles'),
+          y: z.number().int().describe('Y position in tiles'),
+          tileId: z.number().int().min(0).optional()
+            .describe(
+              'Raw tile id. This is the usual choice here — B/C/D/E object tiles have no ' +
+              'shapes and are correct as written. 0 clears the cell.'
+            ),
+          autotileKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX).optional()
+            .describe(
+              'Autotile material, as an alternative to tileId, when a cell should take part ' +
+              'in shape computation with its neighbours.'
+            ),
+          layer: z.number().int().min(0).max(TILE_LAYERS - 1).optional()
+            .describe('Tile layer 0-3. Defaults to 0.'),
+        })
+      ).min(1).max(BATCH_LIMIT)
+        .describe(`Tiles to write, up to ${BATCH_LIMIT}. Later entries win over earlier ones.`),
+      skipOccupied: z.boolean().default(false)
+        .describe(
+          'Only write cells that are currently empty, so a later object cannot silently ' +
+          'overwrite an earlier one. Applies within the batch as well as to what was already ' +
+          'on the map.'
+        ),
+      computeShapes: z.boolean().default(true)
+        .describe(
+          'Recompute autotile shapes over the affected area. Turn it off when the batch ' +
+          'carries raw autotile ids whose shapes were worked out elsewhere and must be ' +
+          'written exactly as given.'
+        ),
+      allowOverlayOnGround: z.boolean().default(false)
+        .describe(
+          'Permit an A2 overlay material (one with transparent edge pieces) on layer 0. ' +
+          'Normally refused, because its edges show the map background as black in game.'
+        ),
+    },
+    async ({ mapId, tiles, skipOccupied, computeShapes, allowOverlayOnGround }) => {
+      try {
+        const badEntry = tiles.findIndex(
+          (t) => (t.tileId === undefined) === (t.autotileKind === undefined)
+        );
+        if (badEntry !== -1) {
+          const t = tiles[badEntry];
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `Entry ${badEntry} at (${t.x}, ${t.y}) must give exactly one of tileId or ` +
+                'autotileKind.',
+            }],
+            isError: true,
+          };
+        }
+
+        const project = requireProject();
+        const mapPath = path.join(project.dataPath, mapFilename(mapId));
+        if (!(await FileHandler.exists(mapPath))) {
+          return {
+            content: [{ type: 'text' as const, text: `Map ID ${mapId} not found.` }],
+            isError: true,
+          };
+        }
+
+        const mapData = (await FileHandler.readJsonRaw(mapPath)) as MapData;
+
+        const resolved = tiles.map((t) => ({
+          x: t.x,
+          y: t.y,
+          layer: t.layer ?? 0,
+          tileId: t.autotileKind !== undefined ? makeAutotileId(t.autotileKind, 0) : t.tileId!,
+        }));
+
+        // The whole batch is checked before any of it is written. A partial
+        // application would be worse than a refusal: you could not tell from the
+        // result which tiles had landed.
+        const overlayKinds = new Set<number>();
+        const groundKinds = new Set(
+          resolved
+            .filter((t) => t.layer === 0 && isTileA2(t.tileId))
+            .map((t) => getAutotileKind(t.tileId))
+        );
+        if (groundKinds.size > 0 && !allowOverlayOnGround) {
+          const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
+          const materials = await loadA2Materials(project.path, tileset.tilesetNames);
+          for (const kind of groundKinds) {
+            const material = materials?.find((m) => m.kind === kind);
+            if (material && material.opacity !== 'ground') overlayKinds.add(kind);
+          }
+          if (overlayKinds.size > 0) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text:
+                  `A2 kind(s) ${[...overlayKinds].join(', ')} in "${tileset.name}" are overlay ` +
+                  'materials: their edge pieces are transparent, so on layer 0 they show the map ' +
+                  'background, which renders black in game. Nothing was written.\n\n' +
+                  'Move those entries to layer 1 or above over a ground material, use ' +
+                  'describe_tileset_materials to see which kinds are ground, or pass ' +
+                  'allowOverlayOnGround if this is deliberate.',
+              }],
+              isError: true,
+            };
+          }
+        }
+
+        const byLayer = new Map<number, Placement[]>();
+        for (const t of resolved) {
+          const list = byLayer.get(t.layer) ?? [];
+          list.push({ x: t.x, y: t.y, tileId: t.tileId });
+          byLayer.set(t.layer, list);
+        }
+
+        let painted = 0;
+        let skipped = 0;
+        let duplicates = 0;
+        let overwritten = 0;
+        const outOfBounds: string[] = [];
+        const perLayer: string[] = [];
+
+        for (const layer of [...byLayer.keys()].sort((a, b) => a - b)) {
+          const result = applyPlacements(readLayer(mapData, layer), byLayer.get(layer)!, {
+            skipOccupied,
+            computeShapes,
+          });
+          writeLayer(mapData, layer, result.grid);
+
+          painted += result.painted;
+          skipped += result.skipped;
+          duplicates += result.duplicates;
+          overwritten += result.overwritten;
+          outOfBounds.push(...result.outOfBounds.map((p) => `(${p.x}, ${p.y})`));
+          perLayer.push(`  layer ${layer}: ${result.painted} tile(s)`);
+        }
+
+        await FileHandler.writeJson(mapPath, mapData);
+        await project.getVersionSync().bump();
+
+        logger.info(`Painted ${painted} tile(s) on map ${mapId} across ${byLayer.size} layer(s)`);
+
+        const lines = [
+          `Wrote ${painted} of ${tiles.length} tile(s) to map ${mapId}.`,
+          ...perLayer,
+        ];
+        if (outOfBounds.length > 0) {
+          lines.push(
+            `Discarded ${outOfBounds.length} placement(s) outside the ${mapData.width}x${mapData.height} ` +
+            `map: ${outOfBounds.slice(0, 8).join(' ')}${outOfBounds.length > 8 ? ' ...' : ''}`
+          );
+        }
+        if (skipped > 0) {
+          lines.push(`Left ${skipped} already-occupied cell(s) untouched (skipOccupied).`);
+        }
+        if (duplicates > 0) {
+          lines.push(
+            `${duplicates} cell(s) were written more than once by this batch and kept the last ` +
+            'value. That is usually a mistake in the list rather than an intention.'
+          );
+        }
+        if (overwritten > 0) {
+          lines.push(
+            `Replaced ${overwritten} tile(s) that were already on the map. Pass skipOccupied to ` +
+            'paint only empty cells.'
+          );
+        }
+        lines.push(
+          computeShapes
+            ? 'Autotile shapes were computed once over the affected area, after every tile ' +
+              'landed. Both the ground and wall tables were run, so a batch touching each ' +
+              'family comes out right; A1 water follows a third table and passed through ' +
+              'untouched.'
+            : 'Shapes were not computed — every tile was written exactly as given.'
+        );
+        lines.push('Use get_map_grid to see the result as a text grid.');
 
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {

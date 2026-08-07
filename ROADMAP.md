@@ -344,13 +344,19 @@ batching writes would remove the exposure entirely.
 | 14 — nothing validated placement | `check_map_walkability` (`src/core/walkability.ts`); `fill_map_region` gained `skipOccupied` and reports upper-layer overwrites |
 | 3 — no wall shape computation | `src/core/wall-autotile.ts`; `fill_map_region` now takes A3/A4 kinds and dispatches to the right table |
 | 4, 11, 13 — roof/wall pairing, nine-slice roofs, doors as events | `place_building` (`src/core/blueprint.ts`) — see [Building blueprints](#building-blueprints) |
+| ergonomics — 440 of 526 calls were 1x1 rectangles | `paint_tiles` (`src/core/tile-batch.ts`) — see [Batched tile writes](#batched-tile-writes) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
 **Deliberately not in the server**, because it is per-tileset content rather than a rule, and
 belongs in a prop catalogue that does not exist yet:
 
-- finding 12 — how to compose a tree mass from the single tree's quadrants.
+- finding 12 — how to compose a tree mass from the single tree's quadrants. **Rendering a test
+  case sharpened the rule:** "dense tile where every neighbour is woodland" is not enough. The
+  dense tile is drawn to tile seamlessly against *other dense tiles*; a single dense tile ringed
+  by the round single-tree sprites reads as a hard-edged square patch cut into the canopy — see
+  the 3x3 woodland block in the `paint_tiles` verification. The dense tile needs neighbours that
+  are dense too, so a woodland has to be at least 3x3 *dense* cells before any of it can be used.
 - findings 5-9 — the generator itself still writes layer 0 only, emits hard rectangles, does
   not frame the map edge, and places no props or events. `generate_map_layout` is unchanged.
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
@@ -422,6 +428,44 @@ every door approachable and one connected area.
 window variants that sit beside each roof set on the sheet are not offered. Interiors are not
 generated, so `interiorMapId` has to point at a map you made yourself.
 
+### Batched tile writes
+
+`paint_tiles` takes a list of `{x, y, tileId, layer}` and writes all of it at once — the
+counterpart to `fill_map_region` for the scattered work that made up 440 of a hand-built town's
+526 calls.
+
+- `src/core/tile-batch.ts` — `applyPlacements` (pure, unit-tested)
+- the tool lives beside `fill_map_region` in `src/tools/map-paint-tools.ts`
+
+**It is deliberately not a new behaviour.** Because every single-tile paint already fixes up its
+neighbours, a sequence of them converges on the same grid a batch produces, and a test asserts
+that equivalence directly. What a batch removes is one whole-map file write and one shape
+refresh per tile: the roadmap's own robustness note recorded three transient Windows rename
+failures across 508 `fill_map_region` calls, and batching removes that exposure rather than
+retrying past it.
+
+Two details that are easy to get wrong:
+
+- **Both shape tables are run**, not one picked from the material. A layer can hold ground and
+  wall autotiles at once, each pass ignores what the other owns, and a batch that touches both
+  families only comes out right if both run. A1 water belongs to a third table and passes
+  through untouched.
+- **`skipOccupied` applies within the batch**, not only against what was already on the map.
+  Its whole purpose is that a later object cannot clobber an earlier one, and batching would
+  quietly change the meaning of the flag if the batch's own writes did not count.
+
+Refusals cover the whole batch or none of it — a partial application would leave no way to tell
+which tiles landed. That is what the A2-overlay-on-layer-0 check does: it validates every entry
+before writing anything.
+
+**Verified by driving the server:** a 144-tile decoration pass — tree lines framing both map
+edges, a woodland block, shuttered windows on two buildings, plus two deliberately
+out-of-bounds entries — went in as one call, and the two bad entries were discarded and
+reported rather than throwing. `check_map_walkability` then caught something real about the
+test map rather than the tool: the tree line runs flush to the map border, and because a tree's
+canopy half is passable while its trunk half is not, the strip of grass above it is a walkable
+area cut off from everything else.
+
 `describe_tileset_materials` classifies by comparing **mean colours** rather than pixels.
 That detail matters: a cobblestone texture differs from itself pixel by pixel about as much as
 it differs from grass, so a per-pixel metric calls it "outlined" against its own middle. The
@@ -433,10 +477,11 @@ fills score 0.000-0.002 edge contrast, outlined patches 0.10-0.17.
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.
 That is the honest measure of what is missing:
 
-- `fill_map_region` paints one tile id per call, so every non-A2 object — every door, window,
-  sign, barrel, half of every tree — is its own call. A `paint_tiles` taking a list of
-  `{x, y, tileId, layer}` would collapse almost all of what is left. ~~*Fixed for buildings:*~~
-  `place_building` replaces the dozen-odd calls a house used to take with one.
+- ~~`fill_map_region` paints one tile id per call, so every non-A2 object — every door, window,
+  sign, barrel, half of every tree — is its own call.~~ *Fixed:* `place_building` replaces the
+  dozen-odd calls a house used to take, and `paint_tiles` takes a list of
+  `{x, y, tileId, layer}` for everything else — a decoration pass of 144 tiles across a whole
+  map is now one call.
 - ~~A3 shapes had to be computed outside the server and written as raw tile ids, because shape
   computation is A2-only.~~ *Fixed:* `src/core/wall-autotile.ts`.
 - `autotileKind`'s description says "columns 1-4 are patch materials with visible outlines".
