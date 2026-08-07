@@ -14,6 +14,8 @@ import { registerConsistencyTools } from './tools/consistency-tools.js';
 import { registerEventTools } from './tools/event-tools.js';
 import { registerEventFlowTools } from './tools/event-flow-tools.js';
 import { registerScenarioTools } from './tools/scenario-tools.js';
+import { registerTilesetTools } from './tools/tileset-tools.js';
+import { registerWalkabilityTools } from './tools/walkability-tools.js';
 
 async function main(): Promise<void> {
   logger.info('Starting RPG Maker MZ MCP Server...');
@@ -35,6 +37,8 @@ async function main(): Promise<void> {
   registerEventTools(server);
   registerEventFlowTools(server);
   registerScenarioTools(server);
+  registerTilesetTools(server);
+  registerWalkabilityTools(server);
 
   logger.info('All tools registered');
 
