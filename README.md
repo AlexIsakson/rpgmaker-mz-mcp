@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (16)
+### Map Management (17)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -73,6 +73,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `place_building` | Place a whole building — roof, walls and a working door event — in one call |
 | `list_tileset_props` | What named objects this tileset offers — barrels, signs, trees, windows |
 | `place_prop` | Place a named object by name, however many tiles it is made of |
+| `generate_town` | Generate a whole town — streets, buildings with doors, tree line, decoration |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
 | `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
 | `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
@@ -217,6 +218,36 @@ prop has a hole, the result says which prop owns it, so `Tent A`'s gap reports a
 Object tiles are cut out around their edges, so they need something painted beneath them —
 the same check `place_building` makes for a roof's sloped corners, and it names the cells that
 would show through.
+
+`generate_town` puts the whole stack together: ground, streets, rows of buildings with working
+door events, a tree line framing the map edge, and a decoration pass — one call, reproducible
+from its seed.
+
+```
+generate_town  mapId=1  seed=3  groundKind=16  roadKind=18  wallKind=57
+```
+
+The shape of the town comes from a constraint of the building primitive: a door sits on a
+building's bottom row and is entered from the tile below, so a house only works with a street
+directly beneath it. The layout is therefore bands — a row of buildings sitting on the street
+it faces, repeated down the map. Cross streets run the full height and intersect every road,
+which makes the network **connected by construction** rather than by luck, and they cut the tree
+line at four points so the town has ways in instead of being sealed inside it.
+
+Everything the earlier findings asked for is enforced before anything is written rather than
+audited afterwards: buildings never overlap each other or a street, every door opens onto road,
+props go only on free ground — and against a wall or a street edge in preference to the middle
+of a block, because scattering them uniformly leaves a lone crate standing in a field. The
+outermost ring of the map is left clear of trees on purpose: a tree's canopy is walkable and its
+trunk is not, so a tree line flush against the edge would seal off the strip outside it.
+
+Those properties are asserted across 25 seeds in `tests/core/towngen.test.ts`, against the plan
+rather than against a map file — the planner is pure, and the tool applies its output with
+`fill_map_region`, `placeBuildingOnMap` and `place_prop`.
+
+**Not generated:** interiors, so every door animates but leads nowhere until you make a map and
+point it there; NPCs; and buildings on both sides of a street, which needs a door on a
+building's top edge and the building primitive has no such thing.
 
 `apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
 rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of

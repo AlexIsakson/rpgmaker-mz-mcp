@@ -346,16 +346,72 @@ batching writes would remove the exposure entirely.
 | 4, 11, 13 — roof/wall pairing, nine-slice roofs, doors as events | `place_building` (`src/core/blueprint.ts`) — see [Building blueprints](#building-blueprints) |
 | ergonomics — 440 of 526 calls were 1x1 rectangles | `paint_tiles` (`src/core/tile-batch.ts`) — see [Batched tile writes](#batched-tile-writes) |
 | 12 — per-tileset prop knowledge | `list_tileset_props` / `place_prop` (`src/core/props.ts`) — see [The prop catalogue](#the-prop-catalogue) |
+| 5, 8, 9, 14 — upper layers, framing the edge, decoration and events, validated placement | `generate_town` (`src/core/towngen.ts`) — see [The town generator](#the-town-generator) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
 **Still not in the server:**
 
-- findings 5-9 — the generator itself still writes layer 0 only, emits hard rectangles, does
-  not frame the map edge, and places no props or events. `generate_map_layout` is unchanged.
+- findings 6 and 7 — `generate_map_layout` is unchanged. Its caves still over-smooth into one
+  convex blob, its dungeons are axis-aligned rooms on one elevation, and both write layer 0
+  only. The town generator addressed 5, 8 and 9 on its own path; nothing has been carried back
+  to the cave and dungeon algorithms.
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
 
-Still to build: the town generator, and interiors.
+Still to build: interiors, and NPCs.
+
+### The town generator
+
+`generate_town` puts the whole stack together — ground, streets, buildings with door events, a
+tree line, a decoration pass — in one reproducible call.
+
+- `src/core/towngen.ts` — `planTown`, pure and unit-tested
+- `src/tools/towngen-tools.ts` — the MCP tool
+- `src/core/building-placement.ts` — the building application `place_building` and the town
+  generator share, extracted so a house is assembled the same way whether one was asked for or
+  forty were
+
+**The layout is dictated by a constraint of the building primitive,** which is worth stating
+plainly because it shaped everything else: a door sits on a building's bottom wall row and is
+entered from the tile below it, so a house only functions with a street directly beneath it. The
+town is therefore bands — a row of buildings sitting on the street it faces — rather than
+free-standing plots. Cross streets run the full map height and intersect every road, so the
+network is **connected by construction**, the same argument the dungeon generator makes for its
+corridors; they also cut the tree line at four points, so the town has entrances instead of
+being sealed inside its own frame.
+
+**Everything the earlier findings asked for is enforced before anything is written**, rather
+than audited after:
+
+| Finding | How the planner handles it |
+|---|---|
+| 5 — only layer 0 used | ground and walls on 0, props on 1, roofs on 2 |
+| 8 — nothing frames the map edge | a tree line fills the border band |
+| 9 — no decoration, no events | props on free ground; a door event per building |
+| 14 — nothing validated placement | props can only go where nothing is built, and never on the tile in front of a door |
+
+Those are asserted across 25 seeds against the *plan*, with no map file involved: no two
+buildings overlap, none sits on a street, every door's approach tile is road, the street network
+floods to a single component, and no prop lands on a building or in a street.
+
+**Two things the render changed.** Props scattered uniformly over free ground put a lone crate
+in the middle of a field, so they are now drawn from tiles beside a wall or a street before the
+open middle of a block. And the tree line does not run to the map edge: a tree's canopy tile is
+passable and its trunk is not, so a line flush against the border seals the strip outside it —
+exactly the isolated-area the `paint_tiles` verification turned up. Leaving the outermost ring
+clear keeps that strip joined to the streets that cut through the trees, and the audit now
+reports one connected area for the whole map.
+
+**Still open here:**
+
+- **Buildings only line one side of a street.** A band faces the road below it, so the ground
+  above each row is open. Housing both sides needs a door on a building's *top* edge, and
+  `place_building` has no such thing — the door sprite, the movement route and the approach tile
+  all assume the player walks in from below.
+- **No interiors.** Every door animates and leads nowhere until a map exists to point it at.
+- **No NPCs.** The generator emits door events and nothing else.
+- **Blocks are rectangles.** Finding 7 applies here too: streets are straight, plots are grids,
+  and nothing meanders.
 
 ### The prop catalogue
 
