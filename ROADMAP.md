@@ -348,6 +348,7 @@ batching writes would remove the exposure entirely.
 | 12 — per-tileset prop knowledge | `list_tileset_props` / `place_prop` (`src/core/props.ts`) — see [The prop catalogue](#the-prop-catalogue) |
 | 5, 8, 9, 14 — upper layers, framing the edge, decoration and events, validated placement | `generate_town` (`src/core/towngen.ts`) — see [The town generator](#the-town-generator) |
 | doors that led nowhere | `generate_interior` / `generate_interiors` (`src/core/interiorgen.ts`) — see [Interiors](#interiors) |
+| 9 — nobody in the places built | `place_npc` / `populate_map` (`src/core/npcgen.ts`) — see [NPCs](#npcs) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
@@ -359,7 +360,7 @@ batching writes would remove the exposure entirely.
   to the cave and dungeon algorithms.
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
 
-Still to build: NPCs, and carrying any of this back to the cave and dungeon generators.
+Still to build: carrying any of this back to the cave and dungeon generators.
 
 ### The town generator
 
@@ -409,7 +410,7 @@ reports one connected area for the whole map.
   above each row is open. Housing both sides needs a door on a building's *top* edge, and
   `place_building` has no such thing — the door sprite, the movement route and the approach tile
   all assume the player walks in from below.
-- **No NPCs.** The generator emits door events and nothing else.
+- **The generator itself emits no NPCs.** `populate_map` is a separate pass over a finished map.
 - **Blocks are rectangles.** Finding 7 applies here too: streets are straight, plots are grids,
   and nothing meanders.
 
@@ -464,9 +465,43 @@ unreachable. That is not a generator bug: **the interior maps that ship with the
 the identical complaint.** The tool now takes `startX`/`startY`, and with the arrival tile given
 both a shipped room and a generated one come out clean.
 
-**Still open here:** a room is one rectangle — no NPCs, shops, stairs or upper floors, and
-nothing varies but the furniture. Rooms are only made for doors that lead nowhere, so hand-made
-links survive unless `relink` is passed.
+**Still open here:** a room is one rectangle — no shops, stairs or upper floors, and nothing
+varies but the furniture. Rooms are only made for doors that lead nowhere, so hand-made links
+survive unless `relink` is passed.
+
+### NPCs
+
+`populate_map` scatters people over a finished map; `place_npc` puts one somewhere specific.
+
+- `src/core/npcgen.ts` — sheet naming, dialogue, the page, and placement (pure, unit-tested)
+- `src/tools/npc-tools.ts` — the three MCP tools
+
+**The ground truth is elsewhere this time.** `samplemaps` is scenery templates and contains not
+one talking NPC, so the numbers come from the 70 talking pages in the DLC demo projects: Action
+Button, priority "same as characters", fixed movement, `walkAnime` and `stepAnime` both on so the
+sprite idles in place (28 of 70; Player Touch with everything else identical is next at 21).
+Show Text carries MZ's five-parameter list and a box holds four lines — 31 pages use
+`["", 0, 0, 2, ""]`. Sheet naming follows `ImageManager`: `$` means one big character, anything
+else eight in a 4x2 grid, `!` means an object drawn without a shadow.
+
+**Placement is a connectivity problem.** An NPC blocks its tile, so one in a doorway seals off
+what is behind it. Each candidate is accepted only if the reachable area stays exactly as
+connected with it as without, and door approach tiles are excluded outright — the guarantee is
+enforced per placement and asserted across seeds, not audited afterwards.
+
+**The interesting bug was in the model of "connected".** The first version flooded on plain
+adjacency and cheerfully put villagers on top of an interior's walls. Passage flags are
+directional, so two adjacent standable tiles can be mutually unreachable: a room's wall top is
+standable and sits right beside the floor, but nothing can step onto it. `check_map_walkability`
+reported them as `event-unreachable`, which is how it was caught. Reachability now goes through
+the engine's own `canPass`, exported from `walkability.ts` for the purpose, and candidates are
+restricted to the area the reference tile can actually reach.
+
+**Deliberately not guaranteed:** `movement=random`. A wandering NPC can walk into a doorway at
+runtime, and no static check can see that — the tool says so rather than pretending otherwise.
+
+**Still open here:** the dialogue is placeholder text, and there are no shopkeepers, quest givers
+or anything with a switch behind it — every NPC is one page that says one thing.
 
 ### The prop catalogue
 

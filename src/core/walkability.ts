@@ -70,13 +70,39 @@ export interface WalkabilityReport {
   issues: WalkabilityIssue[];
 }
 
+/**
+ * Which tiles the player could occupy, as `grid[y][x]`.
+ *
+ * Exposed because placement is a connectivity problem, not just a rendering
+ * one: anything that blocks a tile — an NPC, a prop — has to be checked against
+ * this before it goes down.
+ */
+export function standableGrid(map: MapData, flags: number[]): boolean[][] {
+  const grid: boolean[][] = [];
+  for (let y = 0; y < map.height; y++) {
+    const row: boolean[] = [];
+    for (let x = 0; x < map.width; x++) row.push(isStandable(map, flags, x, y));
+    grid.push(row);
+  }
+  return grid;
+}
+
 /** A tile the player could occupy: passable from at least one direction. */
 function isStandable(map: MapData, flags: number[], x: number, y: number): boolean {
   const tile = readTile(map, flags, x, y);
   return tile.passable.up || tile.passable.down || tile.passable.left || tile.passable.right;
 }
 
-function canPass(
+/**
+ * Game_CharacterBase.canPass: leaving a tile in a direction and entering the
+ * neighbour from the opposite direction must both be allowed.
+ *
+ * Exported because "are these two tiles connected" is not "are they both
+ * walkable" — passage flags are directional, so two adjacent standable tiles
+ * can be mutually unreachable. Anything reasoning about reachability has to use
+ * this rather than adjacency, or it will believe in paths that do not exist.
+ */
+export function canPass(
   map: MapData,
   flags: number[],
   x: number,

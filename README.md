@@ -81,6 +81,13 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
 | `describe_tileset_materials` | Which A2 materials are safe on layer 0, and which have a visible outline |
 
+### Characters (3)
+| Tool | Description |
+|------|-------------|
+| `list_character_sheets` | What sprite sheets the project has, and how many characters each holds |
+| `place_npc` | Put one character on a map — sprite, dialogue, how it moves |
+| `populate_map` | Scatter NPCs across walkable ground without sealing anything off |
+
 `get_map_grid` lets the AI reason about **spatial layout** rather than just map metadata.
 Passability is decoded from tileset flags exactly as `Game_Map` does in the engine corescript.
 Large maps can be windowed with `x` / `y` / `width` / `height`.
@@ -273,6 +280,34 @@ player-touch events when the player finished a walking step, and a transfer sets
 
 **Not generated:** NPCs, shops, stairs or upper floors — a room is one rectangle. Interiors are
 made only for doors that lead nowhere, so hand-made links survive unless you pass `relink`.
+
+`populate_map` puts people in the places the other generators build.
+
+```
+populate_map  mapId=55  count=14  seed=7
+```
+
+The page settings are the ones real projects use, counted across the 70 talking NPC pages in the
+demo projects that ship with the editor — the `samplemaps` folder is scenery templates and has
+none. Action Button, priority "same as characters", fixed movement, `walkAnime` and `stepAnime`
+both on so the sprite idles in place: 28 of 70, with Player Touch and everything else identical
+next at 21. Dialogue becomes Show Text with MZ's five-parameter list, wrapped and split into a
+new box every four lines.
+
+**Placement is a connectivity problem, not a scattering one.** An NPC has priority "same as
+characters", so it blocks the tile it stands on: one in a doorway or a one-tile alley seals off
+whatever is behind it, and the player gets no hint why. Each candidate is therefore accepted only
+if the walkable area stays exactly as connected with it as without — checked per placement rather
+than audited afterwards — and door approach tiles are excluded outright.
+
+Reachability goes through `Game_CharacterBase.canPass`, not adjacency. Passage flags are
+directional, so two adjacent standable tiles can be mutually unreachable: a room's wall top is
+standable and sits right beside the floor, yet nothing can step onto it. Treating adjacency as
+connectivity puts villagers on top of the walls, which is exactly what the first version of this
+did until `check_map_walkability` said so.
+
+**Wandering NPCs are the honest exception.** `movement=random` means the guarantee only holds for
+where they start; at runtime one can walk into a doorway, and no static check can see that.
 
 `apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
 rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of
