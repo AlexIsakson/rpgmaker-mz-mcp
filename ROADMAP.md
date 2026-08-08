@@ -350,17 +350,14 @@ batching writes would remove the exposure entirely.
 | doors that led nowhere | `generate_interior` / `generate_interiors` (`src/core/interiorgen.ts`) — see [Interiors](#interiors) |
 | 9 — nobody in the places built | `place_npc` / `populate_map` (`src/core/npcgen.ts`) — see [NPCs](#npcs) |
 | 6, 7 — cave and dungeon silhouettes | `generate_map_layout` (`src/core/mapgen.ts`) — see [Layout shape](#layout-shape) |
+| 9 — generated dungeons had no props and no events | `decorate_dungeon` (`src/core/dungeon-dressing.ts`) — see [Dungeon dressing](#dungeon-dressing) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
 **Still not in the server:**
 
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
-- `generate_map_layout` still writes one layer: no props, no events, no decoration pass. The
-  layout and the walls are there; furnishing a dungeon is not.
-
-Still to build: decoration and events for generated dungeons, and shops or anything with a
-switch behind it.
+Still to build: shops, quests, or anything with a switch behind it.
 
 ### Layout shape
 
@@ -400,11 +397,47 @@ wall material rather than a second ground material; and where a wall mass meets 
 the paired wall *face* is drawn. Running one table was the reason a generated map could only ever
 be floor against a differently-coloured floor.
 
+### Dungeon dressing
+
+`decorate_dungeon` furnishes what `generate_map_layout` carves: torches on the wall faces,
+treasure in the dead ends, clutter on the floor and the walls.
+
+- `src/core/dungeon-dressing.ts` — the two event kinds and the placement plan (pure, unit-tested)
+- `src/tools/dungeon-dressing-tools.ts` — the MCP tool
+
+**Both events are measured.** A torch is decorative and stands *on the wall*: 623 of the 635
+`!Flame` events in the shipped maps sit on a solid tile, and 499 use the same page — Action
+Button, `stepAnime` on so the flame flickers, `directionFix` on so it never turns, and no
+commands at all. A pickup is `250, 101, 401, 126, 123, 0` in 16 of the 20 one-shot pickup events
+found across every shipped project, with a second page behind self switch A that does nothing.
+The `!Chest` sprite **opens by direction, not pattern** — the `!Door1` trick again — which was
+read off the sheet, since nothing shipped actually uses that sprite.
+
+**Treasure only goes in dead ends**, and that is a correctness argument rather than a taste one: a
+chest blocks its tile, and a dead end has one way in with nothing beyond it, so it is the only
+placement that provably cannot cut anything off. Ask for more chests than there are dead ends and
+you get fewer chests. It also pays off the dead ends the dungeon generator only just learned to
+cut.
+
+**The render caught the real bug.** The first pass told floor from wall by passability, and the
+chests all ended up in a line along the map's top edge with props scattered outside the dungeon.
+Cause: in the RTP tilesets an A4 wall *top* is passable (`flags 0xe00`) while its face is not, so
+88% of the map read as floor and the "dead ends" found were the map border. The tool now takes
+`floorKind` and tells floor from wall by material, and warns when a map without it looks
+suspiciously walkable.
+
+**And one more stale-state bug, the same shape as the town generator's.**
+`generate_map_layout` replaces one tile layer and leaves the others — so regenerating over a
+decorated map strands the old torches and chests where the previous layout put them. It now says
+so rather than leaving treasure floating in solid rock.
+
 **Still open here:**
 
+- Nothing places stairs or an entrance, so a generated dungeon connects to nothing.
+- Chests all hand over the same item, and there are no enemies, switches or locked doors.
 - Pillars are single tiles, so they read as regular studs rather than rock formations. Growing
   them into clumps would look better and would need the sweep redone.
-- The generator writes one layer and no events — no props, no torches, no chests, nobody in it.
+- The generator itself writes one layer; `decorate_dungeon` is a separate pass over the result.
 - **Passability is still not generated.** A generated wall only blocks if that material is
   configured impassable in the tileset; `check_map_walkability` on a map painted with passable
   materials reports the surround as walkable, which is correct and not a generator bug.

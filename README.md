@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (19)
+### Map Management (20)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -77,6 +77,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `generate_interior` | Fill a map with a room, and wire it to a door on another map |
 | `generate_interiors` | Give every door on a map a room, wired both ways |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
+| `decorate_dungeon` | Torches on the walls, treasure in the dead ends, clutter on the floor |
 | `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
 | `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
 | `describe_tileset_materials` | Which A2 materials are safe on layer 0, and which have a visible outline |
@@ -308,6 +309,34 @@ did until `check_map_walkability` said so.
 
 **Wandering NPCs are the honest exception.** `movement=random` means the guarantee only holds for
 where they start; at runtime one can walk into a doorway, and no static check can see that.
+
+`decorate_dungeon` furnishes what `generate_map_layout` carves.
+
+```
+generate_map_layout  mapId=77  style=dungeon  floorKind=18  surroundKind=96  seed=12
+decorate_dungeon     mapId=77  floorKind=18  torchCount=16  treasureCount=6
+```
+
+Both event kinds are measured. **A torch is decorative and stands on the wall**: of the 635
+`!Flame` events across the shipped maps, 623 stand on a *solid* tile, and 499 use the same page —
+Action Button, `stepAnime` on so the flame flickers, `directionFix` on so it never turns, and no
+commands at all. That also explains a `check_map_walkability` finding that looks like a fault and
+is not: a torch is *supposed* to be standing in a wall.
+
+**A pickup is `250, 101, 401, 126, 123, 0`** — play a sound, say what you got, hand it over, flip
+self switch A — in 16 of the 20 one-shot pickup events across every shipped project, with a second
+page behind that switch that does nothing. The `!Chest` sprite **opens by direction, not pattern**,
+the same trick the `!Door1` sprite uses; that was read off the sheet, since nothing shipped uses it.
+
+**Treasure only ever goes in dead ends.** A chest blocks its tile, and a dead end has one way in
+and nothing beyond it, so it is the one placement that provably cannot cut anything off. Ask for
+more chests than there are dead ends and you get fewer chests, not one dropped where it might seal
+a corridor.
+
+Pass the same `floorKind` the layout was generated with. Without it floor and wall are told apart
+by passage flags — and in the RTP tilesets an A4 wall *top* is walkable, so most of a dungeon reads
+as floor and the decoration lands outside it. The tool says so when it sees a suspiciously walkable
+map.
 
 `apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
 rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of

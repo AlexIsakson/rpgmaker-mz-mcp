@@ -14,6 +14,7 @@ import { registerPropTools } from './tools/prop-tools.js';
 import { registerTowngenTools } from './tools/towngen-tools.js';
 import { registerInteriorTools } from './tools/interior-tools.js';
 import { registerNpcTools } from './tools/npc-tools.js';
+import { registerDungeonDressingTools } from './tools/dungeon-dressing-tools.js';
 import { registerMapgenTools } from './tools/mapgen-tools.js';
 import { registerConsistencyTools } from './tools/consistency-tools.js';
 import { registerEventTools } from './tools/event-tools.js';
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
   registerTowngenTools(server);
   registerInteriorTools(server);
   registerNpcTools(server);
+  registerDungeonDressingTools(server);
   registerMapgenTools(server);
   registerConsistencyTools(server);
   registerEventTools(server);

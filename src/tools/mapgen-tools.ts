@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { FileHandler } from '../core/file-handler.js';
-import { writeLayer, TILE_LAYERS } from '../core/map-layers.js';
+import { readLayer, writeLayer, TILE_LAYERS } from '../core/map-layers.js';
 import {
   generateDungeon,
   generateCave,
@@ -126,6 +126,19 @@ export function registerMapgenTools(server: McpServer): void {
 
         const stats = layoutStats(layout);
 
+        // Only the chosen layer is replaced, so anything on the others — props,
+        // torches, chests — is still sitting where the *previous* layout put it.
+        // Regenerating over a decorated map leaves that stranded, which reads as
+        // treasure floating in solid rock.
+        const staleEvents = mapData.events.filter((e) => e !== null).length;
+        let staleTiles = 0;
+        for (let z = 0; z < TILE_LAYERS; z++) {
+          if (z === layer) continue;
+          for (const row of readLayer(mapData, z)) {
+            for (const tile of row) if (tile !== 0) staleTiles++;
+          }
+        }
+
         if (stats.openTiles === 0) {
           return {
             content: [{
@@ -162,11 +175,22 @@ export function registerMapgenTools(server: McpServer): void {
           lines.push('', 'Layout (. open, # solid, @ start):', renderLayoutAscii(layout));
         }
 
+        if (staleEvents > 0 || staleTiles > 0) {
+          lines.push(
+            '',
+            `This map still carries ${staleEvents} event(s) and ${staleTiles} tile(s) on the other ` +
+            'layers, placed against the layout that was here before. They have not moved, so ' +
+            'anything decorative is now in the wrong place — a chest in solid rock, a torch in ' +
+            'mid-air. Clear them, or generate into a fresh map and decorate after.'
+          );
+        }
+
         lines.push(
           '',
           'Note: this paints materials only. Whether the player can actually walk on them ' +
             'comes from the tileset passage settings, not from the layout — use get_map_grid ' +
-            'to check the result is walkable as intended.'
+            'to check the result is walkable as intended. decorate_dungeon adds torches, ' +
+            'treasure and clutter; give it the same floorKind.'
         );
 
         logger.info(`Generated ${style} on map ${mapId} seed ${seed}`);
