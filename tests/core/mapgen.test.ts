@@ -231,3 +231,149 @@ describe('renderLayoutAscii', () => {
     expect(lines[layout.start.y][layout.start.x]).toBe('@');
   });
 });
+
+/**
+ * Shape metrics, measured the same way as over the 55 dungeon-tileset maps that
+ * ship with the editor. Connectivity was always asserted here, but a fully
+ * connected map can still be a featureless blob — which is exactly what a visual
+ * review found. These turn that complaint into something a test can hold.
+ */
+function shapeMetrics(layout: { width: number; height: number; floor: boolean[][] }) {
+  const { width: w, height: h, floor } = layout;
+  const neighbours = (x: number, y: number) =>
+    [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(
+      ([dx, dy]) => x + dx >= 0 && y + dy >= 0 && x + dx < w && y + dy < h && floor[y + dy][x + dx]
+    ).length;
+
+  let floorTiles = 0;
+  let edgeTiles = 0;
+  let deadEnds = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!floor[y][x]) continue;
+      floorTiles++;
+      const n = neighbours(x, y);
+      if (n < 4) edgeTiles++;
+      if (n === 1) deadEnds++;
+    }
+  }
+
+  // solid regions that never touch the map border — pillars, interior structure
+  const seen = Array.from({ length: h }, () => new Array<boolean>(w).fill(false));
+  let islands = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (floor[y][x] || seen[y][x]) continue;
+      const stack = [[x, y]];
+      seen[y][x] = true;
+      let touchesBorder = false;
+      while (stack.length > 0) {
+        const [cx, cy] = stack.pop()!;
+        if (cx === 0 || cy === 0 || cx === w - 1 || cy === h - 1) touchesBorder = true;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[ny][nx] || floor[ny][nx]) continue;
+          seen[ny][nx] = true;
+          stack.push([nx, ny]);
+        }
+      }
+      if (!touchesBorder) islands++;
+    }
+  }
+
+  return {
+    floorFraction: floorTiles / (w * h),
+    edgeDensity: floorTiles === 0 ? 0 : edgeTiles / floorTiles,
+    deadEndsPer100: floorTiles === 0 ? 0 : (deadEnds / floorTiles) * 100,
+    islands,
+  };
+}
+
+const median = (values: number[]) => values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
+
+describe('layout shape, against the hand-made maps', () => {
+  const SEEDS = Array.from({ length: 30 }, (_, i) => i + 1);
+
+  /**
+   * Ranges taken from the 55 dungeon-tileset sample maps: p10..p90 of each
+   * metric. Deliberately the *observed range*, not a tight band — the point is
+   * to catch a regression to a blob, not to pin an aesthetic.
+   */
+  const HANDMADE = {
+    floorFraction: [0.13, 0.80],
+    edgeDensity: [0.452, 0.800],
+    islands: [0, 21],
+  };
+
+  it('gives a cave walls to follow rather than one open blob', () => {
+    // Before this was tuned: edge density 0.154, against a hand-made floor of
+    // 0.452. That single number is what "one large open blob" meant.
+    const rows = SEEDS.map((seed) => shapeMetrics(generateCave({ width: 40, height: 30, seed })));
+    const edge = median(rows.map((r) => r.edgeDensity));
+    expect(edge).toBeGreaterThanOrEqual(HANDMADE.edgeDensity[0]);
+    expect(edge).toBeLessThanOrEqual(HANDMADE.edgeDensity[1]);
+  });
+
+  it('gives a cave something to walk around', () => {
+    const islands = median(SEEDS.map((seed) =>
+      shapeMetrics(generateCave({ width: 40, height: 30, seed })).islands));
+    expect(islands).toBeGreaterThan(2);   // it used to be 2
+    expect(islands).toBeLessThanOrEqual(HANDMADE.islands[1]);
+  });
+
+  it('leaves a cave hollow when the pillars are turned off', () => {
+    const withPillars = median(SEEDS.map((seed) =>
+      shapeMetrics(generateCave({ width: 40, height: 30, seed })).islands));
+    const without = median(SEEDS.map((seed) =>
+      shapeMetrics(generateCave({ width: 40, height: 30, seed, pillarDensity: 0 })).islands));
+    expect(without).toBeLessThan(withPillars);
+  });
+
+  it('cuts dead ends into a dungeon', () => {
+    // This was exactly 0.000 across every seed: every passage arrived somewhere.
+    const deadEnds = median(SEEDS.map((seed) =>
+      shapeMetrics(generateDungeon({ width: 40, height: 30, seed })).deadEndsPer100));
+    expect(deadEnds).toBeGreaterThan(2);
+    expect(deadEnds).toBeLessThanOrEqual(9.04);   // the hand-made p90
+  });
+
+  it('makes every passage arrive somewhere when dead ends are turned off', () => {
+    const deadEnds = median(SEEDS.map((seed) =>
+      shapeMetrics(generateDungeon({ width: 40, height: 30, seed, deadEndAttempts: 0 })).deadEndsPer100));
+    expect(deadEnds).toBe(0);
+  });
+
+  it('keeps both styles inside the hand-made range for floor and edges', () => {
+    for (const [label, generate] of [
+      ['cave', (seed: number) => generateCave({ width: 40, height: 30, seed })],
+      ['dungeon', (seed: number) => generateDungeon({ width: 40, height: 30, seed })],
+    ] as const) {
+      const rows = SEEDS.map((seed) => shapeMetrics(generate(seed)));
+      const floor = median(rows.map((r) => r.floorFraction));
+      const edge = median(rows.map((r) => r.edgeDensity));
+      expect(floor, `${label} floor fraction`).toBeGreaterThanOrEqual(HANDMADE.floorFraction[0]);
+      expect(floor, `${label} floor fraction`).toBeLessThanOrEqual(HANDMADE.floorFraction[1]);
+      expect(edge, `${label} edge density`).toBeGreaterThanOrEqual(HANDMADE.edgeDensity[0]);
+      expect(edge, `${label} edge density`).toBeLessThanOrEqual(HANDMADE.edgeDensity[1]);
+    }
+  });
+
+  it('stays fully connected through all of it, across many seeds', () => {
+    // The property that was already guaranteed, re-asserted because dead ends,
+    // irregular rooms and pillars all touch the floor mask after it is built.
+    for (const seed of Array.from({ length: 60 }, (_, i) => i + 1)) {
+      expect(layoutStats(generateCave({ width: 40, height: 30, seed })).fullyConnected,
+        `cave seed ${seed}`).toBe(true);
+      expect(layoutStats(generateDungeon({ width: 40, height: 30, seed })).fullyConnected,
+        `dungeon seed ${seed}`).toBe(true);
+    }
+  });
+
+  it('still reproduces a layout exactly from its seed', () => {
+    expect(generateCave({ width: 30, height: 20, seed: 12 }))
+      .toEqual(generateCave({ width: 30, height: 20, seed: 12 }));
+    expect(generateDungeon({ width: 30, height: 20, seed: 12 }))
+      .toEqual(generateDungeon({ width: 30, height: 20, seed: 12 }));
+  });
+});

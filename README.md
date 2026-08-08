@@ -338,7 +338,31 @@ No unreachable events, blocked doors or cut-off areas.
 `generate_map_layout` builds a whole map at once — `dungeon` places rooms joined by L-shaped
 corridors, `cave` grows an organic cavern by cellular automata. Both are **guaranteed fully
 connected**: the dungeon connects each room to the previous one as it goes, and the cave keeps
-only its largest region so there are no sealed-off pockets. The same `seed` always reproduces
+only its largest region so there are no sealed-off pockets.
+
+Connectivity was never the problem, though — a fully connected map can still be a featureless
+blob, which is what a visual review found. So **what "a good layout" means here is measured**.
+Three shape metrics were taken over the 55 dungeon-tileset maps that ship with the editor, and
+the generators are tuned to land inside the range those occupy:
+
+| | hand-made (median [p10..p90]) | before | after |
+|---|---|---|---|
+| floor fraction | 0.219 [0.130..0.797] | cave 0.781, dungeon 0.343 | cave 0.360, dungeon 0.367 |
+| edge density | 0.676 [0.452..0.800] | cave 0.154, dungeon 0.629 | cave 0.465, dungeon 0.678 |
+| dead ends per 100 | 5.178 [0.000..9.040] | dungeon 0.000 | dungeon 4.329 |
+| interior islands | 5 [0..21] | cave 2 | cave 10 |
+
+*Edge density* — the share of floor tiles that touch a wall — is what turns "one large open
+blob" from an opinion into a number. The cave sat at 0.154 against a hand-made floor of 0.452.
+It is now fixed by two changes: the early cellular-automata passes carry a second rule that
+keeps walls ragged, and a **pillar pass** drops solid clumps into open space, each kept only if
+the cave stays exactly as connected with it as without. Dungeons gained irregular rooms (two
+overlapping rectangles, so L- and T-shaped) and **dead ends** — short passages cut into the rock
+that arrive nowhere, which the generator previously never produced at all.
+
+The surround can now be an **A3/A4 wall material**, and where a wall mass meets the floor below
+it the paired wall *face* is drawn, so a dungeon has height instead of being floor against a
+differently-coloured floor. The same `seed` always reproduces
 the same layout.
 
 ```

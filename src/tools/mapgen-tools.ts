@@ -11,7 +11,7 @@ import {
   layoutStats,
   type GeneratedLayout,
 } from '../core/mapgen.js';
-import { getAutotileKind, TILE_ID_A2, TILE_ID_A3 } from '../core/autotile.js';
+import { getAutotileKind, TILE_ID_A2, TILE_ID_A3, TILE_ID_MAX } from '../core/autotile.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import type { MapData } from '../schemas/map.js';
@@ -19,6 +19,7 @@ import { logger } from '../logger.js';
 
 const A2_KIND_MIN = getAutotileKind(TILE_ID_A2);
 const A2_KIND_MAX = getAutotileKind(TILE_ID_A3) - 1;
+const AUTOTILE_KIND_MAX = getAutotileKind(TILE_ID_MAX) - 1;
 
 const PREVIEW_LIMIT = 60;
 
@@ -34,22 +35,50 @@ export function registerMapgenTools(server: McpServer): void {
       style: z.enum(['dungeon', 'cave']).describe('Layout algorithm'),
       floorKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX)
         .describe(`A2 material for walkable floor (${A2_KIND_MIN}-${A2_KIND_MAX})`),
-      surroundKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX)
-        .describe(`A2 material for everything that is not floor (${A2_KIND_MIN}-${A2_KIND_MAX})`),
+      surroundKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX)
+        .describe(
+          `Material for everything that is not floor. ${A2_KIND_MIN}-${A2_KIND_MAX} is A2 ground, ` +
+          `48-79 A3 walls, 80-${AUTOTILE_KIND_MAX} A4 walls and wall tops — an A4 wall top makes ` +
+          'a dungeon read as rooms with raised walls instead of two kinds of floor. Shapes are ' +
+          'computed with the right table either way.'
+        ),
+      wallFaceKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX).optional()
+        .describe(
+          'Material for the south edge of a wall mass — the face you see where wall meets floor. ' +
+          'Defaults to surroundKind + 8 when the surround is an A4 wall top, which is the ' +
+          'pairing the sample maps use. Without a face the map has no height.'
+        ),
       seed: z.number().int().default(1).describe('Same seed reproduces the same layout'),
       layer: z.number().int().min(0).max(TILE_LAYERS - 1).default(0).describe('Tile layer 0-3'),
       roomAttempts: z.number().int().positive().default(40)
         .describe('dungeon: how many times to try placing a room; higher is denser'),
       minRoomSize: z.number().int().positive().default(3).describe('dungeon: smallest room side'),
       maxRoomSize: z.number().int().positive().default(8).describe('dungeon: largest room side'),
-      fillProbability: z.number().min(0).max(1).default(0.45)
-        .describe('cave: starting solid density; around 0.45 gives typical caves'),
-      smoothingSteps: z.number().int().min(0).max(10).default(4)
-        .describe('cave: smoothing passes; higher is rounder'),
+      irregularRoomChance: z.number().min(0).max(1).default(0.35)
+        .describe('dungeon: share of rooms carved as two overlapping rectangles, so L- or T-shaped'),
+      deadEndAttempts: z.number().int().min(0).optional()
+        .describe(
+          'dungeon: tries at cutting a passage that leads nowhere. Defaults to 0.4 per map tile, ' +
+          'which lands near the 5.2 dead ends per 100 floor tiles the hand-made maps carry. ' +
+          '0 makes every passage arrive somewhere.'
+        ),
+      fillProbability: z.number().min(0).max(1).default(0.57)
+        .describe('cave: starting solid density; lower opens the cave out into one cavern'),
+      structureSteps: z.number().int().min(0).max(10).default(2)
+        .describe('cave: passes that keep walls ragged and irregular'),
+      smoothingSteps: z.number().int().min(0).max(10).default(2)
+        .describe('cave: passes that only smooth; higher is rounder and emptier'),
+      pillarDensity: z.number().min(0).max(0.2).default(0.035)
+        .describe(
+          'cave: solid clumps dropped inside open space, as a fraction of floor tiles. 0 leaves ' +
+          'the cave hollow with nothing to walk around. None is ever placed where it would seal ' +
+          'part of the cave off.'
+        ),
     },
     async ({
-      mapId, style, floorKind, surroundKind, seed, layer,
-      roomAttempts, minRoomSize, maxRoomSize, fillProbability, smoothingSteps,
+      mapId, style, floorKind, surroundKind, wallFaceKind, seed, layer,
+      roomAttempts, minRoomSize, maxRoomSize, irregularRoomChance, deadEndAttempts,
+      fillProbability, structureSteps, smoothingSteps, pillarDensity,
     }) => {
       try {
         if (floorKind === surroundKind) {
@@ -86,8 +115,14 @@ export function registerMapgenTools(server: McpServer): void {
 
         const layout: GeneratedLayout =
           style === 'dungeon'
-            ? generateDungeon({ width, height, seed, roomAttempts, minRoomSize, maxRoomSize })
-            : generateCave({ width, height, seed, fillProbability, smoothingSteps });
+            ? generateDungeon({
+                width, height, seed, roomAttempts, minRoomSize, maxRoomSize,
+                irregularRoomChance, deadEndAttempts,
+              })
+            : generateCave({
+                width, height, seed, fillProbability,
+                structureSteps, smoothingSteps, pillarDensity,
+              });
 
         const stats = layoutStats(layout);
 
@@ -104,7 +139,7 @@ export function registerMapgenTools(server: McpServer): void {
         }
 
         // Only the chosen layer is rewritten; the others are left as they are.
-        const grid = layoutToGrid(layout, floorKind, surroundKind);
+        const grid = layoutToGrid(layout, floorKind, surroundKind, { wallFaceKind });
         writeLayer(mapData, layer, grid);
 
         await FileHandler.writeJson(mapPath, mapData);
@@ -112,7 +147,9 @@ export function registerMapgenTools(server: McpServer): void {
 
         const lines = [
           `Generated a ${style} layout on map ${mapId} (${width}x${height}), layer ${layer}, seed ${seed}.`,
-          `Floor material: A2 kind ${floorKind}   Surround: A2 kind ${surroundKind}`,
+          `Floor material: A2 kind ${floorKind}   Surround: ` +
+            `${surroundKind <= A2_KIND_MAX ? 'A2 ground' : surroundKind < 80 ? 'A3 wall' : 'A4 wall'} ` +
+            `kind ${surroundKind}`,
           `Open tiles: ${stats.openTiles} of ${width * height}` +
             (style === 'dungeon' ? `   Rooms: ${layout.rooms.length}` : ''),
           `Suggested start position: (${layout.start.x}, ${layout.start.y})`,

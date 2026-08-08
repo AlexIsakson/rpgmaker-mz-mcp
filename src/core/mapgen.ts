@@ -1,4 +1,10 @@
-import { refreshAutotileShapes, makeAutotileId, type Rect } from './autotile.js';
+import {
+  refreshAutotileShapes,
+  makeAutotileId,
+  isTileA4WallTop,
+  type Rect,
+} from './autotile.js';
+import { refreshWallShapes } from './wall-autotile.js';
 
 /**
  * Layout generation. These produce a plain floor/solid mask; turning that into
@@ -6,6 +12,23 @@ import { refreshAutotileShapes, makeAutotileId, type Rect } from './autotile.js'
  *
  * Everything is driven by a seeded RNG so a given seed always produces the same
  * map — which makes the output reproducible for the caller and testable here.
+ *
+ * **What "a good layout" means here is measured, not judged.** Connectivity was
+ * always asserted, but a fully connected map can still be a featureless blob,
+ * which is what a visual review found. Three shape metrics were taken over the
+ * 55 dungeon-tileset maps the editor ships, and the generators are tuned to land
+ * inside the range those occupy:
+ *
+ * | | hand-made (median [p10..p90]) | before | after |
+ * |---|---|---|---|
+ * | floor fraction   | 0.219 [0.130..0.797] | cave 0.781, dungeon 0.343 | cave 0.360, dungeon 0.367 |
+ * | edge density     | 0.676 [0.452..0.800] | cave 0.154, dungeon 0.629 | cave 0.465, dungeon 0.678 |
+ * | dead ends /100   | 5.178 [0.000..9.040] | dungeon 0.000 | dungeon 4.329 |
+ * | interior islands | 5 [0..21] | cave 2 | cave 10 |
+ *
+ * *Edge density* is the share of floor tiles that touch a wall — the number that
+ * turns "one large open blob" from an opinion into a measurement. The cave was
+ * at 0.154 against a hand-made floor of 0.452.
  */
 
 export interface GeneratedLayout {
@@ -89,11 +112,34 @@ export interface DungeonOptions {
   roomAttempts?: number;
   minRoomSize?: number;
   maxRoomSize?: number;
+  /**
+   * Chance a room is carved as two overlapping rectangles rather than one, so
+   * it comes out L- or T-shaped.
+   */
+  irregularRoomChance?: number;
+  /**
+   * Passages carved off a room that lead nowhere. The hand-made dungeon maps
+   * average 5 dead-end tiles per 100 floor tiles; with none, every passage goes
+   * somewhere and there is nothing to explore.
+   */
+  deadEndAttempts?: number;
+  maxDeadEndLength?: number;
 }
 
 /**
  * Rooms joined by L-shaped corridors. Each new room is connected to the
  * previous one, so the whole layout is reachable by construction.
+ *
+ * Rooms are not all rectangles and not all passages arrive somewhere: a share
+ * of rooms are carved as two overlapping rectangles, and short stubs are cut
+ * into the rock afterwards. Both come from measuring the 55 hand-made dungeon
+ * maps the editor ships — they carry a median of 5.2 dead-end tiles per 100
+ * floor tiles, and this generator produced exactly zero.
+ *
+ * A stub can never break connectivity: carving only ever turns rock into floor.
+ * What it *can* do is accidentally join two passages, which would stop it being
+ * a dead end — so each tile is checked to be walled on every side but the one
+ * it came from before anything is cut.
  */
 export function generateDungeon(options: DungeonOptions): GeneratedLayout {
   const {
@@ -103,11 +149,23 @@ export function generateDungeon(options: DungeonOptions): GeneratedLayout {
     roomAttempts = 40,
     minRoomSize = 3,
     maxRoomSize = 8,
+    irregularRoomChance = 0.35,
+    // Scaled to the map: a fixed count leaves a big map bare and hammers a
+    // small one. 0.4 per tile lands near the 5.2 dead ends per 100 floor tiles
+    // the hand-made maps carry.
+    deadEndAttempts = Math.round(width * height * 0.4),
+    maxDeadEndLength = 6,
   } = options;
 
   const rng = makeRng(seed);
   const floor = blankFloor(width, height);
   const rooms: Rect[] = [];
+  /**
+   * A tile inside each room that is definitely floor. Corridors run between
+   * these rather than between room centres: the centre of an L-shaped room can
+   * land in the notch, and a corridor ending on solid rock joins nothing.
+   */
+  const anchors: { x: number; y: number }[] = [];
 
   const carveRect = (rect: Rect): void => {
     for (let y = rect.y; y < rect.y + rect.height; y++) {
@@ -151,34 +209,108 @@ export function generateDungeon(options: DungeonOptions): GeneratedLayout {
 
     if (rooms.some((room) => rectsOverlap(candidate, room, 1))) continue;
 
-    carveRect(candidate);
+    // An irregular room is two rectangles inside the same envelope, so the
+    // spacing check above still holds and only the shape changes.
+    let anchor: { x: number; y: number };
+    if (w >= 4 && h >= 4 && rng() < irregularRoomChance) {
+      const splitW = randInt(rng, 2, w - 1);
+      const splitH = randInt(rng, 2, h - 1);
+      const first: Rect = { x: candidate.x, y: candidate.y, width: splitW, height: h };
+      const second: Rect = {
+        x: rng() < 0.5 ? candidate.x : candidate.x + w - (w - splitW + 1),
+        y: candidate.y + h - splitH,
+        width: w - splitW + 1,
+        height: splitH,
+      };
+      carveRect(first);
+      carveRect(second);
+      anchor = { x: first.x + Math.floor(first.width / 2), y: first.y + Math.floor(first.height / 2) };
+    } else {
+      carveRect(candidate);
+      anchor = {
+        x: candidate.x + Math.floor(candidate.width / 2),
+        y: candidate.y + Math.floor(candidate.height / 2),
+      };
+    }
 
     if (rooms.length > 0) {
-      const previous = rooms[rooms.length - 1];
-      const cx1 = Math.floor(previous.x + previous.width / 2);
-      const cy1 = Math.floor(previous.y + previous.height / 2);
-      const cx2 = Math.floor(candidate.x + candidate.width / 2);
-      const cy2 = Math.floor(candidate.y + candidate.height / 2);
+      const previous = anchors[anchors.length - 1];
 
       // L-shaped: horizontal leg then vertical, or the other way round.
       if (rng() < 0.5) {
-        carveH(cx1, cx2, cy1);
-        carveV(cy1, cy2, cx2);
+        carveH(previous.x, anchor.x, previous.y);
+        carveV(previous.y, anchor.y, anchor.x);
       } else {
-        carveV(cy1, cy2, cx1);
-        carveH(cx1, cx2, cy2);
+        carveV(previous.y, anchor.y, previous.x);
+        carveH(previous.x, anchor.x, anchor.y);
       }
     }
 
     rooms.push(candidate);
+    anchors.push(anchor);
   }
 
-  const first = rooms[0];
-  const start = first
-    ? { x: Math.floor(first.x + first.width / 2), y: Math.floor(first.y + first.height / 2) }
-    : { x: Math.floor(width / 2), y: Math.floor(height / 2) };
+  carveDeadEnds(floor, rng, deadEndAttempts, maxDeadEndLength);
+
+  const start = anchors[0] ?? { x: Math.floor(width / 2), y: Math.floor(height / 2) };
 
   return { width, height, floor, rooms, start };
+}
+
+const STEPS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+/**
+ * Cut short passages into the rock that arrive nowhere.
+ *
+ * Carving only turns rock into floor, so this can never disconnect anything.
+ * The check that matters is the opposite one: a stub that brushes another
+ * passage stops being a dead end and becomes a loop, so every tile has to be
+ * walled on all sides except the one the stub came from.
+ */
+function carveDeadEnds(
+  floor: boolean[][],
+  rng: () => number,
+  attempts: number,
+  maxLength: number
+): void {
+  const height = floor.length;
+  const width = floor[0]?.length ?? 0;
+  const solid = (x: number, y: number): boolean =>
+    x >= 0 && y >= 0 && x < width && y < height && !floor[y][x];
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const sx = randInt(rng, 1, width - 2);
+    const sy = randInt(rng, 1, height - 2);
+    if (!floor[sy][sx]) continue;
+
+    const [dx, dy] = STEPS[randInt(rng, 0, STEPS.length - 1)];
+    const length = randInt(rng, 2, maxLength);
+    const path: [number, number][] = [];
+
+    let x = sx;
+    let y = sy;
+    for (let i = 0; i < length; i++) {
+      x += dx;
+      y += dy;
+      // Stay a tile clear of the border so the stub never opens the map edge.
+      if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1) break;
+      if (!solid(x, y)) break;
+
+      // Everything around the new tile must be rock, apart from where we came
+      // from and where we are going.
+      const clear = STEPS.every(([ax, ay]) => {
+        if (ax === dx && ay === dy) return true;      // ahead, checked next round
+        if (ax === -dx && ay === -dy) return true;    // behind, that is the stub
+        return solid(x + ax, y + ay);
+      });
+      if (!clear) break;
+      if (!solid(x + dx, y + dy) && i < length - 1) break;
+
+      path.push([x, y]);
+    }
+
+    for (const [px, py] of path) floor[py][px] = true;
+  }
 }
 
 export interface CaveOptions {
@@ -187,21 +319,69 @@ export interface CaveOptions {
   seed?: number;
   /** Chance a cell starts solid. Around 0.45 gives typical caves. */
   fillProbability?: number;
-  /** Cellular-automata passes. More passes, smoother walls. */
+  /**
+   * Passes that grow structure — pillars, ragged walls, side chambers.
+   * Dropping this to 0 leaves only smoothing, which is what produced a blob.
+   */
+  structureSteps?: number;
+  /** Passes that only smooth. More passes, rounder walls and fewer pillars. */
   smoothingSteps?: number;
+  /** How far from a wall a tile must be before a pillar may go there. */
+  pillarClearance?: number;
+  /** Pillars as a fraction of open tiles. 0 leaves the cave hollow. */
+  pillarDensity?: number;
+}
+
+/**
+ * Solid neighbours within a Chebyshev radius. Cells off the map count as solid,
+ * which keeps the cave away from the border.
+ */
+function solidWithin(floor: boolean[][], x: number, y: number, radius: number): number {
+  const height = floor.length;
+  const width = floor[0]?.length ?? 0;
+  let solid = 0;
+
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) solid++;
+      else if (!floor[ny][nx]) solid++;
+    }
+  }
+
+  return solid;
 }
 
 /**
  * Cellular-automata cave, reduced to its largest connected area so there are no
  * sealed-off pockets the player could never reach.
+ *
+ * **Two rules, not one.** Smoothing alone (`solid >= 5`) rounds a cave off until
+ * it is a single convex blob: measured across 40 seeds, only 15% of its floor
+ * tiles touched a wall, against 68% in the 55 hand-made dungeon maps that ship
+ * with the editor. A cave with nothing to walk around is not a cave.
+ *
+ * So the early passes add a second clause — `solid within 2 <= 2` also turns a
+ * cell solid — which seeds pillars in the middle of wide-open space and keeps
+ * the walls ragged. The later passes drop it and only smooth, so the result is
+ * not noise. This is the standard two-phase roguelike rule; what is measured
+ * here is that it lands in the range the hand-made maps occupy.
  */
 export function generateCave(options: CaveOptions): GeneratedLayout {
   const {
     width,
     height,
     seed = 1,
-    fillProbability = 0.45,
-    smoothingSteps = 4,
+    // Chosen by sweeping against the 55 hand-made dungeon maps rather than by
+    // eye: these land inside the range they occupy on all three shape metrics
+    // (see the module note above).
+    fillProbability = 0.57,
+    structureSteps = 2,
+    smoothingSteps = 2,
+    pillarClearance = 3,
+    pillarDensity = 0.035,
   } = options;
 
   const rng = makeRng(seed);
@@ -214,22 +394,22 @@ export function generateCave(options: CaveOptions): GeneratedLayout {
     }
   }
 
-  for (let step = 0; step < smoothingSteps; step++) {
+  const totalSteps = structureSteps + smoothingSteps;
+  for (let step = 0; step < totalSteps; step++) {
+    const growStructure = step < structureSteps;
     const next = blankFloor(width, height);
+
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
           next[y][x] = false;
           continue;
         }
-        let solid = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            if (dx === 0 && dy === 0) continue;
-            if (!floor[y + dy][x + dx]) solid++;
-          }
-        }
-        next[y][x] = solid < 5;
+        const near = solidWithin(floor, x, y, 1);
+        // A cell far from any wall becomes one, which is what puts pillars and
+        // spurs inside an open space instead of leaving it empty.
+        const far = growStructure ? solidWithin(floor, x, y, 2) : Infinity;
+        next[y][x] = !(near >= 5 || far <= 2);
       }
     }
     floor = next;
@@ -257,31 +437,138 @@ export function generateCave(options: CaveOptions): GeneratedLayout {
     }
   }
 
-  return {
-    width,
-    height,
-    floor: best ?? blankFloor(width, height),
-    rooms: [],
-    start: bestStart,
-  };
+  const cave = best ?? blankFloor(width, height);
+  addPillars(cave, rng, bestStart, pillarClearance, pillarDensity);
+
+  return { width, height, floor: cave, rooms: [], start: bestStart };
+}
+
+/** Chebyshev distance from every open tile to the nearest solid one. */
+function distanceToWall(floor: boolean[][]): number[][] {
+  const height = floor.length;
+  const width = floor[0]?.length ?? 0;
+  const dist = floor.map((row) => row.map((open) => (open ? Infinity : 0)));
+  const queue: [number, number][] = [];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) if (!floor[y][x]) queue.push([x, y]);
+  }
+
+  for (let head = 0; head < queue.length; head++) {
+    const [x, y] = queue[head];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        if (dist[ny][nx] <= dist[y][x] + 1) continue;
+        dist[ny][nx] = dist[y][x] + 1;
+        queue.push([nx, ny]);
+      }
+    }
+  }
+
+  return dist;
+}
+
+/**
+ * Drop solid clumps into the middle of open space.
+ *
+ * The cellular automata decide the cave's *outline*; nothing in them puts
+ * anything **inside** it. That is the measurable half of "one large open blob
+ * with nothing to navigate around": across 40 seeds the old defaults produced a
+ * median of 2 interior solid regions, where the hand-made maps carry 5.
+ *
+ * A pillar is only kept if the cave stays exactly as connected with it as
+ * without — the same test NPC placement uses, for the same reason: a clump
+ * dropped across a neck would seal off half the cave.
+ *
+ * Mutates `floor`.
+ */
+function addPillars(
+  floor: boolean[][],
+  rng: () => number,
+  start: { x: number; y: number },
+  clearance: number,
+  density: number
+): void {
+  const height = floor.length;
+  const width = floor[0]?.length ?? 0;
+  if (density <= 0 || clearance < 1) return;
+
+  const dist = distanceToWall(floor);
+  const candidates: [number, number][] = [];
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      if (floor[y][x] && dist[y][x] >= clearance) candidates.push([x, y]);
+    }
+  }
+
+  // Fisher-Yates on the same seeded stream, so a seed still reproduces the map.
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  const open = countOpen(floor);
+  let placed = 0;
+  const wanted = Math.max(1, Math.round(open * density));
+
+  for (const [x, y] of candidates) {
+    if (placed >= wanted) break;
+    if (x === start.x && y === start.y) continue;
+    if (!floor[y][x]) continue; // already taken by a neighbouring pillar
+
+    floor[y][x] = false;
+    const reachable = countOpen(floodFill(floor, start.x, start.y));
+    if (reachable === countOpen(floor)) placed++;
+    else floor[y][x] = true;
+  }
 }
 
 /**
  * Turn a layout into tile ids and compute autotile shapes.
  *
- * Pass autotile kinds (A2). The whole layer is being rewritten here, so shapes
- * are refreshed across all of it rather than a scoped region.
+ * Both shape tables are run, so the surround can be an A3/A4 wall material and
+ * not only more A2 ground. Running one table was what limited a generated map
+ * to "floor versus a different floor" — a dungeon needs walls with a face, and
+ * an A4 wall top is drawn with the floor table while its face uses the wall one,
+ * so neither pass alone is enough.
+ *
+ * The whole layer is being rewritten, so shapes are refreshed across all of it
+ * rather than a scoped region.
  */
 export function layoutToGrid(
   layout: GeneratedLayout,
   floorKind: number,
-  wallKind: number
+  wallKind: number,
+  options: { wallFaceKind?: number } = {}
 ): number[][] {
   const floorTile = makeAutotileId(floorKind, 0);
   const wallTile = makeAutotileId(wallKind, 0);
 
-  const grid = layout.floor.map((row) => row.map((open) => (open ? floorTile : wallTile)));
-  return refreshAutotileShapes(grid);
+  // An A4 wall is two materials: the flat top seen from above, and the face you
+  // see where the wall meets the floor south of it. Drawing only the top gives a
+  // map with no height at all — floor against a differently-coloured floor,
+  // which is what a generated dungeon used to look like.
+  const faceKind =
+    options.wallFaceKind ?? (isTileA4WallTop(wallTile) ? wallKind + 8 : null);
+  const faceTile = faceKind === null ? null : makeAutotileId(faceKind, 0);
+
+  const { width, height, floor } = layout;
+  const grid = floor.map((row) => row.map((open) => (open ? floorTile : wallTile)));
+
+  if (faceTile !== null) {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (floor[y][x]) continue;
+        // the bottom edge of a wall mass: solid here, open directly below
+        if (y + 1 < height && floor[y + 1][x]) grid[y][x] = faceTile;
+      }
+    }
+  }
+
+  return refreshWallShapes(refreshAutotileShapes(grid));
 }
 
 /** Text preview of a layout — '.' open, '#' solid, '@' start. */

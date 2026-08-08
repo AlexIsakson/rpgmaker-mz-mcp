@@ -349,18 +349,65 @@ batching writes would remove the exposure entirely.
 | 5, 8, 9, 14 — upper layers, framing the edge, decoration and events, validated placement | `generate_town` (`src/core/towngen.ts`) — see [The town generator](#the-town-generator) |
 | doors that led nowhere | `generate_interior` / `generate_interiors` (`src/core/interiorgen.ts`) — see [Interiors](#interiors) |
 | 9 — nobody in the places built | `place_npc` / `populate_map` (`src/core/npcgen.ts`) — see [NPCs](#npcs) |
+| 6, 7 — cave and dungeon silhouettes | `generate_map_layout` (`src/core/mapgen.ts`) — see [Layout shape](#layout-shape) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
 **Still not in the server:**
 
-- findings 6 and 7 — `generate_map_layout` is unchanged. Its caves still over-smooth into one
-  convex blob, its dungeons are axis-aligned rooms on one elevation, and both write layer 0
-  only. The town generator addressed 5, 8 and 9 on its own path; nothing has been carried back
-  to the cave and dungeon algorithms.
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
+- `generate_map_layout` still writes one layer: no props, no events, no decoration pass. The
+  layout and the walls are there; furnishing a dungeon is not.
 
-Still to build: carrying any of this back to the cave and dungeon generators.
+Still to build: decoration and events for generated dungeons, and shops or anything with a
+switch behind it.
+
+### Layout shape
+
+Connectivity was asserted from the start, and it was never the problem: a fully connected map
+can still be a featureless blob, which is what the visual review found. The fix was to stop
+arguing about it and **measure**.
+
+Three shape metrics, taken the same way over the 55 dungeon-tileset maps the editor ships and
+over 30-40 generated seeds:
+
+| | hand-made (median [p10..p90]) | before | after |
+|---|---|---|---|
+| floor fraction | 0.219 [0.130..0.797] | cave 0.781, dungeon 0.343 | cave 0.360, dungeon 0.367 |
+| edge density | 0.676 [0.452..0.800] | cave 0.154, dungeon 0.629 | cave 0.465, dungeon 0.678 |
+| dead ends per 100 | 5.178 [0.000..9.040] | dungeon 0.000 | dungeon 4.329 |
+| interior islands | 5 [0..21] | cave 2 | cave 10 |
+
+**Edge density** — the share of floor tiles touching a wall — is the one that matters. It turns
+"one large open blob with nothing to navigate around" into a number, and the cave was at 0.154
+against a hand-made floor of 0.452. Every default below was chosen by sweeping against these
+ranges, not by eye, and `tests/core/mapgen.test.ts` asserts the medians stay inside them.
+
+**Cave.** Two changes. The early cellular-automata passes carry a second clause that keeps walls
+ragged; and because nothing in the automata puts anything *inside* the cave, a **pillar pass**
+drops solid clumps into open space afterwards. A pillar is kept only if the cave stays exactly
+as connected with it as without — the same test NPC placement uses, for the same reason.
+
+**Dungeon.** A share of rooms are carved as two overlapping rectangles inside the same envelope,
+so they come out L- or T-shaped; corridors run between per-room *anchors* rather than envelope
+centres, because the centre of an L-shaped room can land in the notch and a corridor ending on
+rock joins nothing. And short passages are cut into the rock that arrive nowhere: carving only
+ever adds floor so it cannot disconnect anything, but a stub that brushes another passage stops
+being a dead end, so every tile is checked to be walled on all sides but the one it came from.
+
+**Walls have height now.** `layoutToGrid` runs both shape tables, so the surround can be an A3/A4
+wall material rather than a second ground material; and where a wall mass meets floor below it,
+the paired wall *face* is drawn. Running one table was the reason a generated map could only ever
+be floor against a differently-coloured floor.
+
+**Still open here:**
+
+- Pillars are single tiles, so they read as regular studs rather than rock formations. Growing
+  them into clumps would look better and would need the sweep redone.
+- The generator writes one layer and no events — no props, no torches, no chests, nobody in it.
+- **Passability is still not generated.** A generated wall only blocks if that material is
+  configured impassable in the tileset; `check_map_walkability` on a map painted with passable
+  materials reports the surround as walkable, which is correct and not a generator bug.
 
 ### The town generator
 
