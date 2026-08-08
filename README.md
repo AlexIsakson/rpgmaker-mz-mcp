@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (17)
+### Map Management (19)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -74,6 +74,8 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `list_tileset_props` | What named objects this tileset offers — barrels, signs, trees, windows |
 | `place_prop` | Place a named object by name, however many tiles it is made of |
 | `generate_town` | Generate a whole town — streets, buildings with doors, tree line, decoration |
+| `generate_interior` | Fill a map with a room, and wire it to a door on another map |
+| `generate_interiors` | Give every door on a map a room, wired both ways |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
 | `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
 | `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
@@ -249,6 +251,29 @@ rather than against a map file — the planner is pure, and the tool applies its
 point it there; NPCs; and buildings on both sides of a street, which needs a door on a
 building's top edge and the building primitive has no such thing.
 
+`generate_interiors` gives every door on a map somewhere to go — a room each, wired both ways.
+It is what turns a generated town from something to look at into something to walk around in.
+
+```
+generate_interiors  mapId=55  tilesetId=3
+```
+
+The shape of a room is measured from the 113 interiors that ship with the editor, not invented:
+the space around it is A5 tile 1536 (436 of 452 sample-map corners), the room is ringed by an A4
+wall *top* with the wall *face* drawn beneath it, the face is two rows tall (2,504 runs of 3,660),
+and the pairing is `wallTopKind + 8` — the same `+8` the A3 roofs use. The doorway is a channel
+cut straight down through the front wall, and the exit is an invisible player-touch event playing
+an SE and transferring, which is 144 of the 147 sample exit events exactly.
+
+The round trip is the part that is easy to get backwards: the door lands the player on the room's
+doorway tile, and the room's exit lands them on the tile *in front of* the door — not on the door
+itself, which is a wall. Landing on the exit event does not re-fire it: the engine only checks
+player-touch events when the player finished a walking step, and a transfer sets the position with
+`locate()` instead.
+
+**Not generated:** NPCs, shops, stairs or upper floors — a room is one rectangle. Interiors are
+made only for doors that lead nowhere, so hand-made links survive unless you pass `relink`.
+
 `apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
 rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of
 their 16,829 shadow tiles 81.6% carry the value `5` while 83.7% sit immediately right of a
@@ -259,6 +284,13 @@ Without it, buildings read as flat cut-outs pasted onto the ground.
 actually get there?** It floods the map following `Game_CharacterBase.canPass` and reports
 NPCs standing in walls, NPCs sealed inside buildings, doors with no reachable tile in front of
 them, and areas cut off from the rest of the map.
+
+Pass `startX`/`startY` — a tile the player is known to reach, usually where they arrive.
+Without one the *largest* walkable area is assumed to be the reachable one, and on an interior
+that is the wrong area: passage flags are per tile *shape*, not per material, and a room's wall
+tops are passable along themselves, so the ring around a room is bigger than the room. Analysing
+an interior that ships with the editor without a start reports the room as cut off and its own
+exit as unreachable; with one, both it and a generated room come out clean.
 
 ```
 Walkability — 40x30

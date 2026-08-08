@@ -14,11 +14,21 @@ export function registerWalkabilityTools(server: McpServer): void {
     'Traverse a map and report what the player cannot reach: doors with no ' +
       'approach tile, NPCs standing in walls or sealed inside buildings, and ' +
       'areas cut off from the rest of the map. Run this after generating or ' +
-      'decorating a map — a tile-by-tile view cannot show any of it.',
+      'decorating a map — a tile-by-tile view cannot show any of it. Give ' +
+      'startX/startY on an interior, or the wall tops around the room are ' +
+      'mistaken for the reachable area.',
     {
       mapId: z.number().int().positive().describe('Map ID to analyse'),
+      startX: z.number().int().min(0).optional()
+        .describe(
+          'X of a tile the player is known to reach — usually where they arrive. Without it ' +
+          'the largest walkable area is assumed to be the reachable one, which is wrong for ' +
+          'interiors: a room\'s wall tops are passable along themselves in the RTP tilesets, so ' +
+          'the ring around the room is bigger than the room and the player can never stand on it.'
+        ),
+      startY: z.number().int().min(0).optional().describe('Y of that tile'),
     },
-    async ({ mapId }) => {
+    async ({ mapId, startX, startY }) => {
       try {
         const project = requireProject();
         const mapPath = path.join(project.dataPath, mapFilename(mapId));
@@ -31,7 +41,16 @@ export function registerWalkabilityTools(server: McpServer): void {
 
         const mapData = (await FileHandler.readJsonRaw(mapPath)) as MapData;
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
-        const report = analyseWalkability(mapData, tileset.flags);
+        if ((startX === undefined) !== (startY === undefined)) {
+          return {
+            content: [{ type: 'text' as const, text: 'Give both startX and startY, or neither.' }],
+            isError: true,
+          };
+        }
+
+        const report = analyseWalkability(mapData, tileset.flags, {
+          start: startX !== undefined ? { x: startX, y: startY! } : undefined,
+        });
 
         return {
           content: [{

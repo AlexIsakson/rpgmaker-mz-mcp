@@ -347,6 +347,7 @@ batching writes would remove the exposure entirely.
 | ergonomics — 440 of 526 calls were 1x1 rectangles | `paint_tiles` (`src/core/tile-batch.ts`) — see [Batched tile writes](#batched-tile-writes) |
 | 12 — per-tileset prop knowledge | `list_tileset_props` / `place_prop` (`src/core/props.ts`) — see [The prop catalogue](#the-prop-catalogue) |
 | 5, 8, 9, 14 — upper layers, framing the edge, decoration and events, validated placement | `generate_town` (`src/core/towngen.ts`) — see [The town generator](#the-town-generator) |
+| doors that led nowhere | `generate_interior` / `generate_interiors` (`src/core/interiorgen.ts`) — see [Interiors](#interiors) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
@@ -358,7 +359,7 @@ batching writes would remove the exposure entirely.
   to the cave and dungeon algorithms.
 - Nothing can write tileset passage flags; the tools can only detect that they are missing.
 
-Still to build: interiors, and NPCs.
+Still to build: NPCs, and carrying any of this back to the cave and dungeon generators.
 
 ### The town generator
 
@@ -408,10 +409,64 @@ reports one connected area for the whole map.
   above each row is open. Housing both sides needs a door on a building's *top* edge, and
   `place_building` has no such thing — the door sprite, the movement route and the approach tile
   all assume the player walks in from below.
-- **No interiors.** Every door animates and leads nowhere until a map exists to point it at.
 - **No NPCs.** The generator emits door events and nothing else.
 - **Blocks are rectangles.** Finding 7 applies here too: streets are straight, plots are grids,
   and nothing meanders.
+
+### Interiors
+
+`generate_interiors` makes a room for every door on a map and wires both directions;
+`generate_interior` does one room against a named door.
+
+- `src/core/interiorgen.ts` — `planInterior` and the exit event (pure, unit-tested)
+- `src/tools/interior-tools.ts` — the two MCP tools
+- `setDoorDestination` in `src/core/blueprint.ts` — fills in the transfer a door was built without
+
+**The shape of a room is measured, not designed**, from the 113 interiors that ship with the
+editor:
+
+| Fact | Evidence |
+|---|---|
+| The space around a room is A5 tile 1536 | 436 of 452 sample-map corners |
+| The room is ringed by an A4 wall *top*, with the wall *face* drawn beneath it | every sample room |
+| The face that belongs to a top is `+8` | 2,066 of 2,704 top-over-face columns — the same pairing the A3 roofs use |
+| The face is two rows tall | 2,504 runs of 3,660 (1 row: 620, 3 rows: 532) |
+| The exit is an invisible player-touch event playing an SE and transferring | 144 of 147 sample exit events, command sequence `250, 201, 0` |
+
+The front wall is drawn like the back one but below the room, and the doorway is a channel cut
+straight down through all three of its rows.
+
+**The round trip is the part that is easy to get backwards.** The door lands the player on the
+room's doorway tile; the room's exit lands them on the tile *in front of* the door, not on the
+door itself, which is a wall. Landing on the exit event does not re-fire it — `updateNonmoving`
+only calls `checkEventTriggerHere([1, 2])` when the player finished a walking step, and
+`performTransfer` sets the position with `locate()` rather than by moving. That is read out of
+the corescript rather than assumed, because getting it wrong would bounce the player straight
+back out of every house.
+
+**Two defects fell out of building this**, both in code that already existed:
+
+- **`refreshAutotileShapes` never shaped A4 wall tops.** `Tilemap._addAutotile` draws A4 kinds
+  on an *even* block row with `FLOOR_AUTOTILE_TABLE`, but the refresh pass only looked at A2, so
+  every wall top stayed at shape 0 — a field of centre pieces with no edges. It had gone
+  unnoticed because nothing had painted one until now. `usesFloorAutotileTable` fixes it, and
+  the test that asserted the old behaviour was itself asserting the bug.
+- **`generate_town` never cleared a map's events.** It rewrites every tile, so running it twice
+  left the previous run's door events behind: thirteen buildings, thirty-six doors, and every
+  door but the newest pointing at a building that no longer existed. Found by running
+  `generate_interiors` over a map that had been generated three times.
+
+**And one false positive in `check_map_walkability`.** Passage flags are per tile *shape*, not
+per material, and a room's wall tops are passable *along themselves* — so the ring around a room
+is a larger connected area than the room, and the player can never stand on it. Taking the
+largest area as "reachable" therefore reports the room as cut off and its own exit as
+unreachable. That is not a generator bug: **the interior maps that ship with the editor produce
+the identical complaint.** The tool now takes `startX`/`startY`, and with the arrival tile given
+both a shipped room and a generated one come out clean.
+
+**Still open here:** a room is one rectangle — no NPCs, shops, stairs or upper floors, and
+nothing varies but the furniture. Rooms are only made for doors that lead nowhere, so hand-made
+links survive unless `relink` is passed.
 
 ### The prop catalogue
 

@@ -62,9 +62,11 @@ export function registerTowngenTools(server: McpServer): void {
       'Buildings sit in bands facing the street below them, because a door is on ' +
       'a building\'s bottom row and is entered from the tile beneath it. Streets ' +
       'run to the map edge so the town has ways in, and cross streets guarantee ' +
-      'the network is connected. Same seed, same town.',
+      'the network is connected. Same seed, same town. The map is replaced — its ' +
+      'existing tiles and events both go.',
     {
-      mapId: z.number().int().positive().describe('Map ID — the map is overwritten'),
+      mapId: z.number().int().positive()
+        .describe('Map ID. Its tiles and its events are both replaced.'),
       seed: z.number().int().default(1).describe('Layout seed; the same seed reproduces the town'),
       groundKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX).default(A2_KIND_MIN)
         .describe(
@@ -189,6 +191,13 @@ export function registerTowngenTools(server: McpServer): void {
         }
 
         const notes = [...plan.warnings];
+
+        // Every tile is about to be rewritten, so the events have to go too.
+        // Leaving them behind stacks a fresh set of door events on top of the
+        // last run's — thirteen buildings, thirty-six doors, and every door but
+        // the newest pointing at a building that is no longer there.
+        const clearedEvents = mapData.events.filter((e) => e !== null).length;
+        mapData.events = [null];
 
         // --- ground and streets ---
         let ground = readLayer(mapData, 0);
@@ -338,6 +347,9 @@ export function registerTowngenTools(server: McpServer): void {
           `Decoration: ${plan.decorSlots.length} prop(s) on free ground, ${framed} framing the edge.`,
           `Shadows: ${shadows.added} tile(s).`,
         ];
+        if (clearedEvents > 0) {
+          lines.push(`Cleared ${clearedEvents} event(s) that were already on the map.`);
+        }
 
         if (failures.length > 0) {
           lines.push(

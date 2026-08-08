@@ -166,3 +166,59 @@ describe('analyseWalkability', () => {
     expect(report.standableTiles).toBe(15);
   });
 });
+
+describe('flooding from a known start', () => {
+  /**
+   * Two rooms, the left one bigger. Without a start the analysis calls the
+   * bigger one "the main area" — which is the assumption that misreports an
+   * interior, where the passable-but-unreachable wall tops around a room form a
+   * larger area than the room itself.
+   */
+  const twoRooms = [
+    '##########',
+    '#....##..#',
+    '#....##..#',
+    '#....##..#',
+    '#....##..#',
+    '##########',
+  ];
+
+  it('calls the largest area the main one when nothing is given', () => {
+    const report = analyseWalkability(makeMap(twoRooms), makeFlags());
+    expect(report.startWasGiven).toBe(false);
+    expect(report.reachableTiles).toBe(16); // the left room
+    expect(report.isolatedAreas.map((a) => a.size)).toEqual([8]);
+  });
+
+  it('uses the area holding the start instead', () => {
+    const report = analyseWalkability(makeMap(twoRooms), makeFlags(), { start: { x: 7, y: 1 } });
+    expect(report.startWasGiven).toBe(true);
+    expect(report.start).toEqual({ x: 7, y: 1 });
+    expect(report.reachableTiles).toBe(8); // the right room, though it is smaller
+    expect(report.isolatedAreas.map((a) => a.size)).toEqual([16]);
+  });
+
+  it('judges events against the area the start is in', () => {
+    const events = [{ name: 'Innkeeper', x: 7, y: 2 }];
+    const fromLeft = analyseWalkability(makeMap(twoRooms, events), makeFlags());
+    expect(fromLeft.issues.map((i) => i.kind)).toContain('event-unreachable');
+
+    const fromRight = analyseWalkability(makeMap(twoRooms, events), makeFlags(), {
+      start: { x: 7, y: 1 },
+    });
+    expect(fromRight.issues.map((i) => i.kind)).not.toContain('event-unreachable');
+  });
+
+  it('falls back to the largest area when the start is inside a wall, and says so', () => {
+    const report = analyseWalkability(makeMap(twoRooms), makeFlags(), { start: { x: 0, y: 0 } });
+    expect(report.startUnstandable).toBe(true);
+    expect(report.startWasGiven).toBe(false);
+    expect(report.reachableTiles).toBe(16);
+  });
+
+  it('falls back when the start is off the map', () => {
+    const report = analyseWalkability(makeMap(twoRooms), makeFlags(), { start: { x: 99, y: 99 } });
+    expect(report.startUnstandable).toBe(true);
+    expect(report.reachableTiles).toBe(16);
+  });
+});

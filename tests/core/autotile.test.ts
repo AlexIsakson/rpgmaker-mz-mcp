@@ -12,6 +12,7 @@ import {
   SHAPE_ISOLATED,
   SHAPE_FULL,
   TILE_ID_A2,
+  TILE_ID_A3,
   TILE_ID_A4,
   type Connections,
 } from '../../src/core/autotile.js';
@@ -333,14 +334,38 @@ describe('refreshAutotileShapes', () => {
     expect(getAutotileShape(after[1][1])).toBe(38); // bottom+right
   });
 
-  it('leaves non-A2 tiles untouched', () => {
-    const wall = TILE_ID_A4 + 5;
+  it('leaves wall-face tiles untouched — they follow the other table', () => {
+    // A3 is all wall face, and A4 is wall face on its odd block rows. Both
+    // belong to WALL_AUTOTILE_TABLE and wall-autotile.ts, so this pass must not
+    // touch them.
+    const a3 = TILE_ID_A3 + 5;
+    const a4Face = makeAutotileId(88, 5); // A4 block row 1 — odd, so a face
     const after = refreshAutotileShapes(grid([
-      [wall, wall],
-      [wall, EMPTY],
+      [a3, a4Face],
+      [a3, EMPTY],
     ]));
 
-    expect(after[0][0]).toBe(wall);
+    expect(after[0][0]).toBe(a3);
+    expect(after[0][1]).toBe(a4Face);
+    expect(after[1][1]).toBe(EMPTY);
+  });
+
+  it('shapes A4 wall tops, which the engine draws with the floor table', () => {
+    // Tilemap._addAutotile picks FLOOR_AUTOTILE_TABLE for A4 kinds on an even
+    // block row. Skipping them left every wall top at shape 0 — a field of
+    // centre pieces with no edges anywhere, which is what an interior's walls
+    // came out as before this was fixed.
+    const top = makeAutotileId(80, 0); // A4 block row 0 — even, so a wall top
+    const after = refreshAutotileShapes(grid([
+      [top, top],
+      [top, EMPTY],
+    ]));
+
+    // Out-of-bounds neighbours count as the same material, so the only
+    // boundary here is the empty cell at (1, 1).
+    expect(getAutotileKind(after[0][0])).toBe(80);
+    expect(getAutotileShape(after[0][0])).toBe(4);  // inner corner, bottom-right
+    expect(getAutotileShape(after[1][0])).toBe(24); // edge to the east
     expect(after[1][1]).toBe(EMPTY);
   });
 

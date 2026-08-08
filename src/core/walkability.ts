@@ -39,14 +39,33 @@ export interface WalkabilityIssue {
   y: number;
 }
 
+export interface WalkabilityOptions {
+  /**
+   * A tile the player is known to be able to stand on — usually where they
+   * arrive on the map.
+   *
+   * Without it the largest walkable area is taken as the reachable one, and on
+   * an interior that is wrong: a room's wall tops are passable *along
+   * themselves* in the RTP tilesets, so the ring around the room is a bigger
+   * connected area than the room, and the player can never set foot on it.
+   * Analysing an interior shipped with the editor that way reports the room as
+   * cut off and its own exit as unreachable.
+   */
+  start?: { x: number; y: number };
+}
+
 export interface WalkabilityReport {
   width: number;
   height: number;
   standableTiles: number;
   reachableTiles: number;
-  /** Where the flood started — the top-left standable tile of the largest area. */
+  /** Where the flood started: the given start, or the largest area's first tile. */
   start: { x: number; y: number } | null;
-  /** Standable tiles cut off from the largest area, grouped into areas. */
+  /** Whether `start` was supplied rather than guessed. */
+  startWasGiven: boolean;
+  /** Set when a start was given but the player could not stand there. */
+  startUnstandable: boolean;
+  /** Standable tiles cut off from the reachable area, grouped into areas. */
   isolatedAreas: { size: number; sample: { x: number; y: number } }[];
   issues: WalkabilityIssue[];
 }
@@ -111,7 +130,11 @@ function isDoorEvent(event: { pages?: { image?: { characterName?: string } }[] }
   return name.startsWith('!Door');
 }
 
-export function analyseWalkability(map: MapData, flags: number[]): WalkabilityReport {
+export function analyseWalkability(
+  map: MapData,
+  flags: number[],
+  options: WalkabilityOptions = {}
+): WalkabilityReport {
   const { width, height } = map;
 
   const standable: boolean[][] = [];
@@ -144,7 +167,19 @@ export function analyseWalkability(map: MapData, flags: number[]): WalkabilityRe
   }
 
   areas.sort((a, b) => b.size - a.size);
-  const main = areas[0];
+
+  // A given start beats the largest area. "Biggest" is only a stand-in for
+  // "where the player is", and on an interior the two are different areas.
+  const given = options.start;
+  const startUnstandable =
+    given !== undefined &&
+    (given.x < 0 || given.y < 0 || given.x >= width || given.y >= height ||
+      !standable[given.y][given.x]);
+  const main =
+    given && !startUnstandable
+      ? areas.find((a) => a.seen[given.y][given.x]) ?? areas[0]
+      : areas[0];
+
   const issues: WalkabilityIssue[] = [];
 
   for (const event of map.events ?? []) {
@@ -180,7 +215,11 @@ export function analyseWalkability(map: MapData, flags: number[]): WalkabilityRe
     }
   }
 
-  const isolatedAreas = areas.slice(1).map((a) => ({ size: a.size, sample: a.sample }));
+  // Everything that is not the reachable area — which is not always the largest
+  // one once a start has been given.
+  const isolatedAreas = areas
+    .filter((a) => a !== main)
+    .map((a) => ({ size: a.size, sample: a.sample }));
   for (const area of isolatedAreas) {
     if (area.size < 3) continue; // a stray tile behind scenery is not worth reporting
     issues.push({
@@ -196,7 +235,9 @@ export function analyseWalkability(map: MapData, flags: number[]): WalkabilityRe
     height,
     standableTiles,
     reachableTiles: main?.size ?? 0,
-    start: main?.sample ?? null,
+    start: given && !startUnstandable ? given : main?.sample ?? null,
+    startWasGiven: given !== undefined && !startUnstandable,
+    startUnstandable,
     isolatedAreas,
     issues,
   };
@@ -206,9 +247,18 @@ export function renderWalkabilityReport(report: WalkabilityReport): string {
   const lines = [
     `Walkability — ${report.width}x${report.height}`,
     `  Standable tiles: ${report.standableTiles} of ${report.width * report.height}`,
-    `  Largest connected area: ${report.reachableTiles}` +
+    `  ${report.startWasGiven ? 'Area reachable from the start' : 'Largest connected area'}: ` +
+      `${report.reachableTiles}` +
       (report.start ? ` (from ${report.start.x}, ${report.start.y})` : ''),
   ];
+
+  if (report.startUnstandable) {
+    lines.push(
+      '',
+      'The start tile given is not standable, so the largest area was used instead. ' +
+        'Check the coordinates — a start inside a wall makes every finding below suspect.'
+    );
+  }
 
   if (report.issues.length === 0) {
     lines.push('', 'No unreachable events, blocked doors or cut-off areas.');

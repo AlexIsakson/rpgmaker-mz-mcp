@@ -472,3 +472,43 @@ export function doorEventPage(options: DoorOptions = {}): EventPage {
 export function doorEvent(id: number, x: number, y: number, options: DoorOptions = {}): Event {
   return { id, name: `Door${id}`, note: '', pages: [doorEventPage(options)], x, y };
 }
+
+/** A door page carrying a !Door sprite is how RPG Maker marks a doorway. */
+export function isDoorPage(page: EventPage): boolean {
+  return /^!Door/.test(page.image?.characterName ?? '');
+}
+
+export function isDoorEvent(event: Event): boolean {
+  return event.pages.some(isDoorPage);
+}
+
+/**
+ * Point an existing door at a destination, filling in the transfer a door built
+ * without one is missing.
+ *
+ * Returns whether the door already had a transfer. When it does not, the SE and
+ * the transfer are appended before the page's end marker rather than after it —
+ * a command after code 0 is never reached, so appending naively would produce a
+ * door that still goes nowhere while looking wired up.
+ */
+export function setDoorDestination(page: EventPage, target: DoorTarget): boolean {
+  const transfer = page.list.find((c) => c.code === CODE_TRANSFER_PLAYER);
+  if (transfer) {
+    transfer.parameters = [0, target.mapId, target.x, target.y, 0, 0];
+    return true;
+  }
+
+  const end = page.list.findIndex((c) => c.code === CODE_END);
+  const at = end === -1 ? page.list.length : end;
+  page.list.splice(
+    at,
+    0,
+    { code: CODE_PLAY_SE, indent: 0, parameters: [audio('Move1')] },
+    {
+      code: CODE_TRANSFER_PLAYER,
+      indent: 0,
+      parameters: [0, target.mapId, target.x, target.y, 0, 0],
+    }
+  );
+  return false;
+}

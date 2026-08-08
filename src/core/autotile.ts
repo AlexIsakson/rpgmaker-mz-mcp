@@ -58,6 +58,32 @@ export function isTileA2(tileId: number): boolean {
   return tileId >= TILE_ID_A2 && tileId < TILE_ID_A3;
 }
 
+/** First kind of the A4 sheet, which is 8 kinds wide and 6 block rows tall. */
+const A4_KIND_MIN = Math.floor((TILE_ID_A4 - TILE_ID_A1) / SHAPES_PER_KIND);
+
+/**
+ * A4 kinds on an **even** block row are wall *tops* — the flat top of a wall
+ * seen from above — and `Tilemap._addAutotile` draws them with the floor table,
+ * not the wall one. Only the odd rows are wall faces.
+ */
+export function isTileA4WallTop(tileId: number): boolean {
+  if (tileId < TILE_ID_A4 || tileId >= TILE_ID_MAX) return false;
+  return Math.floor((getAutotileKind(tileId) - A4_KIND_MIN) / 8) % 2 === 0;
+}
+
+/**
+ * Whether this tile's shape comes from FLOOR_AUTOTILE_TABLE.
+ *
+ * A2 ground and A4 wall tops both do. Missing the wall tops leaves them at
+ * shape 0 — a field of centre pieces with no edges anywhere — which is what an
+ * interior's walls looked like before this existed. A1 water follows the floor
+ * table too for some kinds but has waterfall cases this module does not model,
+ * so it stays out of scope and passes through untouched.
+ */
+export function usesFloorAutotileTable(tileId: number): boolean {
+  return isTileA2(tileId) || isTileA4WallTop(tileId);
+}
+
 /** Mirrors Tilemap.isSameKindTile: autotiles match on kind, everything else exactly. */
 export function isSameKindTile(a: number, b: number): boolean {
   if (isAutotile(a) && isAutotile(b)) {
@@ -189,9 +215,10 @@ function connectionsAt(
 }
 
 /**
- * Recompute the shape of every A2 autotile in a layer, leaving its material
- * unchanged. Non-A2 tiles are passed through untouched — walls and waterfalls
- * follow different rules and are out of scope here.
+ * Recompute the shape of every floor-table autotile in a layer — A2 ground and
+ * A4 wall tops — leaving its material unchanged. Everything else is passed
+ * through untouched: A3/A4 wall faces follow WALL_AUTOTILE_TABLE and belong to
+ * wall-autotile.ts, and waterfalls follow a third table nothing models yet.
  *
  * `grid[y][x]` holds tile ids. Returns a new grid; the input is not modified.
  */
@@ -212,7 +239,7 @@ export function refreshAutotileShapes(
   return grid.map((row, y) =>
     row.map((tileId, x) => {
       if (!inRegion(x, y)) return tileId;
-      if (!isTileA2(tileId)) return tileId;
+      if (!usesFloorAutotileTable(tileId)) return tileId;
       const connections = connectionsAt(grid, x, y, tileId, outOfBounds);
       return makeAutotileId(getAutotileKind(tileId), computeFloorShape(connections));
     })

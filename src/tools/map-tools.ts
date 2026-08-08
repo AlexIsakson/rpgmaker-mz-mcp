@@ -19,6 +19,51 @@ export function mapFilename(id: number): string {
   return `Map${String(id).padStart(3, '0')}.json`;
 }
 
+export interface NewMapOptions {
+  name: string;
+  width: number;
+  height: number;
+  tilesetId: number;
+  parentId?: number;
+  bgmName?: string;
+}
+
+/**
+ * Create a map file and register it in MapInfos, returning the new id.
+ *
+ * Shared with the interior generator, which makes one map per door. A map is
+ * not just a file, it is a file *and* a MapInfos entry — a generator writing
+ * only the file would produce maps the editor cannot see.
+ */
+export async function createMapFile(
+  dataPath: string,
+  options: NewMapOptions
+): Promise<number> {
+  const infos = await readMapInfos(dataPath);
+  const newId = infos.length;
+
+  const mapData = defaultMap(options.width, options.height, options.tilesetId);
+  if (options.bgmName) {
+    mapData.autoplayBgm = true;
+    mapData.bgm = { ...defaultAudio(), name: options.bgmName };
+  }
+
+  await FileHandler.writeJson(path.join(dataPath, mapFilename(newId)), mapData);
+
+  infos.push({
+    id: newId,
+    expanded: false,
+    name: options.name,
+    order: infos.filter((m) => m !== null).length + 1,
+    parentId: options.parentId ?? 0,
+    scrollX: 0,
+    scrollY: 0,
+  });
+  await writeMapInfos(dataPath, infos);
+
+  return newId;
+}
+
 export function registerMapTools(server: McpServer): void {
   // --- list_maps ---
   server.tool(
