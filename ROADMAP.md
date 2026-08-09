@@ -341,7 +341,7 @@ batching writes would remove the exposure entirely.
 | 1b — seamless fills have no boundary | same classifier; `fill_map_region` warns when a seamless material is used for a patch rather than a whole-map fill |
 | 2 — no shadow plane | `apply_wall_shadows` (`src/core/shadows.ts`) |
 | 10 — passage flags unconfigured | `describe_tileset_materials` warns when `flags[0]` has no star bit; `check_project` already had the rule |
-| 14 — nothing validated placement | `check_map_walkability` (`src/core/walkability.ts`); `fill_map_region` gained `skipOccupied` and reports upper-layer overwrites |
+| 14 — nothing validated placement | `check_map_walkability` (`src/core/walkability.ts`); `fill_map_region` gained `skipOccupied` and reports upper-layer overwrites; `decorate_dungeon` refuses a prop that would seal part of the map |
 | 3 — no wall shape computation | `src/core/wall-autotile.ts`; `fill_map_region` now takes A3/A4 kinds and dispatches to the right table |
 | 4, 11, 13 — roof/wall pairing, nine-slice roofs, doors as events | `place_building` (`src/core/blueprint.ts`) — see [Building blueprints](#building-blueprints) |
 | ergonomics — 440 of 526 calls were 1x1 rectangles | `paint_tiles` (`src/core/tile-batch.ts`) — see [Batched tile writes](#batched-tile-writes) |
@@ -427,6 +427,36 @@ Cause: in the RTP tilesets an A4 wall *top* is passable (`flags 0xe00`) while it
 `floorKind` and tells floor from wall by material, and warns when a map without it looks
 suspiciously walkable.
 
+**A scatter prop is not always something you can walk over.** `Rubble` is one of the four
+default floor props and on `Dungeon_B` it is tile 120, flags `0x60f` — impassable from all four
+directions. Scattered at the default density it walled tiles off: on two generated floors it
+made 5 and 4 tiles solid, each cutting exactly one floor tile out of the map. It surfaced
+because it sealed a dungeon *entrance*, and the two features collide by construction —
+`planStairEnds` picks the extreme of the layout, which sits at the end of the longest thinnest
+passage, the most fragile tile there is.
+
+`rejectSealingSlots` now makes the guarantee `addPillars` and `place_npc` already made: a
+placement is accepted only if everything reachable before it is still reachable after. Three
+details matter and each is tested:
+
+- **Only solid props are checked**, and which those are is read from the tileset flags rather
+  than from the name — `Rubble` is solid, `Gravel A` beside it is not. Anything walkable is
+  kept without a flood fill, which is most of them.
+- **The check is incremental**, because two props that are each harmless alone can pinch a
+  corridor shut together. A ring corridor is the test: closing one tile leaves a way round,
+  closing the far side splits it.
+- **The test is relative — no tile *becomes* unreachable — not "the map is fully connected"**,
+  so a map that already had an isolated pocket is measured against what it actually was
+  instead of having every placement refused.
+
+The chests are marked solid in the mask before the props are judged, since a chest is priority
+1 and genuinely blocks its tile.
+
+Verified by driving the real server in **both tool orders** — decorate then link, and link then
+decorate — across two floors each. All four maps: the entrance reaches 100% of the walkable
+floor (508/508, 466/466, 507/507, 466/466), where before the fix the same seed stranded a tile
+at 506 of 507. The rejected props are named in the tool's output rather than silently dropped.
+
 **And one more stale-state bug, the same shape as the town generator's.**
 `generate_map_layout` replaces one tile layer and leaves the others — so regenerating over a
 decorated map strands the old torches and chests where the previous layout put them. It now says
@@ -436,14 +466,6 @@ so rather than leaving treasure floating in solid rock.
 
 - ~~Nothing places stairs or an entrance, so a generated dungeon connects to nothing.~~
   *Fixed:* [Stairs and entrances](#stairs-and-entrances).
-- **One of the four default floor props is solid, and nothing checks that a prop keeps the
-  map connected.** `Rubble` on `Dungeon_B` is tile 120, flags `0x60f` — blocked from all four
-  sides — so scattering it at the default 4% density can wall off whatever is behind it.
-  Measured on two generated floors: 5 and 4 floor tiles made impassable, each cutting exactly
-  one tile off the map. Small, but it is the same class of defect `addPillars` and
-  `place_npc` already guard against by accepting a placement only if the reachable area is
-  unchanged, and `planDressing` makes no such check. Found because it sealed a stair — see
-  the note under [Stairs and entrances](#stairs-and-entrances).
 - Chests all hand over the same item, and there are no enemies, switches or locked doors.
 - Pillars are single tiles, so they read as regular studs rather than rock formations. Growing
   them into clumps would look better and would need the sweep redone.
@@ -512,10 +534,12 @@ It caught a real mistake immediately: the first end-to-end run put the surface e
 tile the player could not reach, because `Rubble` is one of that tool's four default floor props
 and is solid, and it had landed in the one-tile corridor leading to the dead end. The two
 interact by construction: `planStairEnds` picks the extreme of the layout, and the extreme sits
-at the end of the longest thinnest passage — the most fragile tile on the map. Fixed on this
-side by taking the floor mask as *painted with the floor material **and** standable*, rather
-than trusting the material alone; the underlying prop bug is recorded under
-[Dungeon dressing](#dungeon-dressing).
+at the end of the longest thinnest passage — the most fragile tile on the map.
+
+Fixed on both sides, because either alone would leave a hole. Stair placement takes the floor
+mask as *painted with the floor material **and** standable*, so a stair never lands on a tile
+something above has blocked, whatever put it there; and `decorate_dungeon` no longer places a
+prop that would wall anything off — see [Dungeon dressing](#dungeon-dressing).
 
 **Verified by driving the real server**: a surface map and two generated, decorated dungeon
 floors, linked in one call. `get_map_graph` reports `Hillside -> Crypt B1 -> Crypt B2` with

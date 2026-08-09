@@ -9,7 +9,12 @@ import { getAutotileKind, isAutotile, TILE_ID_A2, TILE_ID_A3 } from '../core/aut
 import { TilesetReader } from '../core/tileset-reader.js';
 import { addEvent } from '../core/building-placement.js';
 import { collectProps, findProps, propCells, type Prop } from '../core/props.js';
-import { planDressing, torchEvent, treasureEvent } from '../core/dungeon-dressing.js';
+import {
+  planDressing,
+  rejectSealingSlots,
+  torchEvent,
+  treasureEvent,
+} from '../core/dungeon-dressing.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import type { MapData } from '../schemas/map.js';
@@ -24,6 +29,27 @@ const DEFAULT_WALL_PROPS = ['Wall Moss', 'Wall Fern', 'Mural A', 'Mural B'];
 
 function errorResult(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
+}
+
+/**
+ * Whether putting this prop down leaves a tile the player cannot stand on.
+ *
+ * Passage resolves top-down and a star tile falls through to the layer below, so
+ * a prop only decides its own tile when it is not starred — and it makes that
+ * tile unstandable only when every direction is blocked, which is the same test
+ * `standableGrid` applies.
+ *
+ * Only the single-tile props scattered here are asked about, so one cell is the
+ * whole prop. Partly-blocked tiles (impassable left and right but not up and
+ * down, which is how the RTP draws its ladders) count as passable: they are, in
+ * one axis, and the floor mask has no way to say "only vertically".
+ */
+function propBlocksTile(prop: Prop, flags: number[]): boolean {
+  return propCells(prop).some((cell) => {
+    const flag = flags[cell.tileId] ?? 0;
+    if ((flag & 0x10) !== 0) return false; // star: the ground below decides
+    return (flag & 0x0f) === 0x0f;
+  });
 }
 
 /** Resolve names to single-tile props, reporting the ones this tileset lacks. */
@@ -200,7 +226,37 @@ export function registerDungeonDressingTools(server: McpServer): void {
           });
           return slots.length;
         };
-        const floorPlaced = scatter(plan.floorProps, floorSet.props);
+
+        // A floor prop the player cannot walk over is an obstacle, not clutter,
+        // and one dropped in a one-tile corridor walls off whatever is beyond
+        // it. Which props those are is a per-tileset fact rather than something
+        // knowable from the name — Rubble on Dungeon_B is solid, Gravel is not —
+        // so it is read off the flags and checked before anything is written.
+        const floorPropAt = (i: number) => floorSet.props[i % floorSet.props.length];
+        const blocks = floorSet.props.length === 0
+          ? []
+          : plan.floorProps.map((_, i) => propBlocksTile(floorPropAt(i), tileset.flags));
+
+        // The chests are going in too, and a chest blocks its tile, so the
+        // corridor a prop must not pinch shut is the one measured with them
+        // already standing there.
+        const withChests = floor.map((row, y) =>
+          row.map((open, x) => open && !plan.treasure.some((t) => t.x === x && t.y === y))
+        );
+        const check = rejectSealingSlots(withChests, plan.floorProps, blocks);
+        const safeFloorSlots = check.kept.map((i) => plan.floorProps[i]);
+        const safeFloorProps = check.kept.map((i) => floorPropAt(i));
+
+        // Placement has already been decided per slot, so scatter's round-robin
+        // must not renumber what is left after the rejections.
+        if (safeFloorProps.length > 0) {
+          safeFloorSlots.forEach((slot, i) => {
+            for (const cell of propCells(safeFloorProps[i])) {
+              placements.push({ x: slot.x + cell.dx, y: slot.y + cell.dy, tileId: cell.tileId });
+            }
+          });
+        }
+        const floorPlaced = safeFloorSlots.length;
         const wallPlaced = scatter(plan.wallProps, wallSet.props);
 
         if (placements.length > 0) {
@@ -243,6 +299,18 @@ export function registerDungeonDressingTools(server: McpServer): void {
             '',
             `Only ${plan.torches.length} wall face(s) were far enough apart at spacing ` +
             `${args.torchSpacing}. Lower it for more torches.`
+          );
+        }
+        if (check.sealed.length > 0) {
+          const solid = [...new Set(
+            check.sealed.map((i) => floorPropAt(i).name)
+          )];
+          lines.push(
+            '',
+            `${check.sealed.length} floor prop(s) were dropped because they would have walled ` +
+            `part of the map off: ${solid.join(', ')}. Those props are impassable in this ` +
+            'tileset, so one in a one-tile corridor cuts off everything beyond it. They are ' +
+            'still placed wherever they cannot seal anything.'
           );
         }
         if (missing.length > 0) {

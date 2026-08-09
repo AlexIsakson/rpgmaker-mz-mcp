@@ -8,7 +8,9 @@ import {
   CHEST_CLOSED_DIRECTION,
   CHEST_OPEN_DIRECTION,
   type DressingOptions,
+  rejectSealingSlots,
 } from '../../src/core/dungeon-dressing.js';
+import { generateDungeon, floodFill } from '../../src/core/mapgen.js';
 
 describe('torchEventPage', () => {
   it('uses the settings 499 of the 635 shipped torches use', () => {
@@ -206,5 +208,133 @@ describe('planDressing', () => {
     expect(plan.treasure).toEqual([]);
     expect(plan.floorProps).toEqual([]);
     expect(plan.wallProps).toEqual([]);
+  });
+});
+
+describe('rejectSealingSlots', () => {
+  /** `#` solid, `.` open. */
+  const mask = (art: string): boolean[][] =>
+    art.trim().split('\n').map((line) => [...line.trim()].map((c) => c === '.'));
+
+  it('keeps every prop that cannot block anything, without checking', () => {
+    const floor = mask(`
+      #####
+      #...#
+      #####
+    `);
+    const slots = [{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 3, y: 1 }];
+    // Gravel and crystals are walked over; nothing to check.
+    const { kept, sealed } = rejectSealingSlots(floor, slots, [false, false, false]);
+    expect(kept).toEqual([0, 1, 2]);
+    expect(sealed).toEqual([]);
+  });
+
+  it('drops a solid prop that would wall off the far end of a corridor', () => {
+    // Blocking the middle of the corridor strands 3,1 and 4,1.
+    const floor = mask(`
+      ######
+      #....#
+      ######
+    `);
+    const { kept, sealed } = rejectSealingSlots(floor, [{ x: 2, y: 1 }], [true]);
+    expect(kept).toEqual([]);
+    expect(sealed).toEqual([0]);
+  });
+
+  it('allows a solid prop at a dead end, where nothing is beyond it', () => {
+    const floor = mask(`
+      ######
+      #....#
+      ######
+    `);
+    // 4,1 is the tip: blocking it costs only itself.
+    expect(rejectSealingSlots(floor, [{ x: 4, y: 1 }], [true]).kept).toEqual([0]);
+  });
+
+  it('allows a solid prop in open space the map can walk around', () => {
+    const floor = mask(`
+      #####
+      #...#
+      #...#
+      #...#
+      #####
+    `);
+    expect(rejectSealingSlots(floor, [{ x: 2, y: 2 }], [true]).kept).toEqual([0]);
+  });
+
+  it('catches two props that are each harmless alone and seal together', () => {
+    // A ring corridor. Closing one tile leaves a path round the other way;
+    // closing a second on the far side cuts the ring into two halves.
+    const floor = mask(`
+      #######
+      #.....#
+      #.###.#
+      #.###.#
+      #.....#
+      #######
+    `);
+    const top = { x: 3, y: 1 };
+    const bottom = { x: 3, y: 4 };
+    expect(rejectSealingSlots(floor, [top], [true]).kept).toEqual([0]);
+    expect(rejectSealingSlots(floor, [bottom], [true]).kept).toEqual([0]);
+
+    // Together the second has to go — which a check that measured each against
+    // the untouched map, rather than incrementally, would wave through.
+    const both = rejectSealingSlots(floor, [top, bottom], [true, true]);
+    expect(both.kept).toEqual([0]);
+    expect(both.sealed).toEqual([1]);
+  });
+
+  it('measures against what the map was, not against being fully connected', () => {
+    // The pocket at 4,1 is already cut off. A prop elsewhere is still fine.
+    const floor = mask(`
+      #####
+      #.#.#
+      #.###
+      #.###
+      #####
+    `);
+    expect(rejectSealingSlots(floor, [{ x: 1, y: 3 }], [true]).kept).toEqual([0]);
+  });
+
+  it('never lets a prop make a reachable tile unreachable, over generated dungeons', () => {
+    for (const seed of [1, 3, 7, 11, 19]) {
+      const { floor } = generateDungeon({ width: 34, height: 26, seed });
+      const plan = planDressing(floor, {
+        seed, torchCount: 0, treasureCount: 0,
+        floorPropDensity: 0.15, wallPropDensity: 0,
+      });
+      // Worst case: every scattered prop is a solid one.
+      const blocks = plan.floorProps.map(() => true);
+      const { kept } = rejectSealingSlots(floor, plan.floorProps, blocks);
+
+      const placed = new Set(kept.map((i) => `${plan.floorProps[i].x},${plan.floorProps[i].y}`));
+      const after = floor.map((row, y) =>
+        row.map((open, x) => open && !placed.has(`${x},${y}`))
+      );
+
+      // Flood both from the same tile — one the props never touch — so the two
+      // reachable sets are directly comparable.
+      let start: { x: number; y: number } | null = null;
+      for (let y = 0; y < floor.length && start === null; y++) {
+        for (let x = 0; x < floor[y].length; x++) {
+          if (after[y][x]) { start = { x, y }; break; }
+        }
+      }
+      expect(start).not.toBeNull();
+
+      const before = floodFill(floor, start!.x, start!.y);
+      const reachable = floodFill(after, start!.x, start!.y);
+      expect(before.flat().filter(Boolean).length).toBeGreaterThan(100);
+
+      let lost = 0;
+      for (let y = 0; y < floor.length; y++) {
+        for (let x = 0; x < floor[y].length; x++) {
+          if (before[y][x] && !placed.has(`${x},${y}`) && !reachable[y][x]) lost++;
+        }
+      }
+      expect({ seed, lost }).toEqual({ seed, lost: 0 });
+      expect(kept.length).toBeGreaterThan(0);
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { makeRng } from './mapgen.js';
+import { makeRng, floodFill } from './mapgen.js';
 import type { Event, EventCommand, EventPage } from '../schemas/event.js';
 
 /**
@@ -285,4 +285,97 @@ export function planDressing(floor: boolean[][], options: DressingOptions): Dres
     .slice(0, Math.floor(freeWall.length * options.wallPropDensity));
 
   return { torches, treasure, floorProps, wallProps, deadEnds: deadEnds.length };
+}
+
+// --- keeping the map connected ----------------------------------------------
+
+function countOpen(mask: boolean[][]): number {
+  return mask.reduce((total, row) => total + row.filter(Boolean).length, 0);
+}
+
+export interface SealingCheck {
+  /** Indices of `slots` that may be used. */
+  kept: number[];
+  /** Indices dropped because placing them would cut part of the map off. */
+  sealed: number[];
+}
+
+/**
+ * Drop the placements that would wall part of the map off.
+ *
+ * **Not every scatter prop is something you can walk over.** `Rubble` on
+ * `Dungeon_B` is tile 120, flags `0x60f` — impassable from all four directions —
+ * and it is one of `decorate_dungeon`'s four default floor props. Dropped in a
+ * one-tile corridor it cuts off everything beyond, which is how a generated
+ * dungeon ended up with an entrance the player could not reach.
+ *
+ * The guarantee is the one `addPillars` and `place_npc` already make, for the
+ * same reason: a placement is accepted only if everything still reachable before
+ * it is still reachable after. Checking is incremental rather than one pass at
+ * the end, because two props that are each harmless alone can jointly pinch a
+ * corridor shut.
+ *
+ * The test is relative — *no tile becomes unreachable* — rather than "the map is
+ * fully connected", so a map that already had an isolated pocket is measured
+ * against what it actually was instead of having every placement rejected.
+ *
+ * `blocks[i]` says whether the prop going at `slots[i]` makes its tile
+ * impassable. Anything false is kept without a flood fill, which is most props:
+ * gravel and crystals are walked over.
+ */
+export function rejectSealingSlots(
+  floor: boolean[][],
+  slots: Slot[],
+  blocks: boolean[]
+): SealingCheck {
+  const kept: number[] = [];
+  const sealed: number[] = [];
+  if (slots.every((_, i) => !blocks[i])) {
+    return { kept: slots.map((_, i) => i), sealed };
+  }
+
+  const grid = floor.map((row) => [...row]);
+  const blocking = new Set(slots.filter((_, i) => blocks[i]).map((s) => key(s.x, s.y)));
+
+  // The reference has to be a tile that stays open, or "still reachable from
+  // here" would stop meaning anything half way through.
+  let reference: Slot | null = null;
+  for (let y = 0; y < grid.length && reference === null; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      if (grid[y][x] && !blocking.has(key(x, y))) { reference = { x, y }; break; }
+    }
+  }
+
+  if (reference === null) {
+    // Every open tile would be built on. Nothing solid can go down safely.
+    slots.forEach((_, i) => (blocks[i] ? sealed : kept).push(i));
+    return { kept, sealed };
+  }
+
+  let reached = floodFill(grid, reference.x, reference.y);
+  let reachedCount = countOpen(reached);
+
+  for (let i = 0; i < slots.length; i++) {
+    if (!blocks[i]) { kept.push(i); continue; }
+
+    const { x, y } = slots[i];
+    if (!grid[y]?.[x]) { sealed.push(i); continue; }
+
+    const wasReached = reached[y][x];
+    grid[y][x] = false;
+    const after = floodFill(grid, reference.x, reference.y);
+    const afterCount = countOpen(after);
+
+    // Losing the tile itself is expected; losing anything else is the seal.
+    if (afterCount === reachedCount - (wasReached ? 1 : 0)) {
+      kept.push(i);
+      reached = after;
+      reachedCount = afterCount;
+    } else {
+      grid[y][x] = true;
+      sealed.push(i);
+    }
+  }
+
+  return { kept, sealed };
 }
