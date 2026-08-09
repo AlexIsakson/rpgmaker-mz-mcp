@@ -22,6 +22,7 @@ import { registerEventTools } from './tools/event-tools.js';
 import { registerEventFlowTools } from './tools/event-flow-tools.js';
 import { registerScenarioTools } from './tools/scenario-tools.js';
 import { registerTilesetTools } from './tools/tileset-tools.js';
+import { registerPassageTools } from './tools/passage-tools.js';
 import { registerWalkabilityTools } from './tools/walkability-tools.js';
 
 async function main(): Promise<void> {
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   registerEventFlowTools(server);
   registerScenarioTools(server);
   registerTilesetTools(server);
+  registerPassageTools(server);
   registerWalkabilityTools(server);
 
   logger.info('All tools registered');

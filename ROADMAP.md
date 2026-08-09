@@ -133,9 +133,13 @@ needs the remaining database files loaded and their valid ID sets checked.
 ## 5. Procedural map generation 🚧
 
 > **Status: in progress.** Steps 1 and 2 are done and confirmed against the editor. Step 3
-> generates connected, correctly-shaped layouts, but a visual review of the output found the
-> resulting maps need work before this can be called finished. The specific problems are now
-> written down — see [Visual review findings](#visual-review-findings).
+> generates connected, correctly-shaped layouts; a visual review then found the maps were not
+> good enough to call finished, and most of what it turned up has since been built — see
+> [Visual review findings](#visual-review-findings) and the table of
+> [what came out of them](#what-has-been-built-from-these-findings). Towns, interiors, NPCs,
+> dungeon dressing, stairs between maps and writable passage flags all came from that list.
+> What is left is collected under [Still open](#still-open-2): everything the generators emit
+> is a rectangle, and nothing has any game logic behind it.
 
 Generate the `data` tile array algorithmically — rooms and corridors, town layouts, interiors.
 The generation algorithms themselves (BSP, cellular automata) are well-trodden; the hard part
@@ -288,9 +292,10 @@ broken tileset and exactly the symptom to look for.
 Any generator that writes a map should run that check first and refuse, or at least warn,
 rather than emit a map where geometry has no effect.
 
-Fixed here by copying the flags array from the reference database at
-`RPG Maker MZ/newdata/data/Tilesets.json`, which has all 8192 entries. **No tool can write
-tileset flags**, so that had to be done outside the server.
+Fixed at the time by copying the flags array from the reference database at
+`RPG Maker MZ/newdata/data/Tilesets.json` by hand, because no tool could write tileset flags.
+`configure_tileset_passage` now does exactly that copy from a committed catalogue — see
+[Writing passage flags](#writing-passage-flags).
 
 **11. Roofs need the nine-slice sets from the B/C sheets, not a rectangle of A3 texture.** The
 A3 roof materials are uniform textures — `Outside_A3` kind 52's whole 2x2 block is shingle with
@@ -340,7 +345,7 @@ batching writes would remove the exposure entirely.
 | 1 — transparent materials on layer 0 | `src/core/tileset-image.ts` measures the A2 sheet; `fill_map_region` refuses an overlay material on layer 0 unless `allowOverlayOnGround` |
 | 1b — seamless fills have no boundary | same classifier; `fill_map_region` warns when a seamless material is used for a patch rather than a whole-map fill |
 | 2 — no shadow plane | `apply_wall_shadows` (`src/core/shadows.ts`) |
-| 10 — passage flags unconfigured | `describe_tileset_materials` warns when `flags[0]` has no star bit; `check_project` already had the rule |
+| 10 — passage flags unconfigured | `configure_tileset_passage` / `set_tileset_passage` (`src/core/passage.ts`) — see [Writing passage flags](#writing-passage-flags); `describe_tileset_materials` and `check_project` detect the case |
 | 14 — nothing validated placement | `check_map_walkability` (`src/core/walkability.ts`); `fill_map_region` gained `skipOccupied` and reports upper-layer overwrites; `decorate_dungeon` refuses a prop that would seal part of the map |
 | 3 — no wall shape computation | `src/core/wall-autotile.ts`; `fill_map_region` now takes A3/A4 kinds and dispatches to the right table |
 | 4, 11, 13 — roof/wall pairing, nine-slice roofs, doors as events | `place_building` (`src/core/blueprint.ts`) — see [Building blueprints](#building-blueprints) |
@@ -357,8 +362,7 @@ batching writes would remove the exposure entirely.
 
 **Still not in the server:**
 
-- Nothing can write tileset passage flags; the tools can only detect that they are missing.
-Still to build: shops, quests, or anything with a switch behind it.
+- Shops, quests, or anything with a switch behind it.
 
 ### Layout shape
 
@@ -470,9 +474,77 @@ so rather than leaving treasure floating in solid rock.
 - Pillars are single tiles, so they read as regular studs rather than rock formations. Growing
   them into clumps would look better and would need the sweep redone.
 - The generator itself writes one layer; `decorate_dungeon` is a separate pass over the result.
-- **Passability is still not generated.** A generated wall only blocks if that material is
-  configured impassable in the tileset; `check_map_walkability` on a map painted with passable
-  materials reports the surround as walkable, which is correct and not a generator bug.
+- **Passability comes from the tileset, not the layout.** A generated wall only blocks if that
+  material is configured impassable, so `check_map_walkability` on a map painted with passable
+  materials reports the surround as walkable — correct output, not a generator bug.
+  `configure_tileset_passage` is what makes the tileset say so in the first place.
+
+### Writing passage flags
+
+`configure_tileset_passage` writes a tileset's flags from the configuration the editor ships
+for the same sheets; `set_tileset_passage` edits chosen tiles for art the catalogue has never
+seen. `list_passage_catalogue` says what is covered.
+
+- `scripts/build-passage-catalogue.mjs` — the generator
+- `src/core/passage-catalogue.ts` — generated data, committed
+- `src/core/passage.ts` — slot ranges, planning, flag edits (pure, unit-tested)
+- `src/tools/passage-tools.ts` — the three MCP tools
+
+**This was the gap the whole generator stack sat on.** A generated wall only blocks if its
+material is configured impassable, and that lives in `Tilesets.json` rather than in map data —
+so a project whose tileset was never set up produces maps where geometry has no effect at all.
+`check_project` has reported that as `tileset-passage-unconfigured` since phase 4, and until now
+nothing could act on it. The scratch project used for every visual check had to have its flags
+pasted in from a reference database by hand.
+
+**Which materials are solid cannot be derived.** It is authored art direction, not something
+measurable from the image — a cliff face and a cobbled floor are both opaque rectangles of
+pixels. Unlike `tileset-image.ts`, which *can* measure opacity and edge contrast, there is
+nothing here to compute. So the flags are taken from the tilesets the editor itself ships.
+
+**What makes that transferable is that flags are a property of the sheet, not of the tileset,
+and that was measured rather than assumed.** Across 68 configured tilesets from 9 databases,
+56 of 62 sheets carry byte-identical flags everywhere they appear. The six that vary are named
+in the catalogue's header with the source that won, so the ambiguity is visible rather than
+buried — they are sheets two tilesets share, like `Inside_A1` used by both `Inside` and
+`SF Inside`, which disagree on one material.
+
+**Choosing between conflicting sources needed a rule, and the obvious one was wrong.** Taking
+the first database in sorted order put the Card Game Combat demo — a third-party DLC project
+whose author had retuned the Dungeon tileset on 96 tiles — ahead of the editor's own template,
+purely because `dlc/Card…` sorts before `newdata`. The rule is now explicit: `newdata` is what
+the editor writes for a new project and therefore *is* the default; then the official sample
+packs; then anything else. Within one database the lowest tileset id wins, so a sheet is taken
+from the tileset it is named after rather than one that merely borrows it.
+
+**The catalogue is checked against its own sources.** For every configured tileset the editor
+ships, planning must ask for zero changes on every sheet that tileset owns — and the only
+divergence anywhere is `SF Inside`, at exactly the 98 tiles (48 + 48 + 2) it borrows from
+`Inside` and `SF Outside`. Run-length encoding makes it cheap to commit: 5,980 runs for 57,856
+tiles, 10.3%, because flags repeat across all 48 shapes of an autotile material.
+
+**Passability is stated positively and stored inverted.** In the file a *set* bit means blocked,
+which reads backwards every time, so `set_tileset_passage` takes `passable: false` and does the
+inversion. Tiles are chosen by autotile material (all 48 shapes, which is what the editor
+does — passage is per material, not per shape), by prop name from the existing catalogue, or by
+raw id.
+
+**Verified by driving the real server** against the scratch project's genuinely unconfigured
+tileset 1: 8192 flags all zero and `check_project` complaining, then 2,816 tiles written, tile 0
+carrying the star bit, and the complaint gone. Running it again reports zero changes. A tileset
+built with invented sheet names gets its one known sheet configured, the two unknown ones named
+and left alone — and, because tile 0 belongs to the unknown slot, a warning that it is *still*
+unconfigured rather than a success message.
+
+**Still open here:**
+
+- **Custom art gets no defaults**, only `set_tileset_passage` tile by tile. Nothing infers
+  passability from an image, and nothing could without knowing what the art depicts.
+- **The catalogue can only restore slots that name a sheet.** Tiles 1024-1535 — the gap MZ
+  leaves between the object sheets and A5 — and any empty slot keep whatever they had. Neither
+  is addressable from a map, so neither affects play.
+- Terrain tags are copied along with passability. They are project-specific labels, so a
+  project using them for its own purposes should configure passage first and tag afterwards.
 
 ### Stairs and entrances
 
@@ -889,19 +961,12 @@ That is the honest measure of what is missing:
 
 ### Still open
 
-- **Passability is not generated.** The generator paints materials; whether the player can
-  walk on them comes from the tileset's passage flags, which are a tileset setting rather
-  than map data. A generated "wall" only blocks if that material is configured impassable.
-  `get_map_grid` shows what is actually walkable, and `check_project` flags tilesets whose
-  passage was never configured.
-- **The generators still don't use any of this.** `fill_map_region` handles A3/A4 walls and
-  `place_building` assembles them into houses, but `generate_map_layout` writes A2 on layer 0
-  only — its dungeons and caves still read as floor-vs-surround rather than rooms with raised
-  walls.
-- **Town and interior generators.** Building plots, roads, and furnished rooms are a
-  different problem from cave/dungeon carving and were left out. `place_building` is the
-  primitive a town generator would place; nothing chooses *where* to place them yet, and
-  interiors are not generated at all, so a door's destination has to be a map you made.
+- **Everything the generators emit is a rectangle.** Finding 7 is the one that has not moved:
+  roofs have no L-shapes, an interior room is a single box, and a town's streets are straight
+  and its plots a grid. Hand-made maps have almost no straight material boundaries.
+- **Nothing has game logic behind it.** Every chest hands over the same item, every NPC is one
+  page saying one placeholder line, and there are no shops, quests, switches, locked doors or
+  enemies anywhere.
 
 ### Scope and open questions
 
@@ -920,11 +985,10 @@ That is the honest measure of what is missing:
 Unlike items #1–#4, this cannot be fully proven from data. Tile ids can be checked against the
 engine's tables — and are — but "does the map actually look right" needs someone looking at it.
 
-That no longer means opening the editor. A standalone renderer that ports `Tilemap`'s drawing
-from `rmmz_core.js` turns any map file into a PNG, which closes the loop: generate, render,
-look, change something, render again. It is worth landing as a dev script — every finding above
-came out of that loop, and several of them (the transparent-material holes especially) are
-invisible in a text grid.
+That no longer means opening the editor. `scripts/render-map.mjs` ports `Tilemap`'s drawing
+from `rmmz_core.js` and turns any map file into a PNG, which closes the loop: generate, render,
+look, change something, render again. Every finding above came out of that loop, and several of
+them (the transparent-material holes especially) are invisible in a text grid.
 
 **Pick the test material carefully.** The first visual check used A2 column 0, which is the
 plain seamless fill — its edge pieces look identical to its middle pieces, so the render could
