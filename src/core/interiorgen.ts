@@ -1,6 +1,7 @@
 import { makeRng } from './mapgen.js';
 import { TILE_ID_A5, type Rect } from './autotile.js';
-import type { EventCommand, EventPage, Event } from '../schemas/event.js';
+import { transferEventPage, STAIR_SE } from './stairs.js';
+import type { EventPage, Event } from '../schemas/event.js';
 
 /**
  * Interior rooms.
@@ -184,10 +185,6 @@ export function renderInteriorAscii(plan: InteriorPlan): string {
 
 // --- the exit event ---------------------------------------------------------
 
-const CODE_PLAY_SE = 250;
-const CODE_TRANSFER_PLAYER = 201;
-const CODE_END = 0;
-
 export interface ExitTarget {
   mapId: number;
   x: number;
@@ -198,50 +195,19 @@ export interface ExitTarget {
  * The page the sample maps use for a way out: invisible, triggered by walking
  * onto it, drawn below characters so it never blocks the tile.
  *
+ * This is `transferEventPage` — a way out of a house and a flight of stairs are
+ * the same event, and measuring the two separately produced the identical page
+ * (144 of 147 sample exit events; 157 of 157 stair pages). It lives in
+ * `stairs.ts` rather than being written twice.
+ *
  * Landing the player on this event does **not** re-trigger it: the engine only
  * checks player-touch events in `updateNonmoving` when `wasMoving` is true, and
  * `performTransfer` sets the position with `locate()` rather than by moving. So
  * a door on the outside can put the player straight onto the tile they will
  * later step off to leave, which is what makes the doorway read as a doorway.
  */
-export function exitEventPage(target: ExitTarget, se = 'Move1'): EventPage {
-  const list: EventCommand[] = [
-    {
-      code: CODE_PLAY_SE,
-      indent: 0,
-      parameters: [{ name: se, volume: 90, pitch: 100, pan: 0 }],
-    },
-    // [designation, mapId, x, y, direction (0 = retain), fade (0 = black)]
-    {
-      code: CODE_TRANSFER_PLAYER,
-      indent: 0,
-      parameters: [0, target.mapId, target.x, target.y, 0, 0],
-    },
-    { code: CODE_END, indent: 0, parameters: [] },
-  ];
-
-  return {
-    conditions: {
-      actorId: 1, actorValid: false,
-      itemId: 1, itemValid: false,
-      selfSwitchCh: 'A', selfSwitchValid: false,
-      switch1Id: 1, switch1Valid: false,
-      switch2Id: 1, switch2Valid: false,
-      variableId: 1, variableValid: false, variableValue: 0,
-    },
-    directionFix: false,
-    image: { characterIndex: 0, characterName: '', direction: 2, pattern: 0, tileId: 0 },
-    list,
-    moveFrequency: 3,
-    moveRoute: { list: [{ code: 0, parameters: [] }], repeat: true, skippable: false, wait: false },
-    moveSpeed: 3,
-    moveType: 0,
-    priorityType: 0,
-    stepAnime: false,
-    through: false,
-    trigger: 1,
-    walkAnime: false,
-  };
+export function exitEventPage(target: ExitTarget, se = STAIR_SE): EventPage {
+  return transferEventPage(target, { se });
 }
 
 export function exitEvent(id: number, x: number, y: number, target: ExitTarget): Event {

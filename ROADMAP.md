@@ -351,6 +351,7 @@ batching writes would remove the exposure entirely.
 | 9 — nobody in the places built | `place_npc` / `populate_map` (`src/core/npcgen.ts`) — see [NPCs](#npcs) |
 | 6, 7 — cave and dungeon silhouettes | `generate_map_layout` (`src/core/mapgen.ts`) — see [Layout shape](#layout-shape) |
 | 9 — generated dungeons had no props and no events | `decorate_dungeon` (`src/core/dungeon-dressing.ts`) — see [Dungeon dressing](#dungeon-dressing) |
+| a generated dungeon connected to nothing | `place_stairs` / `link_dungeon_floors` (`src/core/stairs.ts`) — see [Stairs and entrances](#stairs-and-entrances) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
@@ -433,7 +434,16 @@ so rather than leaving treasure floating in solid rock.
 
 **Still open here:**
 
-- Nothing places stairs or an entrance, so a generated dungeon connects to nothing.
+- ~~Nothing places stairs or an entrance, so a generated dungeon connects to nothing.~~
+  *Fixed:* [Stairs and entrances](#stairs-and-entrances).
+- **One of the four default floor props is solid, and nothing checks that a prop keeps the
+  map connected.** `Rubble` on `Dungeon_B` is tile 120, flags `0x60f` — blocked from all four
+  sides — so scattering it at the default 4% density can wall off whatever is behind it.
+  Measured on two generated floors: 5 and 4 floor tiles made impassable, each cutting exactly
+  one tile off the map. Small, but it is the same class of defect `addPillars` and
+  `place_npc` already guard against by accepting a placement only if the reachable area is
+  unchanged, and `planDressing` makes no such check. Found because it sealed a stair — see
+  the note under [Stairs and entrances](#stairs-and-entrances).
 - Chests all hand over the same item, and there are no enemies, switches or locked doors.
 - Pillars are single tiles, so they read as regular studs rather than rock formations. Growing
   them into clumps would look better and would need the sweep redone.
@@ -441,6 +451,93 @@ so rather than leaving treasure floating in solid rock.
 - **Passability is still not generated.** A generated wall only blocks if that material is
   configured impassable in the tileset; `check_map_walkability` on a map painted with passable
   materials reports the surround as walkable, which is correct and not a generator bug.
+
+### Stairs and entrances
+
+`place_stairs` joins any two maps; `link_dungeon_floors` takes generated floors in order and
+wires the whole staircase, optionally back out to a map outside the dungeon.
+
+- `src/core/stairs.ts` — the transfer page and `planStairEnds` (pure, unit-tested)
+- `src/tools/stairs-tools.ts` — the two MCP tools
+
+**The event was measured, and it came back unanimous.** Across the 720 shipped maps, 157
+transfer pages stand on a tile the editor labels a stair, ladder or hole, and all 157 are the
+same page: player touch, priority 0 (below characters), no sprite, one page, commands
+`250, 201, 0` — play `Move1`, transfer — with the transfer direct and fading to black. Not one
+exception. The contrast is what tells a stair from a door: of the 167 pages standing on an
+*entrance* tile, 122 carry a `!Door1` sprite at priority 1 with the full opening animation,
+which is what `place_building` already emits.
+
+**That page is byte-identical to an interior's exit**, measured separately a phase earlier
+(144 of 147). So `interiorgen` now builds its exit from `stairs.ts` instead of keeping a second
+copy — a stair and a way out of a house are the same object. The 20 interior tests passing
+unchanged is the proof the two really were identical.
+
+**Priority 0 is why placement needs no connectivity argument.** A chest has to go in a dead end
+because it blocks its tile; a stair blocks nothing, so it can go on any floor tile. Landing the
+player on one does not re-fire it either — `updateNonmoving` only calls `checkEventTriggerHere`
+when `wasMoving` is true, and `performTransfer` uses `locate()` — which is what lets a
+down-stair put the player straight onto the up-stair that leads back.
+
+**The textbook diameter algorithm was not good enough, which the test caught.** The two ends
+should be as far apart as the layout allows, and the standard double sweep — BFS from anywhere
+to find one end, then from that end to find the other — is exact only on a tree. Generated
+dungeons have loops: against the true diameter it returned 66 where the answer was 79, and 54
+where it was 65, putting the stairs a sixth of the map closer together than they needed to be.
+Iterating the sweep to a fixed point fixed some seeds and none of the others. Sweeping instead
+from **every fringe tile** — every floor tile with two or fewer open neighbours — hit the exact
+diameter on all 16 layouts, dungeons and caves alike. It is a heuristic rather than a proof,
+and what makes it the right trade is that the fringe is the map's *perimeter* rather than its
+area, so it is cheapest exactly where checking every pair would be dearest: an open cave offers
+40-120 sources against 570 floor tiles. The test checks the result against a brute-force
+all-pairs diameter so a layout change that breaks the assumption is caught.
+
+Of the two ends, the one nearer the map border is the entrance — a convention, not geometry,
+but the alternative reads backwards.
+
+**A stair tile is not reliably one the player can stand on, and which ones are varies per
+tileset.** This is finding 1 in a third place. Measured over the shipped flags: `Dungeon` has
+every stair fully passable, but `Inside`'s "Stairs C (Up)" and "Stairs D (Down)" and
+`SF Outside`'s "Stairs A (Up)" are `0x0f`, blocked from all four directions. Painted on an
+upper layer that makes the tile impassable outright — passage resolves top-down and only a star
+tile falls through — so the player can never touch the event. The check is worth making because
+the shipped maps never get this wrong: **323 of 323** stair and entrance transfer events stand
+on a standable tile, no exceptions. So the tool paints, then checks, and says so.
+
+It caught a real mistake immediately: the first end-to-end run put the surface entrance on
+`Cave Entrance`, which is impassable in `Outside`, and the tool reported the link dead.
+`Entrance A` — the tile 75 of the shipped events use — is the standable one.
+
+**And it turned up a bug in `decorate_dungeon`.** The first linked dungeon put its entrance on a
+tile the player could not reach, because `Rubble` is one of that tool's four default floor props
+and is solid, and it had landed in the one-tile corridor leading to the dead end. The two
+interact by construction: `planStairEnds` picks the extreme of the layout, and the extreme sits
+at the end of the longest thinnest passage — the most fragile tile on the map. Fixed on this
+side by taking the floor mask as *painted with the floor material **and** standable*, rather
+than trusting the material alone; the underlying prop bug is recorded under
+[Dungeon dressing](#dungeon-dressing).
+
+**Verified by driving the real server**: a surface map and two generated, decorated dungeon
+floors, linked in one call. `get_map_graph` reports `Hillside -> Crypt B1 -> Crypt B2` with
+return edges; `check_map_walkability` started at each floor's reported entrance reaches **all**
+506 and 464 walkable floor tiles with no stair unreachable. Rendering confirms the art: the
+up-stair and down-stair read as staircases, and the dark wedge on the up-stair is opaque sprite
+art rather than a transparency hole — checked against the source alpha, since that is exactly
+what finding 1 looks like.
+
+**Still open here:**
+
+- **The check is standability, not reachability.** An A4 wall top is passable in the RTP
+  tilesets, so `place_stairs` will accept a stair placed on one and it will still be walled off.
+  `link_dungeon_floors` is safe by construction — both ends come from one connected floor mask —
+  but the explicit tool can only point at `check_map_walkability`.
+- **Nothing generates what a cave mouth needs to sit in.** The RTP entrance tiles are doorway
+  art meant to sit against a cliff face; on the flat grass of a generated surface map, one
+  renders as a black rectangle in a field. The tile is correct and the surroundings are missing.
+- The deepest floor's far end is left clear, and nothing puts a boss, a locked door or anything
+  else there.
+- Reachability is computed on the floor mask with plain 4-adjacency, so a tileset with
+  directional passage flags on the floor material could still surprise it.
 
 ### The town generator
 
@@ -545,9 +642,10 @@ unreachable. That is not a generator bug: **the interior maps that ship with the
 the identical complaint.** The tool now takes `startX`/`startY`, and with the arrival tile given
 both a shipped room and a generated one come out clean.
 
-**Still open here:** a room is one rectangle — no shops, stairs or upper floors, and nothing
-varies but the furniture. Rooms are only made for doors that lead nowhere, so hand-made links
-survive unless `relink` is passed.
+**Still open here:** a room is one rectangle — no shops or upper floors, and nothing varies but
+the furniture. Rooms are only made for doors that lead nowhere, so hand-made links survive
+unless `relink` is passed. Stairs to an upper floor would now be `place_stairs`, but nothing
+generates the floor above.
 
 ### NPCs
 
