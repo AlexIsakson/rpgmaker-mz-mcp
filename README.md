@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-587%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-592%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -23,7 +23,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 | stderr-only logging (no stdout pollution) | ✅ | ❌ |
 | Correct `.rmmzproject` extension | ✅ | ❌ |
 | Generic `DatabaseManager<T>` (no copy-paste) | ✅ | ❌ |
-| Unit & integration tests (587 tests) | ✅ | ❌ |
+| Unit & integration tests (592 tests) | ✅ | ❌ |
 | MCP SDK v1.26+ | ✅ | ❌ |
 | Event editing with human-readable commands | ✅ | Partial |
 | AI scenario generation tools | ✅ | ❌ |
@@ -702,7 +702,7 @@ which `Game_Event.start` treats as nothing to run — it requires `list.length >
 ### Locking a Generated Floor (1)
 | Tool | Description |
 |------|-------------|
-| `lock_dungeon_floor` | Divide a generated floor with a locked door and put its key or lever on the near side |
+| `lock_dungeon_floor` | Divide a generated floor with a locked door, put its key or lever on the near side, and a reward behind it |
 
 The first tool that produces a quest without anyone choosing where anything goes. It finds the
 door tile, creates the key, places the chest or lever, and proves the floor is still
@@ -735,6 +735,21 @@ threshold rejects 33 of 40 small dungeons and all 40 large ones, which is why
 Locking the same floor twice works: an existing locked door is treated as a wall for the next
 search, so the second door divides the part the player can still reach instead of landing
 beside the first and gating the same region twice.
+
+**And there is something behind it.** The far side gets a chest in its deepest dead end —
+deepest because a chest one step past the door is one you can see through the doorway — drawn
+from the **top quarter** of the tradeable price range against the middle half an ordinary chest
+uses. That the reward should beat the corridor is a judgement, not a measurement: nothing in a
+project's data says what belongs behind a lock, and the module says so rather than implying
+otherwise.
+
+What *is* enforced is that the reward is **new**. Everything the map already hands out is read
+off its own events first — only actual gains, since a Change Items that takes something away
+(a door consuming its key) is not a reward — and excluded from the draw. A prize that
+duplicates a chest in the corridor outside is worse than a small prize. The reward chest also
+uses a different slot of the `!Chest` sheet from the ordinary ones; the sheet's eight slots are
+colour variants rather than tiers (0-3 and 7 ornate, 4-6 plain wood and steel), so which one is
+a judgement, but *differing* is the point.
 
 ### Consistency Checking (1)
 | Tool | Description |
@@ -791,7 +806,7 @@ npm install
 # Build
 npm run build
 
-# Verify (587 tests should pass)
+# Verify (592 tests should pass)
 npm test
 ```
 
@@ -1057,7 +1072,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 587 個測試應全部通過
+npm test  # 592 個測試應全部通過
 ```
 
 在你的專案目錄建立 `.mcp.json`：
@@ -1138,7 +1153,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 587 テストがすべてパスするはず
+npm test  # 592 テストがすべてパスするはず
 ```
 
 プロジェクトディレクトリに `.mcp.json` を作成：

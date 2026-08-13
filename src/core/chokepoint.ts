@@ -227,8 +227,19 @@ export interface FloorLockPlan {
   door: Chokepoint;
   /** Tiles the player can reach before the door opens. */
   near: Slot[];
+  /** Tiles behind the door — everything the entrance can no longer reach. */
+  far: Slot[];
   /** Where the opener should go: a dead end on the near side, far from the door. */
   opener: Slot;
+  /**
+   * Where a reward goes: dead ends behind the door, deepest first.
+   *
+   * Deepest rather than nearest because a chest one step past the door is a
+   * chest you can see through the doorway — the walk is the point. Dead ends
+   * for the same reason treasure uses them: one way in, nothing beyond, so a
+   * chest that blocks its tile cannot cut anything off.
+   */
+  rewardSpots: Slot[];
 }
 
 /**
@@ -280,5 +291,22 @@ export function planFloorLock(
     (a, b) => distance(b) - distance(a) || a.y - b.y || a.x - b.x
   )[0];
 
-  return { door, near, opener };
+  // --- the other side ---
+  const far: Slot[] = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!floor[y][x]) continue;
+      if (x === door.x && y === door.y) continue;
+      if (nearSet.has(key(x, y))) continue;
+      far.push({ x, y });
+    }
+  }
+
+  const farUsable = far.filter((s) => !blocked.has(key(s.x, s.y)));
+  const farDeadEnds = farUsable.filter((s) => floorNeighbours(s.x, s.y) === 1);
+  const rewardSpots = (farDeadEnds.length > 0 ? farDeadEnds : farUsable).sort(
+    (a, b) => distance(b) - distance(a) || a.y - b.y || a.x - b.x
+  );
+
+  return { door, near, far, opener, rewardSpots };
 }

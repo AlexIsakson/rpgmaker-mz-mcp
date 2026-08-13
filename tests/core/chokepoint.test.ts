@@ -197,6 +197,28 @@ describe('planFloorLock', () => {
     ).toBeNull();
   });
 
+  it('lists the far side, and the door tile belongs to neither', () => {
+    const plan = planFloorLock(floor, { entrance: { x: 1, y: 1 }, minSideFraction: 0.1 })!;
+    const total = floor.flat().filter(Boolean).length;
+    expect(plan.near.length + plan.far.length + 1).toBe(total);
+    const farKeys = plan.far.map((s) => `${s.x},${s.y}`);
+    expect(farKeys).not.toContain(`${plan.door.x},${plan.door.y}`);
+    expect(farKeys).not.toContain(`${plan.opener.x},${plan.opener.y}`);
+  });
+
+  it('puts rewards behind the door, deepest first', () => {
+    const plan = planFloorLock(floor, { entrance: { x: 1, y: 1 }, minSideFraction: 0.1 })!;
+    expect(plan.rewardSpots.length).toBeGreaterThan(0);
+    const farKeys = plan.far.map((s) => `${s.x},${s.y}`);
+    for (const spot of plan.rewardSpots) expect(farKeys).toContain(`${spot.x},${spot.y}`);
+
+    // A chest one step past the door is one you can see through the doorway.
+    const distance = (s: { x: number; y: number }) =>
+      Math.abs(s.x - plan.door.x) + Math.abs(s.y - plan.door.y);
+    const distances = plan.rewardSpots.map(distance);
+    expect([...distances].sort((a, b) => b - a)).toEqual(distances);
+  });
+
   it('is deterministic', () => {
     const once = planFloorLock(floor, { entrance: { x: 1, y: 1 }, minSideFraction: 0.1 });
     const twice = planFloorLock(floor, { entrance: { x: 1, y: 1 }, minSideFraction: 0.1 });

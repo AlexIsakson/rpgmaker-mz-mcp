@@ -12,6 +12,8 @@ import { planFloorLock, findChokepoints, type Slot } from '../core/chokepoint.js
 import { lockedDoorEvent, readLock } from '../core/locked-door.js';
 import { leverEvent } from '../core/lever.js';
 import { keyItemFields } from '../core/quest.js';
+import { buildLootTable, dealLoot, withoutEntries, lootText, LootError } from '../core/loot.js';
+import { stockCandidates, type GoodsKind } from '../core/shop.js';
 import { allocateFlag, findFlag, SwitchError } from '../core/switches.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
@@ -22,6 +24,39 @@ import { logger } from '../logger.js';
 
 function errorResult(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
+}
+
+const REWARD_DATABASE: Record<GoodsKind, string> = {
+  item: 'Items.json',
+  weapon: 'Weapons.json',
+  armor: 'Armors.json',
+};
+
+/** Which database each Change command draws from. */
+const GAIN_COMMANDS: Record<number, GoodsKind> = { 126: 'item', 127: 'weapon', 128: 'armor' };
+
+/**
+ * What this map already hands the player.
+ *
+ * Only *gains* count — `operateValue` negates when the operation is 1, so a
+ * Change Items that takes something away (a door consuming its key) is not a
+ * reward and must not stop the same entry being used as one.
+ */
+function rewardsAlreadyOnMap(mapData: MapData): { kind: GoodsKind; dataId: number }[] {
+  const found: { kind: GoodsKind; dataId: number }[] = [];
+  for (const event of mapData.events.filter((e): e is Event => e !== null)) {
+    for (const page of event.pages) {
+      for (const command of page.list) {
+        const kind = GAIN_COMMANDS[command.code];
+        if (!kind) continue;
+        const dataId = command.parameters[0];
+        if (typeof dataId !== 'number') continue;
+        if (command.parameters[1] !== 0) continue;
+        found.push({ kind, dataId });
+      }
+    }
+  }
+  return found;
 }
 
 /** Where the player comes into this map, taken from its own events. */
@@ -71,6 +106,24 @@ export function registerFloorLockTools(server: McpServer): void {
           'chosen: across 40 seeds the best split a generated dungeon offers is a median ' +
           '7.1% of the floor at 40x30 and 4.7% at 60x45, so anything above ~0.05 rejects ' +
           'most floors outright.'
+        ),
+      rewardCount: z.number().int().min(0).max(10).default(1)
+        .describe(
+          'Chests to put behind the door. A locked door with nothing behind it is a ' +
+          'lock the player resents. 0 leaves the far side alone.'
+        ),
+      rewardBand: z.array(z.number().min(0).max(1)).length(2).optional()
+        .describe(
+          'Slice of the tradeable price range the reward is drawn from, as two fractions. ' +
+          'Defaults to [0.75, 1] — the top quarter, against the [0.25, 0.75] an ordinary ' +
+          'chest uses. That the reward should beat the corridor is a judgement, not a ' +
+          'measurement: nothing in a project says what belongs behind a lock.'
+        ),
+      rewardChestIndex: z.number().int().min(0).max(7).default(1)
+        .describe(
+          'Slot of the chest sheet for the reward. The eight slots are colour variants ' +
+          'rather than tiers — 0-3 and 7 ornate, 4-6 plain wood and steel — so this only ' +
+          'has to differ from the 0 decorate_dungeon uses to read as not-one-of-the-others.'
         ),
       lockedText: z.string().optional().describe('What the door says when it refuses'),
       doorSprite: z.string().default('!Door1').describe('Door sprite sheet'),
@@ -291,6 +344,72 @@ export function registerFloorLockTools(server: McpServer): void {
 
         if (args.lockKind === 'item') opener.name = `Key to ${door.name}`;
 
+        // --- something worth finding behind it ---
+        const rewardLines: string[] = [];
+        let rewardNote: string | null = null;
+
+        if (args.rewardCount > 0) {
+          const pools: Record<string, ReturnType<typeof stockCandidates>> = {};
+          for (const kind of ['item', 'weapon', 'armor'] as GoodsKind[]) {
+            const file = path.join(dataPath, REWARD_DATABASE[kind]);
+            if (!(await FileHandler.exists(file))) continue;
+            const raw = await FileHandler.readJsonRaw(file);
+            pools[kind] = Array.isArray(raw) ? stockCandidates(raw) : [];
+          }
+
+          // The key itself was just added to the database with price 0, so
+          // isTradeable already keeps it out of its own vault.
+          const table = withoutEntries(
+            buildLootTable(
+              { items: pools.item, weapons: pools.weapon, armors: pools.armor },
+              { priceBand: (args.rewardBand as [number, number] | undefined) ?? [0.75, 1] }
+            ),
+            rewardsAlreadyOnMap(mapData)
+          );
+
+          if (table.length === 0) {
+            rewardNote =
+              'Nothing was put behind the door: every tradeable entry in that price band is ' +
+              'already handed out somewhere on this map, or the databases hold nothing priced ' +
+              'above zero. Widen rewardBand, or add entries.';
+          } else {
+            let dealt;
+            try {
+              dealt = dealLoot(table, args.rewardCount, args.mapId);
+            } catch (error) {
+              if (error instanceof LootError) return errorResult(error.message);
+              throw error;
+            }
+
+            const spots = plan.rewardSpots.slice(0, dealt.length);
+            const seal = rejectSealingSlots(floor, spots, spots.map(() => true));
+
+            for (let i = 0; i < spots.length; i++) {
+              if (!seal.kept.includes(i)) continue;
+              const loot = dealt[i];
+              const chest = addEvent(mapData, (id) =>
+                treasureEvent(id, spots[i].x, spots[i].y, {
+                  loot,
+                  characterIndex: args.rewardChestIndex,
+                  text: lootText(loot),
+                })
+              );
+              chest.name = `Reward${chest.id}`;
+              rewardLines.push(
+                `  event ${chest.id} at (${spots[i].x}, ${spots[i].y}): ` +
+                `${loot.kind} ${loot.dataId} "${loot.name}" (${loot.price})`
+              );
+            }
+
+            if (spots.length < args.rewardCount) {
+              rewardNote =
+                `Only ${spots.length} of ${args.rewardCount} chest(s) fit: the far side has ` +
+                `${plan.rewardSpots.length} spot(s) that can hold one without blocking a way ` +
+                'through.';
+            }
+          }
+        }
+
         await FileHandler.writeJson(mapPath, mapData);
         await project.getVersionSync().bump();
 
@@ -315,6 +434,20 @@ export function registerFloorLockTools(server: McpServer): void {
             : `Lever: event ${opener.id} at (${plan.opener.x}, ${plan.opener.y}), on the near side.`,
           `Entrance taken from ${entranceFrom}: (${entrance.x}, ${entrance.y}).`,
         ];
+
+        if (rewardLines.length > 0) {
+          lines.push(
+            '',
+            `Behind the door, in the deepest dead end(s) of the ${plan.door.farSize} tiles it ` +
+            'guards:',
+            ...rewardLines,
+            '',
+            'Drawn from the top quarter of the tradeable price range, against the middle half ' +
+            'an ordinary chest uses, and excluding anything this map already hands out — a ' +
+            'reward that duplicates a chest in the corridor outside is worse than a small one.'
+          );
+        }
+        if (rewardNote) lines.push('', rewardNote);
 
         if (existingLocks.length > 0) {
           lines.push(

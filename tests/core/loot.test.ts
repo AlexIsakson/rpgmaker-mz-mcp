@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  withoutEntries,
   buildLootTable,
   dealLoot,
   gainCommand,
@@ -124,5 +125,29 @@ describe('dealLoot', () => {
   it('deals nothing for no chests, and refuses an empty table', () => {
     expect(dealLoot(table, 0, 1)).toEqual([]);
     expect(() => dealLoot([], 1, 1)).toThrow(LootError);
+  });
+});
+
+describe('withoutEntries', () => {
+  const table: LootEntry[] = [
+    { kind: 'item', dataId: 7, name: 'Potion', price: 100, amount: 1 },
+    { kind: 'weapon', dataId: 7, name: 'Sword', price: 500, amount: 1 },
+    { kind: 'armor', dataId: 3, name: 'Shield', price: 300, amount: 1 },
+  ];
+
+  it('drops only the exact entry, database and all', () => {
+    // item 7 and weapon 7 are different things; dropping both for one id would
+    // quietly shrink the table.
+    const left = withoutEntries(table, [{ kind: 'item', dataId: 7 }]);
+    expect(left.map((e) => `${e.kind}:${e.dataId}`)).toEqual(['weapon:7', 'armor:3']);
+  });
+
+  it('returns the table untouched when nothing is used', () => {
+    expect(withoutEntries(table, [])).toBe(table);
+  });
+
+  it('can empty the table, which the caller has to handle', () => {
+    const used = table.map((e) => ({ kind: e.kind, dataId: e.dataId }));
+    expect(withoutEntries(table, used)).toEqual([]);
   });
 });

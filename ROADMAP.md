@@ -1406,11 +1406,48 @@ call adding a lever-locked door at (16, 8) in a different region, reporting that
 first as a wall; refusals for a lopsided split, for a map with no entrance event, and for the
 open field with its walkable surround. `check_project` reports nothing on the result.
 
+### What is behind the door
+
+A lock with nothing behind it is a lock the player resents, so `lock_dungeon_floor` fills the
+far side as well: a chest in its **deepest dead end**, drawn from the top quarter of the
+tradeable price range.
+
+Three decisions, and only two of them are measurable.
+
+**Deepest dead end, not nearest.** A chest one step past the door is a chest you can see
+through the doorway, and the walk is the point. Dead ends for the reason treasure already uses
+them — one way in, nothing beyond, so a chest that blocks its tile cannot cut anything off.
+
+**The top quarter of the price band is stated, not measured**, and the module says so. An
+ordinary chest draws from the middle half; nothing in a project's data says what belongs behind
+a lock, so "better than the corridor" is a judgement. Recording it as a judgement is the point —
+this is the same class of claim as the loot band itself, and it sits beside claims that *are*
+the engine's.
+
+**That the reward is new, however, is enforced.** Everything the map already hands out is read
+off its own events and excluded from the draw, because a prize that duplicates a chest in the
+corridor outside is worse than a small prize. `dealLoot` has always guaranteed no repeat within
+one deal; `withoutEntries` is the same guarantee across separate calls. Only *gains* count — a
+Change Items with operation 1 takes something away (a door consuming its key) and must not stop
+that entry being used as a reward, which `operateValue` settles: it negates the value when the
+operation is 1.
+
+**The chest looks different, and that is as far as the art goes.** Rendering the `!Chest` sheet
+shows its eight slots are colour variants rather than tiers — 0-3 and 7 ornate with gold and
+cloth, 4-6 plain wood and steel — so which slot reads as "better" is not a fact about the sheet.
+What matters is that the reward chest differs from the 0 `decorate_dungeon` uses, so it does not
+read as one more of the same.
+
+**Verified by driving the real server**: a single reward behind a door coming out as armour 70
+"Master Circlet" (5860) in the deepest dead end; then `decorate_dungeon` scattering four
+ordinary chests and a third lock drawing three more rewards — 11 things handed out across the
+floor, **all 11 different**, the vault chests on slot 1 and the ordinary ones on slot 0, and
+each with the gain command its database requires (126/127/128).
+
 **Still open here:**
 
-- **Nothing puts anything worth finding behind the door.** The far side is measured and then
-  left alone: no reward, no boss, no reason the door was locked. `decorate_dungeon` runs
-  separately and does not know a lock exists.
+- **A reward is a chest, and nothing else.** No boss, no set piece, no reason in the fiction
+  that the door was locked — the far side is a room with better loot in it.
 - **One door per call.** A floor with three good chokepoints has to be locked three times, and
   nothing reasons about the sequence — which is the difference between a locked floor and a
   dungeon that unfolds.
@@ -1453,7 +1490,9 @@ That is the honest measure of what is missing:
   Gated NPCs, enemies and NPCs who say more than one placeholder line are all still absent too.
   [Locking a generated floor](#locking-a-generated-floor) is the first tool that places a quest
   without being told where — but it locks a door and leaves the far side empty, so what is
-  behind the lock is still nothing in particular.
+  behind the lock is a chest with better loot in it — see
+  [What is behind the door](#what-is-behind-the-door) — rather than a reason the door was
+  locked.
 
 ### Scope and open questions
 

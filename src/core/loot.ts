@@ -160,6 +160,24 @@ export function buildLootTable(
 }
 
 /**
+ * Drop entries the floor has already handed out.
+ *
+ * A reward behind a locked door that duplicates a chest in the corridor outside
+ * it is worse than a small reward: the player opened the lock for something they
+ * already had. `dealLoot` guarantees no repeat *within* one deal, and this is
+ * the same guarantee across separate calls — the caller reads what is already on
+ * the map and passes it in.
+ */
+export function withoutEntries(
+  table: LootEntry[],
+  used: { kind: GoodsKind; dataId: number }[]
+): LootEntry[] {
+  if (used.length === 0) return table;
+  const taken = new Set(used.map((u) => `${u.kind}:${u.dataId}`));
+  return table.filter((entry) => !taken.has(`${entry.kind}:${entry.dataId}`));
+}
+
+/**
  * Deal `count` rewards from a table without repeating one.
  *
  * Chests are dealt from a shuffled copy rather than rolled independently: with
