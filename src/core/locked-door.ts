@@ -311,6 +311,42 @@ export function lockedDoorEvent(
   };
 }
 
+/**
+ * Read the lock back off an event that is already on a map.
+ *
+ * The first branch of a kind this module emits wins. That is deliberately
+ * literal: it answers "what does this event test?", not "is this event a door",
+ * and a caller pointing at something that is not a door gets whatever that
+ * event actually checks rather than a guess dressed up as a door.
+ *
+ * Returns null when no page branches on a switch or on a held entry — an
+ * ordinary door, or a torch.
+ */
+export function readLock(pages: EventPage[]): Lock | null {
+  for (const page of pages) {
+    for (const cmd of page.list) {
+      if (cmd.code !== CODE_CONDITIONAL_BRANCH) continue;
+      const type = cmd.parameters[0];
+      const dataId = cmd.parameters[1];
+      if (typeof dataId !== 'number' || dataId < 1) continue;
+      switch (type) {
+        case BRANCH_ITEM:
+          return { kind: 'item', dataId };
+        case BRANCH_WEAPON:
+          return { kind: 'weapon', dataId, includeEquip: cmd.parameters[2] === true };
+        case BRANCH_ARMOR:
+          return { kind: 'armor', dataId, includeEquip: cmd.parameters[2] === true };
+        case BRANCH_SWITCH:
+          // Only a test for ON is a lock; a branch on a switch being OFF is
+          // some other piece of logic that happens to live on this event.
+          if (cmd.parameters[2] === SWITCH_IS_ON) return { kind: 'switch', dataId };
+          break;
+      }
+    }
+  }
+  return null;
+}
+
 /** How the lock reads in a report. */
 export function describeLock(lock: Lock, name?: string): string {
   const label = name ? ` ("${name}")` : '';

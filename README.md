@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-534%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-552%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -23,7 +23,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 | stderr-only logging (no stdout pollution) | ✅ | ❌ |
 | Correct `.rmmzproject` extension | ✅ | ❌ |
 | Generic `DatabaseManager<T>` (no copy-paste) | ✅ | ❌ |
-| Unit & integration tests (534 tests) | ✅ | ❌ |
+| Unit & integration tests (552 tests) | ✅ | ❌ |
 | MCP SDK v1.26+ | ✅ | ❌ |
 | Event editing with human-readable commands | ✅ | Partial |
 | AI scenario generation tools | ✅ | ❌ |
@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (54 total)
+## 🛠 Available Tools (56 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -631,6 +631,47 @@ conditioned on self switch A, and it goes *after* page 1 because
 `Game_Event.findProperPageIndex` scans backwards and takes the first match. `remember=false`
 drops it, for a gate that must follow its switch forever.
 
+### Quests (2)
+| Tool | Description |
+|------|-------------|
+| `create_key_item` | A key the player cannot sell, use or destroy |
+| `place_key_for_door` | Put a particular door's key in a chest — and refuse if that would make the game unwinnable |
+
+Everything above this point existed separately: chests, shops, flags, locked doors. Nothing
+decided that *this* chest holds the key to *that* door.
+
+**The failure being ruled out is a key placed behind the door it opens.** It is unwinnable and
+it is silent — the player explores, finds nothing, and no rule in the engine or the editor says
+a word. That check is a graph question and the graph already existed: take the world's transfer
+edges, drop the ones belonging to the locked door, and ask whether the key's map is still
+reachable from the start map.
+
+```
+create_key_item     name="Cellar Key"
+place_locked_door   mapId=1 x=8 y=6  lockKind=item keyId=31  targetMapId=2 targetX=8 targetY=6
+place_key_for_door  doorMapId=1 doorEventId=2  mapId=1 x=5 y=8
+```
+
+Only the door's *own* edges are dropped, so a second unlocked way through still counts as
+reachable. A key on the door's own map is fine — standing in front of a locked door is not the
+same as being through it. `allowBehindDoor` places it anyway, for a door meant to be opened
+from the far side as a shortcut back, and says plainly what that costs.
+
+**A key made with `create_entity` is a key the player can destroy.** The default item row is
+`occasion 0`, `consumable true` — `Game_BattlerBase.isOccasionOk` accepts occasion 0 outside
+battle, so the key is usable from the menu, and `Game_Party.consumeItem` spends one of anything
+consumable when it is used. `create_key_item` writes `itypeId 2` (the Key Items category,
+which `Window_ItemList.includes` splits on), `occasion 3` — "never", refused by `isOccasionOk`
+in *both* branches — `consumable false`, and `price 0`, which keeps it out of shops and random
+chests because `isTradeable` requires a price above zero.
+
+That is a deliberate departure from the one key in the corpus: `Wicked Heart`'s "Inn Key" is an
+ordinary consumable item that happens to open a door, which is exactly the combination that
+lets a player eat it.
+
+The chest itself is not new code — it is the measured pickup shape `decorate_dungeon` already
+uses, with the key as its loot.
+
 ### Consistency Checking (1)
 | Tool | Description |
 |------|-------------|
@@ -686,7 +727,7 @@ npm install
 # Build
 npm run build
 
-# Verify (534 tests should pass)
+# Verify (552 tests should pass)
 npm test
 ```
 
@@ -791,14 +832,15 @@ src/
 │   ├── switches.ts             # Named global flags, allocation and array growth
 │   ├── shop.ts                 # Goods encoding + stock selection
 │   ├── loot.ts                 # Loot tables, dealt without repeats
-│   └── locked-door.ts          # Conditional branches + the two pages of a locked door
+│   ├── locked-door.ts          # Conditional branches + the two pages of a locked door
+│   └── quest.ts                # Key items, and proving a key is not behind its own door
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
 │   ├── map.ts                  # Map & audio schemas
 │   ├── event.ts                # Event & command schemas + converter
 │   ├── tileset.ts              # Tilesets.json schema
 │   └── system.ts               # System.json schema
-├── tools/                      # 54 MCP tools across 24 modules
+├── tools/                      # 56 MCP tools across 25 modules
 │   ├── project-tools.ts        # 4  project management
 │   ├── database-tools.ts       # 6  database CRUD
 │   ├── map-tools.ts            # 5  map management
@@ -816,6 +858,7 @@ src/
 │   ├── consistency-tools.ts    # 1  check_project
 │   ├── shop-tools.ts           # 1  place_shop
 │   ├── locked-door-tools.ts    # 1  place_locked_door
+│   ├── quest-tools.ts          # 2  create_key_item, place_key_for_door
 │   ├── dungeon-dressing-tools.ts # 1 decorate_dungeon
 │   ├── map-graph-tools.ts      # 1  get_map_graph
 │   ├── map-grid-tools.ts       # 1  get_map_grid
@@ -946,7 +989,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 534 個測試應全部通過
+npm test  # 552 個測試應全部通過
 ```
 
 在你的專案目錄建立 `.mcp.json`：
@@ -1027,7 +1070,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 534 テストがすべてパスするはず
+npm test  # 552 テストがすべてパスするはず
 ```
 
 プロジェクトディレクトリに `.mcp.json` を作成：

@@ -6,6 +6,7 @@ import {
   lockedDoorPages,
   lockedDoorEvent,
   describeLock,
+  readLock,
   indentBy,
   LockedDoorError,
 } from '../../src/core/locked-door.js';
@@ -240,6 +241,38 @@ describe('lockedDoorEvent', () => {
     const event = lockedDoorEvent(4, 10, 6, { lock: { kind: 'item', dataId: 35 } });
     expect(event).toMatchObject({ id: 4, name: 'LockedDoor4', x: 10, y: 6 });
     expect(event.pages).toHaveLength(2);
+  });
+});
+
+describe('readLock', () => {
+  it('reads back what lockedDoorPages wrote, for every kind', () => {
+    expect(readLock(lockedDoorPages({ lock: { kind: 'item', dataId: 35 } }))).toEqual({
+      kind: 'item', dataId: 35,
+    });
+    expect(
+      readLock(lockedDoorPages({ lock: { kind: 'weapon', dataId: 3, includeEquip: true } }))
+    ).toEqual({ kind: 'weapon', dataId: 3, includeEquip: true });
+    expect(readLock(lockedDoorPages({ lock: { kind: 'armor', dataId: 4 } }))).toEqual({
+      kind: 'armor', dataId: 4, includeEquip: false,
+    });
+    expect(readLock(lockedDoorPages({ lock: { kind: 'switch', dataId: 12 } }))).toEqual({
+      kind: 'switch', dataId: 12,
+    });
+  });
+
+  it('finds nothing on a door that asks for nothing', () => {
+    const [, ordinary] = lockedDoorPages({ lock: { kind: 'item', dataId: 35 } });
+    expect(readLock([ordinary])).toBeNull();
+  });
+
+  it('ignores a branch testing a switch is OFF', () => {
+    // params[2] === 1 is "is OFF" — some other piece of logic, not a lock.
+    const page = lockedDoorPages({ lock: { kind: 'item', dataId: 35 } })[0];
+    const offBranch = {
+      ...page,
+      list: [{ code: 111, indent: 0, parameters: [0, 4, 1] }, { code: 0, indent: 0, parameters: [] }],
+    };
+    expect(readLock([offBranch])).toBeNull();
   });
 });
 

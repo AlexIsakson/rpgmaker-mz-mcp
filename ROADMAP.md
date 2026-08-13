@@ -377,16 +377,18 @@ batching writes would remove the exposure entirely.
 | no shops; every chest holding the same item | `place_shop` (`src/core/shop.ts`) and a real loot table for `decorate_dungeon` (`src/core/loot.ts`) — see [Commerce and loot](#commerce-and-loot) |
 | nothing with a switch behind it | `allocate_switch` / `list_switches` / `release_switch` (`src/core/switches.ts`) — see [Switches and variables](#switches-and-variables) |
 | nothing gated behind anything; no locked doors | `place_locked_door` (`src/core/locked-door.ts`) — see [Locked doors](#locked-doors) |
+| nothing joined the pieces up into a quest | `create_key_item` / `place_key_for_door` (`src/core/quest.ts`) — see [Quests](#quests--joining-the-pieces-up) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
 **Still not in the server:**
 
-- ~~Shops~~ *(done: `place_shop`)*, ~~switches~~ *(done: `allocate_switch`)* and
-  ~~locked doors~~ *(done: `place_locked_door`)*. Quests are still missing, and they are now
-  the gap that matters: a locked door and a chest exist, but nothing decides that *this* chest
-  holds the key to *that* door. See [Commerce and loot](#commerce-and-loot),
-  [Switches and variables](#switches-and-variables) and [Locked doors](#locked-doors).
+- ~~Shops~~ *(done: `place_shop`)*, ~~switches~~ *(done: `allocate_switch`)*,
+  ~~locked doors~~ *(done: `place_locked_door`)* and ~~the key that opens one~~
+  *(done: `place_key_for_door`)*. What is left is everything a quest needs beyond one key and
+  one door: chains, state, and something that *sets* a switch. See
+  [Commerce and loot](#commerce-and-loot), [Switches and variables](#switches-and-variables),
+  [Locked doors](#locked-doors) and [Quests](#quests--joining-the-pieces-up).
 
 ### Layout shape
 
@@ -1181,12 +1183,88 @@ allocating switch 1 and the same name in different case reusing it; and four ref
 
 **Still open here:**
 
-- **Nothing puts the key anywhere.** A locked door and `decorate_dungeon`'s chests do not know
-  about each other, so the key has to be placed by hand — which is the whole of a quest, and
-  the next thing worth building.
+- ~~**Nothing puts the key anywhere.**~~ *Done:* `place_key_for_door` — see
+  [Quests](#quests--joining-the-pieces-up). A switch lock still has no counterpart, because
+  what opens one is a lever rather than a key.
 - **`remember` is all or nothing.** A door either forgets its lock forever after one opening
   or re-tests it every time; there is nothing in between, such as a door that relocks at night.
 - **The refusal is one line of text.** No guard who stops you, no hint about where the key is.
+
+### Quests — joining the pieces up
+
+`create_key_item` puts a proper key in the database; `place_key_for_door` puts a particular
+door's key in a chest, and refuses when that would make the game unwinnable.
+
+- `src/core/quest.ts` — the key row and the graph walk (pure, unit-tested)
+- `src/tools/quest-tools.ts` — the two MCP tools
+
+Chests, shops, flags and locked doors all existed separately by this point, and **nothing
+decided that *this* chest holds the key to *that* door.** That is the whole of what a quest is
+at this scale, and it is one relationship, not a new subsystem.
+
+**The bug being ruled out is a key placed behind the door it opens.** The game is unwinnable
+and nothing says so: the player explores, finds nothing, and no rule in the engine or the
+editor mentions it. It is the same class of failure as everything else in this phase — silent,
+total, invisible in the editor — which is why it is a refusal rather than a note in the output.
+
+**The check is a graph walk, and the graph was already there.** `map-graph.ts` builds the
+world's transfer edges; drop the ones belonging to the locked door, walk forward from
+`startMapId`, and ask whether the key's map is still in the set. Three details matter and are
+tested:
+
+- **Only the door's own edges are dropped**, not every edge between the two maps. A second,
+  unlocked way through means the key is reachable, and refusing that placement would be wrong.
+- **A key on the door's own map passes.** Standing in front of a locked door is not the same as
+  being through it, and the check is about the maps the door *leads to*.
+- **Edges are one-way**, because transfers are. A way in is not a way out.
+
+**Where it cannot prove the answer it says so** rather than refusing. A project with
+variable-driven transfers has routes static analysis cannot see, so the verdict downgrades from
+"unwinnable" to "no route found, and this project has transfers I cannot resolve" — the same
+conservatism phase 4 is built on. `allowBehindDoor` exists for the case that is deliberate: a
+door meant to be opened from the far side, as a shortcut back.
+
+**A key made with `create_entity` is a key the player can destroy**, which is why
+`create_key_item` exists at all. The default item row is `occasion 0` and `consumable true`;
+`Game_BattlerBase.isOccasionOk` accepts occasion 0 outside battle, so the key is usable from
+the menu, and `Game_Party.consumeItem` spends one of anything consumable when it is used. The
+player can eat the key and lock themselves out of the game for good.
+
+So the fields come from what the engine does with each, not from the corpus:
+
+| Field | Value | Why |
+|---|---|---|
+| `itypeId` | 2 | `Window_ItemList.includes` splits the Key Items category on exactly this |
+| `occasion` | 3 | "Never" — `isOccasionOk` is false in *both* branches, in battle and out |
+| `consumable` | false | closes the same door from the other side |
+| `price` | 0 | `isTradeable` needs a price above zero, so shops and loot tables both skip it |
+
+**This is a deliberate departure from the one key the corpus contains.** `Wicked Heart`'s "Inn
+Key" is `itypeId 1`, `consumable true`, `occasion 0` — an ordinary item that happens to open a
+door, and exactly the combination described above. Where a single sample disagrees with four
+engine guarantees, the engine wins, and the departure is recorded rather than quietly made.
+
+The chest is not new code: it is the measured pickup shape `decorate_dungeon` already emits,
+with the key as its loot, and the placement gets the same connectivity test a treasure chest
+gets — it is priority 1 and blocks its tile.
+
+**Verified by driving the real server**: a key item written to Items.json as
+`itypeId 2, occasion 3, consumable false, price 0`; a door locked with it leading to a cellar;
+the key refused inside that cellar with the reachable maps listed, then placed there anyway
+under `allowBehindDoor` with the cost stated; the same key accepted outside the door; and three
+more refusals — an event that tests nothing, a switch-locked door (which has no key to place),
+and a second key of the same name.
+
+**Still open here:**
+
+- **A switch lock has no counterpart.** `place_key_for_door` refuses one, correctly — a switch
+  is opened by something that *sets* it. The matching tool is a lever or an NPC who throws it,
+  and it does not exist yet.
+- **Nothing chooses the placement.** The caller still picks the map and the tile; the tool only
+  proves the choice is not fatal. Choosing a good spot — far from the door, on the way to
+  somewhere else — is the next step, and `decorate_dungeon` already knows how to find dead ends.
+- **One key, one door.** No multi-step chains, no quest that needs two things, and nothing
+  tracks a quest's state as a whole.
 
 ### Tool ergonomics, from building a town by hand
 
@@ -1215,10 +1293,11 @@ That is the honest measure of what is missing:
 - **Game logic is started but thin.** Shops exist, chests hold real varied rewards, switches
   can be allocated by name, and a door can be locked behind either a key or a flag — see
   [Commerce and loot](#commerce-and-loot), [Switches and variables](#switches-and-variables)
-  and [Locked doors](#locked-doors). What is still missing is anything that *joins* those
-  pieces up: nothing decides that this chest holds the key to that door, so a quest is still
-  assembled by hand. Gated NPCs, enemies and NPCs who say more than one placeholder line are
-  all still absent too.
+  and [Locked doors](#locked-doors), and [Quests](#quests--joining-the-pieces-up) joins a key
+  to the door it opens with a graph walk that refuses to make the game unwinnable. What is
+  still missing is everything past *one* key and *one* door: nothing sets a switch, nothing
+  chains two steps together, and nothing tracks a quest's state as a whole. Gated NPCs,
+  enemies and NPCs who say more than one placeholder line are all still absent too.
 
 ### Scope and open questions
 
