@@ -380,6 +380,7 @@ batching writes would remove the exposure entirely.
 | nothing joined the pieces up into a quest | `create_key_item` / `place_key_for_door` (`src/core/quest.ts`) — see [Quests](#quests--joining-the-pieces-up) |
 | a switch-locked door with nothing to open it | `place_lever` (`src/core/lever.ts`) — see [Levers](#levers--the-thing-that-sets-a-switch) |
 | the caller had to choose where every piece went | `lock_dungeon_floor` (`src/core/chokepoint.ts`) — see [Locking a generated floor](#locking-a-generated-floor) |
+| a locked door with no reason to exist | themed rooms and a generated inscription (`src/core/vault.ts`) — see [Why the door is there](#why-the-door-is-there) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
@@ -1444,10 +1445,68 @@ ordinary chests and a third lock drawing three more rewards — 11 things handed
 floor, **all 11 different**, the vault chests on slot 1 and the ordinary ones on slot 0, and
 each with the gain command its database requires (126/127/128).
 
+### Why the door is there
+
+A door that divides a floor and guards a good chest was still missing the thing that makes a
+lock a lock: the key was called "Key to map 2", the door said "It's locked.", and nothing in
+the game told the player a key existed at all. A player meeting that walks away — which makes
+the lock a wall rather than a thing to solve.
+
+- `src/core/vault.ts` — the themes, the direction wording and the sign event (pure, unit-tested)
+
+**A theme is three strings that have to agree with each other**: what the room is, what its key
+is called, what the door says. Treasury, armoury, storeroom, cell, crypt. It also decides which
+databases the reward comes from — an armoury holds weapons and armour, a storeroom supplies —
+so the fiction reaches the loot table instead of stopping at the text, which is the only part
+of it the player can act on.
+
+**Themes rotate per lock for a mechanical reason, not for variety.** A key is reused by name,
+so two treasuries on one floor would want one "Treasury Key" between them and the second door
+would open for free.
+
+**The inscription is generated, and that is the point.** It goes beside the door and names the
+direction the opener *actually* went:
+
+> Scratched into the stone: 'What we took, we keep. The steward holds the key.'
+> The key lies a long way to the east.
+
+Everything else in this module is writing; that sentence is read off the placement the tool
+just made, which makes it the one claim on the map a player could catch out and the one that
+cannot be wrong. Diagonals are only named when both axes are worth naming — "north-east" for a
+key that is barely north reads as a wrong answer even though it is a true one.
+
+**A lever-locked door gets different copy**, because the armoury's "no key, no blade" beside a
+door with no keyhole is a sign arguing with the mechanism. Coherence was the whole reason for
+the feature, so a hole in it would be worse than none.
+
+**The sign shape is measured, and the tie-break is the engine's.** Across the projects there are
+39 single-page events whose commands are nothing but Show Text, and **37 are Action Button** —
+settled. Only 4 have no sprite at all, the true inscription case, and they split 2/2 between
+priority 1 and priority 0. With the sample tied, the argument comes from where this event goes:
+beside a locked door, which stands on a chokepoint, where a priority-1 event blocks its tile and
+could seal the floor. Priority 0 cannot, and `Game_Player.triggerButtonAction` starts it through
+`checkEventTriggerHere([0])` when the player stands on it and presses — the safe choice is also
+a working one.
+
+Text runs through `dialogueCommands`, the wrapping the NPC pages already use: a message box is
+four lines and the engine measures text in pixels, so an inscription emitted as a single `401`
+runs off the window. That was a real bug in the first version of this, caught by reading the
+tool's own output rather than by a test.
+
+**Verified by driving the real server**: three locks on one generated floor coming out as a
+treasury (mixed loot, `Treasury Key`), an armoury (weapon 29 "Dragon Spear", opened by a lever,
+with the lever-specific notice) and a storeroom (three items, item-only) — each with its own
+key or switch, its own door name, and an inscription wrapped to three lines whose direction
+clause matches where the opener was put.
+
 **Still open here:**
 
-- **A reward is a chest, and nothing else.** No boss, no set piece, no reason in the fiction
-  that the door was locked — the far side is a room with better loot in it.
+- **A reward is a chest, and nothing else.** No boss, no set piece — the far side is a room
+  with better loot in it and a name.
+- **Five rooms is five rooms.** The copy is a table; a sixth theme is five more strings, and
+  nothing generates prose that fits the *project* rather than the genre.
+- **Nothing connects one floor's fiction to the next.** Each lock is themed on its own, so a
+  three-floor dungeon is a treasury, an armoury and a storeroom with nothing between them.
 - **One door per call.** A floor with three good chokepoints has to be locked three times, and
   nothing reasons about the sequence — which is the difference between a locked floor and a
   dungeon that unfolds.

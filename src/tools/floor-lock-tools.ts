@@ -14,6 +14,14 @@ import { leverEvent } from '../core/lever.js';
 import { keyItemFields } from '../core/quest.js';
 import { buildLootTable, dealLoot, withoutEntries, lootText, LootError } from '../core/loot.js';
 import { stockCandidates, type GoodsKind } from '../core/shop.js';
+import {
+  THEME_COPY,
+  VAULT_THEMES,
+  defaultTheme,
+  hintText,
+  signEvent,
+  type VaultTheme,
+} from '../core/vault.js';
 import { allocateFlag, findFlag, SwitchError } from '../core/switches.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
@@ -88,6 +96,25 @@ export function registerFloorLockTools(server: McpServer): void {
       lockKind: z.enum(['item', 'switch']).default('item')
         .describe(
           'item puts a key in a chest on the near side; switch puts a lever there'
+        ),
+      theme: z.enum(VAULT_THEMES).optional()
+        .describe(
+          'What the locked room is: treasury, armoury, storeroom, cell or crypt. Decides ' +
+          'the key name, what the door says, what the inscription says, and which ' +
+          'databases the reward is drawn from. Rotates per lock when omitted, so two ' +
+          'rooms on one floor are two different rooms with two different keys.'
+        ),
+      hint: z.boolean().default(true)
+        .describe(
+          'Put an inscription near the door naming the direction the key actually went. ' +
+          'Without one a player has no reason to think a key exists at all, and the lock ' +
+          'is a wall they wander away from.'
+        ),
+      hintOnTouch: z.boolean().default(false)
+        .describe(
+          'Fire the inscription by walking onto it rather than pressing. Action Button is ' +
+          'what 37 of 39 measured text events use, but a hint nobody presses is a hint ' +
+          'that does not exist.'
         ),
       keyName: z.string().optional()
         .describe(
@@ -228,10 +255,16 @@ export function registerFloorLockTools(server: McpServer): void {
           );
         }
 
+        // --- what the room is for ---
+        const theme: VaultTheme = args.theme ?? defaultTheme(existingLocks.length);
+        const copy = THEME_COPY[theme];
+
         // --- the lock ---
         const defaultName =
           args.keyName ??
-          (args.lockKind === 'item' ? `Key to map ${args.mapId}` : `Map ${args.mapId} door open`);
+          (args.lockKind === 'item'
+            ? copy.keyName
+            : `${copy.keyName.replace(/ Key$/, '')} mechanism`);
 
         let lockDataId: number;
         let lockLabel: string;
@@ -321,8 +354,8 @@ export function registerFloorLockTools(server: McpServer): void {
           lockedDoorEvent(id, plan.door.x, plan.door.y, {
             lock: { kind: args.lockKind === 'item' ? 'item' : 'switch', dataId: lockDataId },
             characterName: args.doorSprite,
-            lockedText: args.lockedText ?? "It's locked.",
-            name: `LockedDoor${id}`,
+            lockedText: args.lockedText ?? copy.lockedText,
+            name: `${copy.doorName}${id}`,
           })
         );
 
@@ -344,6 +377,40 @@ export function registerFloorLockTools(server: McpServer): void {
 
         if (args.lockKind === 'item') opener.name = `Key to ${door.name}`;
 
+        // --- a reason the door is there, and a lead to its key ---
+        //
+        // The inscription goes on the near side of the door, as close to it as
+        // the floor allows: the player has to be standing in front of the lock
+        // to wonder about it. It is priority 0 and blocks nothing, which is
+        // what makes it safe this near a chokepoint.
+        let hintEvent: Event | null = null;
+        if (args.hint) {
+          const nearKeys = new Set(plan.near.map((s) => `${s.x},${s.y}`));
+          const used = new Set([
+            ...taken.map((s) => `${s.x},${s.y}`),
+            `${plan.opener.x},${plan.opener.y}`,
+          ]);
+          const spot = plan.near
+            .filter((s) => nearKeys.has(`${s.x},${s.y}`) && !used.has(`${s.x},${s.y}`))
+            .sort(
+              (a, b) =>
+                Math.abs(a.x - plan.door.x) + Math.abs(a.y - plan.door.y) -
+                (Math.abs(b.x - plan.door.x) + Math.abs(b.y - plan.door.y))
+            )[0];
+
+          if (spot) {
+            hintEvent = addEvent(mapData, (id) =>
+              signEvent(
+                id,
+                spot.x,
+                spot.y,
+                hintText(theme, args.lockKind === 'item' ? 'key' : 'lever', plan.door, plan.opener),
+                { trigger: args.hintOnTouch ? 1 : 0, name: `Inscription${id}` }
+              )
+            );
+          }
+        }
+
         // --- something worth finding behind it ---
         const rewardLines: string[] = [];
         let rewardNote: string | null = null;
@@ -362,7 +429,10 @@ export function registerFloorLockTools(server: McpServer): void {
           const table = withoutEntries(
             buildLootTable(
               { items: pools.item, weapons: pools.weapon, armors: pools.armor },
-              { priceBand: (args.rewardBand as [number, number] | undefined) ?? [0.75, 1] }
+              {
+                priceBand: (args.rewardBand as [number, number] | undefined) ?? [0.75, 1],
+                kinds: copy.rewardKinds,
+              }
             ),
             rewardsAlreadyOnMap(mapData)
           );
@@ -420,7 +490,7 @@ export function registerFloorLockTools(server: McpServer): void {
 
         const total = plan.door.nearSize + plan.door.farSize + 1;
         const lines = [
-          `Map ${args.mapId} is now in two halves.`,
+          `Map ${args.mapId} now has ${copy.room} on it.`,
           '',
           `Door: event ${door.id} at (${plan.door.x}, ${plan.door.y}), opening on ` +
           (args.lockKind === 'item'
@@ -434,6 +504,27 @@ export function registerFloorLockTools(server: McpServer): void {
             : `Lever: event ${opener.id} at (${plan.opener.x}, ${plan.opener.y}), on the near side.`,
           `Entrance taken from ${entranceFrom}: (${entrance.x}, ${entrance.y}).`,
         ];
+
+        if (hintEvent) {
+          lines.push(
+            '',
+            `Inscription: event ${hintEvent.id} at (${hintEvent.x}, ${hintEvent.y}), beside the door.`,
+            `  "${hintEvent.pages[0].list
+              .filter((c) => c.code === 401)
+              .map((c) => c.parameters[0])
+              .join(' ')}"`,
+            '',
+            'The second sentence is derived from where the key actually went, not written in ' +
+            'advance — it is the only claim on the map a player could catch out, and it cannot ' +
+            'be wrong. Without it a locked door is a wall: nothing else in the game says a key ' +
+            'exists at all.'
+          );
+        } else if (args.hint) {
+          lines.push(
+            '',
+            'No room beside the door for an inscription — every near tile next to it is taken.'
+          );
+        }
 
         if (rewardLines.length > 0) {
           lines.push(

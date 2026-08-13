@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-592%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-614%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -23,7 +23,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 | stderr-only logging (no stdout pollution) | ✅ | ❌ |
 | Correct `.rmmzproject` extension | ✅ | ❌ |
 | Generic `DatabaseManager<T>` (no copy-paste) | ✅ | ❌ |
-| Unit & integration tests (592 tests) | ✅ | ❌ |
+| Unit & integration tests (614 tests) | ✅ | ❌ |
 | MCP SDK v1.26+ | ✅ | ❌ |
 | Event editing with human-readable commands | ✅ | Partial |
 | AI scenario generation tools | ✅ | ❌ |
@@ -702,7 +702,7 @@ which `Game_Event.start` treats as nothing to run — it requires `list.length >
 ### Locking a Generated Floor (1)
 | Tool | Description |
 |------|-------------|
-| `lock_dungeon_floor` | Divide a generated floor with a locked door, put its key or lever on the near side, and a reward behind it |
+| `lock_dungeon_floor` | Turn a generated floor into a locked room with a key, an inscription that leads to it, and a reward behind the door |
 
 The first tool that produces a quest without anyone choosing where anything goes. It finds the
 door tile, creates the key, places the chest or lever, and proves the floor is still
@@ -735,6 +735,34 @@ threshold rejects 33 of 40 small dungeons and all 40 large ones, which is why
 Locking the same floor twice works: an existing locked door is treated as a wall for the next
 search, so the second door divides the part the player can still reach instead of landing
 beside the first and gating the same region twice.
+
+**And the door has a reason to be there.** A theme — treasury, armoury, storeroom, cell or
+crypt — supplies the three things that have to agree with each other: what the room is, what
+its key is called, and what the door says when it refuses. It also decides which databases the
+reward comes from, so an armoury holds weapons and armour and a storeroom holds supplies: the
+fiction reaches the loot table rather than stopping at the text. Themes rotate per lock when
+not given, which matters mechanically — a key is reused by name, so two treasuries on one
+floor would share one key and the second door would be free.
+
+**The part that is generated rather than written is the inscription.** A locked door with no
+explanation is a wall the player wanders away from: nothing else in the game says a key exists
+at all. So a sign goes beside the door naming the direction the key *actually* went —
+
+> Scratched into the stone: 'What we took, we keep. The steward holds the key.'
+> The key lies a long way to the east.
+
+— worked out from the two coordinates, which makes it the one claim on the map a player could
+catch out and the one that cannot be wrong. A lever-locked door gets different copy, because
+"no key, no blade" beside a door with no keyhole is a sign arguing with the mechanism.
+
+The sign shape is measured: of 39 single-page text-only events across the projects, **37 are
+Action Button**. Only 4 have no sprite — the true inscription case — and those split 2/2
+between priority 1 and 0, so the tie-break is the engine's: an inscription stands beside a door
+that stands on a chokepoint, and priority 0 is the one that cannot seal a floor.
+`Game_Player.triggerButtonAction` starts it through `checkEventTriggerHere([0])` when the
+player stands on it and presses. Text is wrapped through the same code the NPC pages use — a
+message box is four lines and measures pixels, so an inscription emitted as one line runs off
+the window.
 
 **And there is something behind it.** The far side gets a chest in its deepest dead end —
 deepest because a chest one step past the door is one you can see through the doorway — drawn
@@ -806,7 +834,7 @@ npm install
 # Build
 npm run build
 
-# Verify (592 tests should pass)
+# Verify (614 tests should pass)
 npm test
 ```
 
@@ -914,7 +942,8 @@ src/
 │   ├── locked-door.ts          # Conditional branches + the two pages of a locked door
 │   ├── quest.ts                # Key items, and proving a key is not behind its own door
 │   ├── lever.ts                # The event that throws a switch
-│   └── chokepoint.ts           # Where a door would actually divide a floor
+│   ├── chokepoint.ts           # Where a door would actually divide a floor
+│   └── vault.ts                # What a locked room is for, and the sign beside it
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
 │   ├── map.ts                  # Map & audio schemas
@@ -1072,7 +1101,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 592 個測試應全部通過
+npm test  # 614 個測試應全部通過
 ```
 
 在你的專案目錄建立 `.mcp.json`：
@@ -1153,7 +1182,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 592 テストがすべてパスするはず
+npm test  # 614 テストがすべてパスするはず
 ```
 
 プロジェクトディレクトリに `.mcp.json` を作成：
