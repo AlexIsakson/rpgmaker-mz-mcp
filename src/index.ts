@@ -21,6 +21,7 @@ import { registerSwitchTools } from './tools/switch-tools.js';
 import { registerLockedDoorTools } from './tools/locked-door-tools.js';
 import { registerQuestTools } from './tools/quest-tools.js';
 import { registerLeverTools } from './tools/lever-tools.js';
+import { registerFloorLockTools } from './tools/floor-lock-tools.js';
 import { registerMapgenTools } from './tools/mapgen-tools.js';
 import { registerConsistencyTools } from './tools/consistency-tools.js';
 import { registerEventTools } from './tools/event-tools.js';
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
   registerLockedDoorTools(server);
   registerQuestTools(server);
   registerLeverTools(server);
+  registerFloorLockTools(server);
   registerMapgenTools(server);
   registerConsistencyTools(server);
   registerEventTools(server);

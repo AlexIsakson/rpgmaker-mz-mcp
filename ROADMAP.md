@@ -379,6 +379,7 @@ batching writes would remove the exposure entirely.
 | nothing gated behind anything; no locked doors | `place_locked_door` (`src/core/locked-door.ts`) — see [Locked doors](#locked-doors) |
 | nothing joined the pieces up into a quest | `create_key_item` / `place_key_for_door` (`src/core/quest.ts`) — see [Quests](#quests--joining-the-pieces-up) |
 | a switch-locked door with nothing to open it | `place_lever` (`src/core/lever.ts`) — see [Levers](#levers--the-thing-that-sets-a-switch) |
+| the caller had to choose where every piece went | `lock_dungeon_floor` (`src/core/chokepoint.ts`) — see [Locking a generated floor](#locking-a-generated-floor) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
@@ -1261,9 +1262,10 @@ and a second key of the same name.
 - ~~**A switch lock has no counterpart.**~~ *Done:* `place_lever` — see
   [Levers](#levers--the-thing-that-sets-a-switch). An NPC who throws the flag for you, a
   pressure plate, or a battle that sets it are all still missing.
-- **Nothing chooses the placement.** The caller still picks the map and the tile; the tool only
-  proves the choice is not fatal. Choosing a good spot — far from the door, on the way to
-  somewhere else — is the next step, and `decorate_dungeon` already knows how to find dead ends.
+- ~~**Nothing chooses the placement.**~~ *Done for a dungeon floor:* `lock_dungeon_floor` picks
+  the door tile and the dead end the key goes in — see
+  [Locking a generated floor](#locking-a-generated-floor). A key for a *hand-made* map still
+  needs a coordinate.
 - **One key, one door.** No multi-step chains, no quest that needs two things, and nothing
   tracks a quest's state as a whole.
 
@@ -1339,10 +1341,82 @@ gate produced on its own is gone, because something now writes it.
 
 - **A lever is the only thing that throws a flag.** An NPC who opens the gate when you have
   done them a favour, a pressure plate, a switch thrown by finishing a battle — none exist.
-- **Nothing places it.** As with the key, the caller picks the tile and the tool only proves
-  the choice is not fatal.
+- ~~**Nothing places it.**~~ *Done on a generated floor:* `lock_dungeon_floor` with
+  `lockKind=switch` puts the lever in a dead end on the near side — see
+  [Locking a generated floor](#locking-a-generated-floor).
 - **No lever puzzles.** Two levers that must both be on, or a sequence — anything needing more
   than one flag has to be assembled by hand, and nothing checks such a combination is solvable.
+
+### Locking a generated floor
+
+`lock_dungeon_floor` takes a map id and produces a quest: it finds the tile that divides the
+floor, locks a door onto it, creates the key, and puts the key — or a lever — in a dead end on
+the side the player starts.
+
+- `src/core/chokepoint.ts` — articulation points and how a floor splits (pure, unit-tested)
+- `src/tools/floor-lock-tools.ts` — the MCP tool
+
+This is the first tool where **nobody chooses where anything goes**. Everything before it
+placed what it was told to place; the shops, doors, keys and levers of the previous sections
+all take a coordinate. That is what kept a generated dungeon scenery-with-props rather than
+somewhere to play.
+
+**The tile it needs was already being computed, with the verdict reversed.** `rejectSealingSlots`
+drops any prop whose tile, made solid, would cut part of the map off. A locked door wants
+exactly those tiles for exactly that reason — they are the ones that separate the floor into
+before and after. The existing test is a chokepoint detector read backwards, and the new module
+is the other half of it.
+
+**Brute force would have worked and would not have scaled.** Blocking each floor tile in turn
+and flooding is O(n²): fine on the 400-tile floors the generator makes at 40x30, ruinous at
+120x120. Candidates come from Tarjan's articulation points in a single pass — iteratively,
+because a dungeon is exactly the long-thin-corridor shape that makes a recursive DFS deep —
+and only those few are flooded to measure the split, which is what the caller needs anyway.
+
+**What a generated floor actually offers was measured, and it is the opposite of the
+intuition.** Across 40 seeds of each:
+
+| Layout | Floors with a chokepoint | Best split (median) | ≥5% | ≥15% |
+|---|---|---|---|---|
+| dungeon 40x30 | 40/40 | 7.1% | 30/40 | 7/40 |
+| dungeon 60x45 | 40/40 | 4.7% | 17/40 | 0/40 |
+| cave 40x30 | 40/40 | 2.2% | 14/40 | 9/40 |
+
+**Bigger floors split worse**, because more corridors means more loops and a loop has no cut
+vertex at all. The first default written here was 0.15, chosen by eye; it rejects 33 of 40 small
+dungeons and *all* 40 large ones. The measurement moved it to 0.05 — and the refusal now names
+the fraction actually available and the value to pass to take it, because "lopsided" without a
+number is not something a caller can act on.
+
+**Locking the same floor twice needed one more rule.** The second call originally put its door
+one tile from the first, gating the same region behind two keys. An existing locked door is now
+treated as a *wall* while searching, so a second lock divides the part of the floor the player
+can still reach — which is also the only place its key could sensibly go.
+
+**And one refusal turned out to be a lie worth fixing.** A floor with no chokepoint at all was
+reported as "wide open chambers, try a dungeon layout". Driving it against a real project showed
+the actual cause was the surround material being a *walkable* one, so the map was one open room
+and nothing could ever divide it. The message now says both possibilities and points at
+`configure_tileset_passage` and `describe_tileset_materials` — passability lives in
+Tilesets.json, and no amount of layout will fix a wall that is not a wall.
+
+**Verified by driving the real server** against a generated 40x30 dungeon: a door at (7, 11)
+guarding 27 of 412 tiles with its key in a dead end at (33, 22) clear across the floor; a second
+call adding a lever-locked door at (16, 8) in a different region, reporting that it treated the
+first as a wall; refusals for a lopsided split, for a map with no entrance event, and for the
+open field with its walkable surround. `check_project` reports nothing on the result.
+
+**Still open here:**
+
+- **Nothing puts anything worth finding behind the door.** The far side is measured and then
+  left alone: no reward, no boss, no reason the door was locked. `decorate_dungeon` runs
+  separately and does not know a lock exists.
+- **One door per call.** A floor with three good chokepoints has to be locked three times, and
+  nothing reasons about the sequence — which is the difference between a locked floor and a
+  dungeon that unfolds.
+- **The caves are barely lockable.** A median best split of 2.2% says most cave floors have no
+  meaningful division at all, which is a fact about the cave generator rather than about this
+  tool.
 
 ### Tool ergonomics, from building a town by hand
 
@@ -1377,6 +1451,9 @@ That is the honest measure of what is missing:
   still missing is everything past *one* opener and *one* door: nothing chains two steps
   together, nothing tracks a quest's state as a whole, and no puzzle needs two flags at once.
   Gated NPCs, enemies and NPCs who say more than one placeholder line are all still absent too.
+  [Locking a generated floor](#locking-a-generated-floor) is the first tool that places a quest
+  without being told where — but it locks a door and leaves the far side empty, so what is
+  behind the lock is still nothing in particular.
 
 ### Scope and open questions
 

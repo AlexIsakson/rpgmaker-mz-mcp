@@ -37,6 +37,25 @@ import type { Event, EventCommand, EventPage } from '../schemas/event.js';
  * so `directionFix: true` makes it a no-op. This is why the measured chest and
  * torch pages both set it, which until now looked like a stylistic habit.
  *
+ * **And the page change still gets to move the frame**, which is the half of
+ * that argument one would otherwise doubt. `Game_Event.setupPageSettings`
+ * unfixes the direction on purpose to apply the new page's image:
+ *
+ * ```js
+ * if (this._originalDirection !== image.direction) {
+ *     this._originalDirection = image.direction;
+ *     this._prelockDirection = 0;
+ *     this.setDirectionFix(false);
+ *     this.setDirection(image.direction);
+ * }
+ * ...
+ * this.setDirectionFix(page.directionFix);
+ * ```
+ *
+ * So a fixed direction blocks the player turning the lever, and does not block
+ * the lever changing state. Both halves are needed, and this is the mechanism
+ * the chest has been relying on all along.
+ *
  * **The second page is gated on the switch itself, not on a self switch.** A
  * lever is the flag's display: if a quest or another lever turns the switch off,
  * the lever should spring back, and a self switch would freeze it thrown for
