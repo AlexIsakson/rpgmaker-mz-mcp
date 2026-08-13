@@ -15,6 +15,8 @@ import {
   torchEvent,
   treasureEvent,
 } from '../core/dungeon-dressing.js';
+import { buildLootTable, dealLoot, LootError, type LootEntry } from '../core/loot.js';
+import { stockCandidates } from '../core/shop.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import type { MapData } from '../schemas/map.js';
@@ -95,9 +97,23 @@ export function registerDungeonDressingTools(server: McpServer): void {
         ),
       treasureSprite: z.string().default('!Chest').describe('Character sheet for the chest'),
       treasureSpriteIndex: z.number().int().min(0).max(7).default(0),
-      itemId: z.number().int().positive().default(1)
-        .describe('Item each chest hands over. The message names it from the database.'),
-      itemAmount: z.number().int().positive().default(1).describe('How many'),
+      loot: z.array(z.enum(['item', 'weapon', 'armor'])).optional()
+        .describe(
+          'Which databases chests draw from. Defaults to all three. Each chest gets a ' +
+          'different reward, dealt from the project\'s own items rather than one id repeated.'
+        ),
+      lootBand: z.array(z.number().min(0).max(1)).length(2).optional()
+        .describe(
+          'Slice of the price range chests draw from, as two fractions of the tradeable ' +
+          'entries sorted by price. Defaults to [0.25, 0.75] — the middle: the cheap end is ' +
+          'what a shop sells, and the dearest gear is not a corridor find.'
+        ),
+      itemId: z.number().int().positive().optional()
+        .describe(
+          'Put this exact item in every chest instead of dealing a varied table. The old ' +
+          'behaviour, kept for when a specific reward is the point.'
+        ),
+      itemAmount: z.number().int().positive().default(1).describe('How many of each reward'),
       floorProps: z.array(z.string()).optional()
         .describe(`Scatter props for the floor. Defaults to ${DEFAULT_FLOOR_PROPS.join(', ')}.`),
       wallProps: z.array(z.string()).optional()
@@ -188,28 +204,80 @@ export function registerDungeonDressingTools(server: McpServer): void {
           );
         }
 
-        // Name the item from the database, so the message says what it is.
-        let itemName = 'something';
-        try {
-          const items = (await FileHandler.readJsonRaw(
-            path.join(project.dataPath, 'Items.json')
-          )) as ({ id: number; name: string } | null)[];
-          itemName = items[args.itemId]?.name || itemName;
-        } catch {
-          // no Items.json is the caller's problem to notice, not a reason to fail
+        // What goes in the chests. Reading the three databases is the only I/O
+        // here; choosing and dealing is pure, so it is all unit-tested.
+        const readDatabase = async (file: string): Promise<unknown[]> => {
+          try {
+            const raw = await FileHandler.readJsonRaw(path.join(project.dataPath, file));
+            return Array.isArray(raw) ? raw : [];
+          } catch {
+            // A missing database is not a reason to fail the whole decoration
+            // pass; an empty pool is reported below instead.
+            return [];
+          }
+        };
+
+        const lootNotes: string[] = [];
+        let rewards: LootEntry[] = [];
+
+        if (args.itemId !== undefined) {
+          const items = await readDatabase('Items.json');
+          const named = stockCandidates(items).find((e) => e.id === args.itemId);
+          if (!named) {
+            return errorResult(
+              `Item ${args.itemId} is not in Items.json, so every chest would hand over ` +
+              'nothing. Give an item that exists, or drop itemId to deal from the database.'
+            );
+          }
+          const fixed: LootEntry = {
+            kind: 'item', dataId: named.id, name: named.name,
+            price: named.price, amount: args.itemAmount,
+          };
+          rewards = plan.treasure.map(() => fixed);
+        } else {
+          const [items, weapons, armors] = await Promise.all([
+            readDatabase('Items.json'),
+            readDatabase('Weapons.json'),
+            readDatabase('Armors.json'),
+          ]);
+          let table: LootEntry[];
+          try {
+            table = buildLootTable(
+              {
+                items: stockCandidates(items),
+                weapons: stockCandidates(weapons),
+                armors: stockCandidates(armors),
+              },
+              {
+                kinds: args.loot,
+                priceBand: args.lootBand as [number, number] | undefined,
+              }
+            );
+            rewards = dealLoot(table, plan.treasure.length, seed).map((e) => ({
+              ...e,
+              amount: args.itemAmount,
+            }));
+          } catch (error) {
+            if (error instanceof LootError && plan.treasure.length > 0) return errorResult(error.message);
+            table = [];
+          }
+          if (table.length > 0 && table.length < plan.treasure.length) {
+            lootNotes.push(
+              `Only ${table.length} distinct reward(s) matched, so ${plan.treasure.length} chests ` +
+              'reuse some. Widen lootBand for more variety.'
+            );
+          }
         }
 
-        for (const slot of plan.treasure) {
+        plan.treasure.forEach((slot, i) => {
           addEvent(mapData, (id) =>
             treasureEvent(id, slot.x, slot.y, {
               characterName: args.treasureSprite,
               characterIndex: args.treasureSpriteIndex,
-              itemId: args.itemId,
-              amount: args.itemAmount,
-              text: `You found \\c[6]${itemName}\\c[0] x${args.itemAmount}!`,
+              loot: rewards[i],
             })
           );
-        }
+        });
 
         // --- props ---
         const catalogue = collectProps(tileset.tilesetNames);
@@ -279,8 +347,11 @@ export function registerDungeonDressingTools(server: McpServer): void {
           `Decorated map ${mapId}: ${floorTiles} floor of ${total} tiles, by ${basis}. Seed ${seed}.`,
           '',
           `Torches: ${plan.torches.length} of ${args.torchCount} on wall faces.`,
-          `Treasure: ${plan.treasure.length} of ${args.treasureCount} chest(s), ` +
-            `each giving ${args.itemAmount}x "${itemName}". ${plan.deadEnds} dead end(s) available.`,
+          `Treasure: ${plan.treasure.length} of ${args.treasureCount} chest(s). ` +
+            `${plan.deadEnds} dead end(s) available.`,
+          ...(rewards.length > 0
+            ? [`  ${[...new Set(rewards.map((r) => `${r.name} (${r.kind})`))].join(', ')}`]
+            : []),
           `Props: ${floorPlaced} on the floor, ${wallPlaced} on wall faces, layer ${propLayer}.`,
         ];
 
@@ -316,13 +387,7 @@ export function registerDungeonDressingTools(server: McpServer): void {
         if (missing.length > 0) {
           lines.push('', `Not in "${tileset.name}", so skipped: ${missing.join(', ')}.`);
         }
-        if (itemName === 'something') {
-          lines.push(
-            '',
-            `Item ${args.itemId} has no name in the database, so the chests say "something". ` +
-            'Give itemId an item that exists.'
-          );
-        }
+        for (const note of lootNotes) lines.push('', note);
         lines.push(...notes.map((n) => `
 Note: ${n}`));
         lines.push(

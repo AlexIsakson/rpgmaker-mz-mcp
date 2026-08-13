@@ -1,4 +1,5 @@
 import { makeRng, floodFill } from './mapgen.js';
+import { gainCommand, lootText, type LootEntry } from './loot.js';
 import type { Event, EventCommand, EventPage } from '../schemas/event.js';
 
 /**
@@ -89,15 +90,41 @@ export function torchEvent(id: number, x: number, y: number, options: TorchOptio
 export interface TreasureOptions {
   characterName?: string;
   characterIndex?: number;
-  /** Item handed over. `kind` picks the database: 0 item, 1 weapon, 2 armour. */
-  itemId?: number;
-  amount?: number;
-  /** Message shown. `\\c[6]` colours the name, the way the shipped events do. */
+  /**
+   * What the chest hands over, and which database it comes from.
+   *
+   * This used to be a bare `itemId` whose doc claimed a `kind` field that did
+   * not exist, so every chest emitted command 126 and could only ever contain
+   * an *item* — a weapon id handed the player whichever item shared that
+   * number. A {@link LootEntry} carries the database with the id, and
+   * {@link gainCommand} picks 126, 127 or 128 to match.
+   */
+  loot?: LootEntry;
+  /**
+   * Message shown. Defaults to naming the loot with `\\c[6]`, the escape the
+   * shipped events use to colour the item's name.
+   */
   text?: string;
   openSe?: string;
   /** Self switch used to remember it has been opened. */
   selfSwitch?: string;
 }
+
+/**
+ * What a chest holds when the caller names nothing.
+ *
+ * There is no safe hardcoded id — item 1 is `-----Reserved` in the RTP
+ * database — so the fallback is a single potion-sized *item* id 7, which is
+ * `Potion` in an unmodified project, and callers that care pass real loot from
+ * {@link buildLootTable}. The tools always do.
+ */
+export const FALLBACK_LOOT: LootEntry = {
+  kind: 'item',
+  dataId: 7,
+  name: 'Potion',
+  price: 100,
+  amount: 1,
+};
 
 /** Direction 2 is the closed lid; direction 8 is the open one. */
 export const CHEST_CLOSED_DIRECTION = 2;
@@ -107,12 +134,11 @@ export function treasureEventPages(options: TreasureOptions = {}): EventPage[] {
   const {
     characterName = '!Chest',
     characterIndex = 0,
-    itemId = 1,
-    amount = 1,
-    text = 'You found something.',
+    loot = FALLBACK_LOOT,
     openSe = 'Chest1',
     selfSwitch = 'A',
   } = options;
+  const text = options.text ?? lootText(loot);
 
   const closed: EventPage = {
     conditions: blankConditions(),
@@ -132,8 +158,7 @@ export function treasureEventPages(options: TreasureOptions = {}): EventPage[] {
       },
       { code: CODE_SHOW_TEXT, indent: 0, parameters: ['', 0, 0, 2, ''] },
       { code: CODE_SHOW_TEXT_BODY, indent: 0, parameters: [text] },
-      // [itemId, operation (0 = gain), operand (0 = constant), amount]
-      { code: CODE_CHANGE_ITEMS, indent: 0, parameters: [itemId, 0, 0, amount] },
+      gainCommand(loot),
       // [switch, value (0 = ON)]
       { code: CODE_SELF_SWITCH, indent: 0, parameters: [selfSwitch, 0] },
       { code: CODE_END, indent: 0, parameters: [] },

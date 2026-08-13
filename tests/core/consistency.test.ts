@@ -340,6 +340,227 @@ describe('renderConsistencyReport', () => {
   });
 });
 
+describe('flag range and naming', () => {
+  // setValue is guarded by `id > 0 && id < $dataSystem.<kind>.length`, so an id
+  // from the array length up is silently unwritable.
+  const flagNames = {
+    switches: ['', 'Met the mayor', '', ''],   // ids 1-3 usable
+    variables: ['', '', ''],                   // ids 1-2 usable
+  };
+
+  it('flags a write the engine will ignore', () => {
+    const report = checkProject(makeInput({
+      flagNames,
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [page({ list: [setSwitch(9), readSwitch(9), END] })])])],
+    }));
+
+    const finding = report.findings.find((f) => f.rule === 'switch-out-of-range');
+    expect(finding?.severity).toBe('error');
+    expect(finding?.message).toContain('reaches 3');
+    expect(finding?.message).toContain('does nothing');
+  });
+
+  it('flags a read of an id nothing could ever set', () => {
+    const report = checkProject(makeInput({
+      flagNames,
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [page({ list: [readSwitch(40), END] })])])],
+    }));
+
+    expect(report.findings.find((f) => f.rule === 'switch-out-of-range')?.message)
+      .toContain('always false');
+  });
+
+  it('bounds variables against their own array', () => {
+    const report = checkProject(makeInput({
+      flagNames,
+      maps: [makeMap(1, [makeEvent(1, 'Count', [page({ list: [setVariable(5), readVariable(5), END] })])])],
+    }));
+
+    expect(rulesOf(report.findings)).toContain('variable-out-of-range');
+  });
+
+  it('says nothing about ids inside the array', () => {
+    const report = checkProject(makeInput({
+      flagNames,
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [page({ list: [setSwitch(3), readSwitch(3), END] })])])],
+    }));
+
+    expect(rulesOf(report.findings)).not.toContain('switch-out-of-range');
+  });
+
+  it('stays silent when System.json was not supplied', () => {
+    const report = checkProject(makeInput({
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [page({ list: [setSwitch(900), readSwitch(900), END] })])])],
+    }));
+
+    expect(rulesOf(report.findings)).not.toContain('switch-out-of-range');
+  });
+
+  it('names the flag in the usage findings when it has one', () => {
+    const report = checkProject(makeInput({
+      flagNames,
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [page({ list: [readSwitch(1), END] })])])],
+    }));
+
+    expect(report.findings.find((f) => f.rule === 'switch-read-never-written')?.message)
+      .toContain('Switch 1 ("Met the mayor")');
+  });
+
+  it('leaves an unnamed id bare rather than padding it with "(unnamed)"', () => {
+    const report = checkProject(makeInput({
+      flagNames,
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [page({ list: [readSwitch(2), END] })])])],
+    }));
+
+    expect(report.findings.find((f) => f.rule === 'switch-read-never-written')?.message)
+      .toMatch(/^Switch 2 is checked/);
+  });
+});
+
+describe('shop goods rule', () => {
+  // command302's own parameters are the first goods row; each 605 that follows
+  // is one more. [kind, dataId, priceType, price] with kind 0/1/2.
+  const shop = (rows: [number, number][]): EventCommand[] => [
+    cmd(302, [...rows[0], 0, 0, false]),
+    ...rows.slice(1).map((r) => cmd(605, [...r, 0, 0])),
+    END,
+  ];
+
+  const databaseIds = {
+    items: new Set([7, 8]),
+    weapons: new Set([3]),
+    armors: new Set([9]),
+  };
+
+  it('flags a row pointing at an entry that is not in the database', () => {
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'Shop', [page({ list: shop([[0, 7], [0, 99]]) })])])],
+    }));
+
+    const finding = report.findings.find((f) => f.rule === 'shop-sells-missing-entry');
+    expect(finding?.severity).toBe('error');
+    expect(finding?.message).toContain('99');
+    expect(finding?.where).toContain('Shop');
+  });
+
+  it('checks each row against its own database', () => {
+    // weapon 7 and armour 7 do not exist even though item 7 does.
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'Shop', [page({ list: shop([[0, 7], [1, 7], [2, 9]]) })])])],
+    }));
+
+    const found = report.findings.filter((f) => f.rule === 'shop-sells-missing-entry');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain('weapon 7');
+  });
+
+  it('stays quiet on a shop that sells only things that exist', () => {
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'Shop', [page({ list: shop([[0, 7], [1, 3], [2, 9]]) })])])],
+    }));
+
+    expect(rulesOf(report.findings)).not.toContain('shop-sells-missing-entry');
+  });
+
+  it('only reads a 605 that continues a shop, not one that continues something else', () => {
+    // 605 is a generic continuation code. A stray one outside a shop run must
+    // not be read as goods.
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'Odd', [page({ list: [cmd(605, [0, 99, 0, 0]), END] })])])],
+    }));
+
+    expect(rulesOf(report.findings)).not.toContain('shop-sells-missing-entry');
+  });
+
+  it('checks shops in common events and troop pages too', () => {
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'NPC', [page({ list: [showText('Hi'), END] })])])],
+      commonEvents: [{ id: 1, name: 'Travelling merchant', trigger: 0, switchId: 1, list: shop([[0, 42]]) }],
+      troopCommandLists: [shop([[2, 77]])],
+    }));
+
+    const found = report.findings.filter((f) => f.rule === 'shop-sells-missing-entry');
+    expect(found).toHaveLength(2);
+    expect(found.map((f) => f.where)).toEqual(
+      expect.arrayContaining([expect.stringContaining('common event 1'), 'a troop page'])
+    );
+  });
+
+  it('says nothing at all when the databases could not be loaded', () => {
+    // An absent database must lose the rule, not report every reference missing.
+    const report = checkProject(makeInput({
+      maps: [makeMap(1, [makeEvent(1, 'Shop', [page({ list: shop([[0, 99]]) })])])],
+    }));
+
+    expect(rulesOf(report.findings)).not.toContain('shop-sells-missing-entry');
+  });
+});
+
+describe('held-item branch rule', () => {
+  // command111 cases 8/9/10: hasItem($dataItems[params[1]]) and the equipment
+  // pair, which take includeEquip as params[2].
+  const holdsItem = (dataId: number) => cmd(111, [8, dataId]);
+  const holdsWeapon = (dataId: number) => cmd(111, [9, dataId, false]);
+  const holdsArmor = (dataId: number) => cmd(111, [10, dataId, false]);
+
+  const databaseIds = {
+    items: new Set([7, 8]),
+    weapons: new Set([3]),
+    armors: new Set([9]),
+  };
+
+  it('flags a lock whose key is not in the database', () => {
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'Cellar door', [page({ list: [holdsItem(35), END] })])])],
+    }));
+
+    const finding = report.findings.find((f) => f.rule === 'branch-checks-missing-entry');
+    expect(finding?.severity).toBe('error');
+    expect(finding?.message).toContain('item 35');
+    expect(finding?.where).toContain('Cellar door');
+  });
+
+  it('checks each branch against its own database', () => {
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [
+        page({ list: [holdsItem(7), holdsWeapon(7), holdsArmor(9), END] }),
+      ])])],
+    }));
+
+    const found = report.findings.filter((f) => f.rule === 'branch-checks-missing-entry');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain('weapon 7');
+  });
+
+  it('ignores branches that test something other than a held entry', () => {
+    // A switch branch's params[1] is a switch id, not a database id — reading it
+    // as one would condemn every flag in the project.
+    const report = checkProject(makeInput({
+      databaseIds,
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [
+        page({ list: [readSwitch(99), readVariable(99), setSwitch(99), END] }),
+      ])])],
+    }));
+
+    expect(rulesOf(report.findings)).not.toContain('branch-checks-missing-entry');
+  });
+
+  it('says nothing when the databases could not be loaded', () => {
+    const report = checkProject(makeInput({
+      maps: [makeMap(1, [makeEvent(1, 'Gate', [page({ list: [holdsItem(35), END] })])])],
+    }));
+
+    expect(rulesOf(report.findings)).not.toContain('branch-checks-missing-entry');
+  });
+});
+
 describe('resolveCommonEventSelfSwitchWrites', () => {
   it('follows call chains and survives cycles', () => {
     const commonEvents: CommonEventFull[] = [

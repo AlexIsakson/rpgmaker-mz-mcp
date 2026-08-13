@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-167%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-534%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -23,7 +23,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 | stderr-only logging (no stdout pollution) | ✅ | ❌ |
 | Correct `.rmmzproject` extension | ✅ | ❌ |
 | Generic `DatabaseManager<T>` (no copy-paste) | ✅ | ❌ |
-| Unit & integration tests (42 tests) | ✅ | ❌ |
+| Unit & integration tests (534 tests) | ✅ | ❌ |
 | MCP SDK v1.26+ | ✅ | ❌ |
 | Event editing with human-readable commands | ✅ | Partial |
 | AI scenario generation tools | ✅ | ❌ |
@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (33 total)
+## 🛠 Available Tools (54 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -58,7 +58,7 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `delete_entity` | Delete an entity (protects system defaults) |
 | `search_entities` | Search by keyword across name/description |
 
-### Map Management (20)
+### Map Management (22)
 | Tool | Description |
 |------|-------------|
 | `list_maps` | List all maps with hierarchy |
@@ -78,6 +78,8 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `generate_interiors` | Give every door on a map a room, wired both ways |
 | `generate_map_layout` | Fill a map with a generated dungeon or cave layout |
 | `decorate_dungeon` | Torches on the walls, treasure in the dead ends, clutter on the floor |
+| `place_stairs` | Join two maps with a stair, ladder or cave mouth — tiles and transfer events, both ways |
+| `link_dungeon_floors` | Wire generated floors into a staircase, and out to a map above ground |
 | `apply_wall_shadows` | Write the shadow plane the editor's auto-shadow produces |
 | `check_map_walkability` | Traverse the map — unreachable NPCs, blocked doors, cut-off areas |
 | `describe_tileset_materials` | Which A2 materials are safe on layer 0, and which have a visible outline |
@@ -88,6 +90,29 @@ Unified tools that work with **actors, classes, skills, items, weapons, armors, 
 | `list_character_sheets` | What sprite sheets the project has, and how many characters each holds |
 | `place_npc` | Put one character on a map — sprite, dialogue, how it moves |
 | `populate_map` | Scatter NPCs across walkable ground without sealing anything off |
+
+### Tileset Passage (3)
+| Tool | Description |
+|------|-------------|
+| `configure_tileset_passage` | Write a tileset's passage flags from the configuration the editor ships for the same sheets |
+| `set_tileset_passage` | Set passage and terrain flags on chosen tiles — for custom art, or to correct the catalogue |
+| `list_passage_catalogue` | Which tileset sheets the catalogue covers |
+
+**This is what makes a wall actually block the player.** Passability lives in `Tilesets.json`,
+not in map data, so a project whose tileset was never configured produces maps where the
+geometry has no effect at all — `check_project` reports it as `tileset-passage-unconfigured`.
+
+Which materials are solid cannot be measured from the image: a cliff face and a cobbled floor
+are both opaque rectangles of pixels. It is authored art direction, so the flags are taken from
+the tilesets the editor itself ships. What makes that transferable was measured rather than
+assumed — **flags are a property of the sheet, not of the tileset**: across 68 configured
+tilesets from 9 databases, 56 of 62 sheets carry byte-identical flags everywhere they appear.
+The six that vary are named in the catalogue header with the source that won.
+
+Passability is stated the way you mean it. The file stores a *set* bit as blocked, which reads
+backwards every time, so `set_tileset_passage` takes `passable: false` and does the inversion.
+Tiles are named by autotile material (all 48 shapes, as the editor does it), by prop name, or by
+raw id.
 
 `get_map_grid` lets the AI reason about **spatial layout** rather than just map metadata.
 Passability is decoded from tileset flags exactly as `Game_Map` does in the engine corescript.
@@ -328,6 +353,20 @@ self switch A — in 16 of the 20 one-shot pickup events across every shipped pr
 page behind that switch that does nothing. The `!Chest` sprite **opens by direction, not pattern**,
 the same trick the `!Door1` sprite uses; that was read off the sheet, since nothing shipped uses it.
 
+**Each chest holds something different, dealt from the project's own database.** The reward
+used to be item id 1 for every chest on every floor — which in the RTP database is
+`-----Reserved`, a separator row with no price, so the default chest handed the player a
+nameless nothing. Rewards are now drawn from a slice of the price range (`lootBand`, the
+middle half by default: the cheap end is what a shop sells, and the dearest gear is not a
+corridor find) and dealt without repeating, because with six chests and independent rolls two
+the same is likelier than not, and two identical chests in one dungeon reads as a bug even
+though each roll was fair. The same seed still gives the same dungeon.
+
+Which command hands the reward over now follows the database it came from: `command126` gains
+`$dataItems`, `command127` `$dataWeapons` and `command128` `$dataArmors`, and the two
+equipment ones take a fifth `includeEquip` parameter. The old chest always emitted 126, so a
+weapon id silently handed the player whichever *item* shared that number.
+
 **Treasure only ever goes in dead ends.** A chest blocks its tile, and a dead end has one way in
 and nothing beyond it, so it is the one placement that provably cannot cut anything off. Ask for
 more chests than there are dead ends and you get fewer chests, not one dropped where it might seal
@@ -337,6 +376,31 @@ Pass the same `floorKind` the layout was generated with. Without it floor and wa
 by passage flags — and in the RTP tilesets an A4 wall *top* is walkable, so most of a dungeon reads
 as floor and the decoration lands outside it. The tool says so when it sees a suspiciously walkable
 map.
+
+`place_stairs` and `link_dungeon_floors` connect maps to each other. A generated dungeon is
+unreachable in game until something links it to the world, and `link_dungeon_floors` does the
+whole staircase in one call — floors in order, optionally out to a surface map:
+
+```
+link_dungeon_floors  mapIds=[77, 78]  surfaceMapId=1  surfaceX=22 surfaceY=14
+```
+
+The event was measured and came back unanimous: of the 720 shipped maps, **all 157** transfer
+pages standing on a stair, ladder or hole tile are the same page — player touch, priority 0
+(below characters), no sprite, `250, 201, 0`. Priority 0 is why placement needs no connectivity
+argument: a stair blocks nothing, so unlike a chest it can go on any floor tile. That page is
+byte-identical to an interior's exit, so `generate_interior` builds its exit from the same code.
+
+Each floor's two stairs go at its **furthest-apart pair of tiles**, and getting that right took
+more than the textbook algorithm. The standard double BFS sweep is exact only on a tree, and
+generated dungeons have loops — it returned 66 where the true diameter was 79. Sweeping from
+every *fringe* tile instead (floor with two or fewer open neighbours) hits the exact diameter on
+all 16 test layouts, and costs less precisely where an all-pairs search would cost most.
+
+**A stair tile is not reliably one the player can stand on**, and which ones are varies per
+tileset — `Inside`'s "Stairs C (Up)" is blocked from all four directions. So the tool paints,
+then checks standability, and says so. The shipped maps never get this wrong (323 of 323), which
+is what makes the check worth making.
 
 `apply_wall_shadows` writes the shadow plane (z=4), which `fill_map_region` cannot reach. The
 rule comes from the 293 sample maps shipped with the editor: 285 of them use shadows, and of
@@ -447,6 +511,126 @@ Reads switches: 12
 Writes self-switches: A
 ```
 
+### Switches and Variables (3)
+| Tool | Description |
+|------|-------------|
+| `list_switches` | What the project's global flags are called, which ids are free, how far the arrays reach |
+| `allocate_switch` | Get an id for a named switch or variable, creating it if there isn't one |
+| `release_switch` | Take the name off a flag so the id can be reused |
+
+These are the primitive everything with *state* needs — quests, locked doors, a shop that
+only opens after dark.
+
+**The names array in System.json is not decoration.** `Game_Switches.setValue` is guarded by
+`switchId > 0 && switchId < $dataSystem.switches.length`, and `Game_Variables.setValue` by
+the identical test — so **the array's length is the engine's bound on which flags work at
+all**. Going outside it fails silently in both directions: `setValue` does nothing, and
+`value()` is unguarded and answers `false`. An event setting switch 50 in a project whose
+array stops at 20 has no effect, raises no error, and every condition reading that switch is
+false forever.
+
+So allocation has one hard rule: never hand out an id the array does not already cover.
+`allocate_switch` extends it when it has to, in the `20n + 1` blocks the shipped projects
+use — a new project has 21 slots, and the larger projects on hand have 101 and 201.
+
+```
+allocate_switch  kind=switch  name="Village gate open"
+allocate_switch  kind=switch  name="Endgame reached"  id=45
+```
+
+Asking twice for the same name gives the same id back — matching ignores case and
+surrounding space — so a generator can call it every run without burning a new flag each
+time. Claiming an id that already carries a *different* name is refused: renaming a flag
+silently repoints every event that uses it. Naming is sparse in real projects (one names 28
+of its 200 slots), so a new flag goes in the first gap, which is what the editor does too.
+
+`release_switch` clears a name without shortening the array — shortening it would move the
+bound and break every id above the one freed.
+
+Self switches are not managed here and need no allocation: `Game_SelfSwitches` is a plain
+keyed dictionary with no bound, which is why chests and doors can use one freely.
+
+### Commerce (1)
+| Tool | Description |
+|------|-------------|
+| `place_shop` | A shopkeeper who greets the player and opens a buy/sell window, stocked from the project's own database |
+
+A shop is a talking NPC that opens a shop scene, so `place_shop` builds the page
+`npcgen` already measured across 70 NPC pages and appends the shop commands — rather than
+copying the page from the four shop events available to measure, which is far too thin a
+sample to settle anything. What *is* settled exactly is the encoding, because the engine
+defines it:
+
+- `Game_Interpreter.command302` builds `goods = [params]` and absorbs each `605` that
+  follows, so **the 302's own parameters are the first goods row**, not a list of rows. It
+  passes `params[4]` as the scene's `purchaseOnly` flag, which therefore belongs to the shop
+  and lives only on that first row.
+- `Window_ShopBuy.goodsToItem` switches on `goods[0]` — 0 items, 1 weapons, 2 armours — and
+  `makeItemList` prices a row as `goods[2] === 0 ? item.price : goods[3]`. Omit a price and
+  the shop follows the database if you reprice the item later.
+
+**Stock comes from the project, and the filter is the engine's own.**
+`Window_ShopSell.isEnabled` is `item && item.price > 0`, so a price of zero already means
+"not tradeable" to MZ — which is what keeps the `-----Recovery Items` separator rows the RTP
+database is full of off the shelf. Key items are excluded too, since the engine categorises
+them apart from goods and a shop selling the plot coupon is a bug every time.
+
+```
+place_shop  mapId=1  x=14 y=9  preset=general  count=6
+place_shop  mapId=1  x=20 y=9  preset=weapon   priceBand=[0.5, 1]
+```
+
+`preset` picks the database and `priceBand` the slice of it, as two fractions of the
+tradeable entries sorted by price — `[0, 0.5]`, the default, is a village store, and
+`[0.5, 1]` a capital-city one. Pass `goods` instead for an exact shelf; those ids are
+checked against the database before anything is written, because **the engine drops a row
+pointing at a missing id without a word** and the only symptom is a shop quietly one item
+short.
+
+### Locked Doors (1)
+| Tool | Description |
+|------|-------------|
+| `place_locked_door` | A door that opens for a key item or a switch, says so when it can't, and remembers once it has |
+
+The smallest thing that needs all three of what the generators never had: a condition, a
+second page, and a memory of what the player already did.
+
+**The sample here is one event** — across every project on hand there is exactly one locked
+door — so its *wording* settles nothing and is all parameters. What the corpus does settle is
+which of the two mechanisms the engine offers gets used: `itemValid`, the engine's own
+"this page needs an item" page condition, appears on **0 of 544 event pages**, while
+conditional branches on a held item appear 4 times. An item lock is a branch.
+
+Three things about that branch are exact, because the interpreter defines them:
+
+- **The parameter shape differs per database.** `command111` case 8 is
+  `hasItem($dataItems[params[1]])` with no third parameter, but cases 9 and 10 pass
+  `params[2]` to `hasItem` as `includeEquip` — so a weapon key can count while it is
+  equipped and an item key has no such option.
+- **A branch body ends with a `0` at the body's own indent** (32 of 32 measured branches),
+  and `skipBranch` walks purely by indent — a body written flat is a body the engine runs
+  unconditionally.
+- **Nothing may follow a transfer.** `Game_Map.setup` rebuilds the event list and the running
+  interpreter goes with it, so the self switch that remembers the door is open is written
+  *before* the 201, not after it the way a chest writes its own.
+
+```
+place_locked_door  mapId=3  x=12 y=8  lockKind=item  keyId=35  targetMapId=9 targetX=6 targetY=11
+place_locked_door  mapId=3  x=20 y=4  lockKind=switch  switchName="Cellar unlocked"  remember=false
+```
+
+The key is checked against the database and the switch against System.json *before* anything
+is written, because both failures are silent in game: `hasItem` answers false for an entry
+that is not there, and `setValue` ignores an id past the end of the array — either way the
+door simply never opens and nothing says why. A `switchName` with no flag behind it is
+allocated exactly as `allocate_switch` would, so a door can be placed without knowing an id.
+
+The asking page is **Action Button**, not the ordinary door's Player Touch: a touch-triggered
+locked door announces itself every time the player brushes past. Page 2 is an ordinary door
+conditioned on self switch A, and it goes *after* page 1 because
+`Game_Event.findProperPageIndex` scans backwards and takes the first match. `remember=false`
+drops it, for a gate that must follow its switch forever.
+
 ### Consistency Checking (1)
 | Tool | Description |
 |------|-------------|
@@ -460,11 +644,17 @@ Catches the failure modes that are painful to find by hand:
 | `self-switch-never-set` | error | A page gated on a self-switch nothing can ever set — that page is dead |
 | `transfer-to-missing-map` | error | A door pointing at a deleted map |
 | `missing-common-event` | error | Call Common Event targeting an ID that doesn't exist |
+| `switch-out-of-range` | error | A switch id past the end of System.json's array — setValue ignores it, so the flag is permanently false |
+| `variable-out-of-range` | error | The same for variables |
 | `switch-read-never-written` | warning | A condition that can never change |
 | `variable-read-never-written` | warning | A variable that will always be 0 |
 | `unreachable-map` | warning | A map with no route from the start map |
+| `shop-sells-missing-entry` | error | A shop offering an item, weapon or armour that no longer exists — the engine drops the row silently |
+| `branch-checks-missing-entry` | error | A branch testing for a key that was deleted — `hasItem` is false forever, so a door locked that way never opens |
 | `tileset-passage-unconfigured` | warning | Tileset passage never set up, so ground-layer walls don't block |
 | `switch-written-never-read` | info | A dead write |
+
+Findings name the flag where System.json has one — `switch 12 ("Met the mayor")` rather than a bare id — which is most of what makes `allocate_switch` worth using.
 
 Filter with `minSeverity` (`error` / `warning` / `info`).
 
@@ -487,7 +677,7 @@ These tools leverage the AI's own capabilities — no external API calls needed.
 
 ```bash
 # Clone the repository
-git clone https://github.com/a951753abc/rpgmaker-mz-mcp.git
+git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 
 # Install dependencies
@@ -496,7 +686,7 @@ npm install
 # Build
 npm run build
 
-# Verify (42 tests should pass)
+# Verify (534 tests should pass)
 npm test
 ```
 
@@ -568,36 +758,83 @@ src/
 │   ├── file-handler.ts         # Atomic writes + backups + Zod validation
 │   ├── project-manager.ts      # Project loading / validation
 │   ├── database-manager.ts     # Generic CRUD for all entity types
+│   ├── version-sync.ts         # System.json versionId auto-sync
+│   │
 │   ├── tileset-reader.ts       # Tileset passability flag loading
+│   ├── tileset-image.ts        # Measures the A2 sheet — opacity, edge contrast
+│   ├── passage.ts              # Slot ranges, passage planning, flag edits
+│   ├── passage-catalogue.ts    # Generated: shipped tilesets' passage flags (RLE)
+│   ├── prop-catalogue.ts       # Generated: 1,628 named props across 12 sheets
+│   │
 │   ├── map-grid.ts             # Tile decoding + ASCII grid rendering
-│   ├── event-flow.ts           # Command-code decoding + reference collection
-│   ├── map-graph.ts            # Transfer graph + reachability analysis
-│   ├── consistency.ts          # Project-wide static consistency rules
-│   ├── autotile.ts             # Floor autotile shape computation
 │   ├── map-layers.ts           # Tile layer read/write over the flat data array
+│   ├── map-graph.ts            # Transfer graph + reachability analysis
+│   ├── walkability.ts          # Flood fill through Game_CharacterBase.canPass
+│   ├── event-flow.ts           # Command-code decoding + reference collection
+│   ├── consistency.ts          # Project-wide static consistency rules
+│   │
+│   ├── autotile.ts             # A2 floor autotile shape computation
+│   ├── wall-autotile.ts        # A3/A4 wall shape computation
+│   ├── shadows.ts              # The z=4 shadow plane
+│   ├── tile-batch.ts           # Batched multi-layer tile writes
+│   ├── building-placement.ts   # Applying a building plan to a map file
+│   ├── blueprint.ts            # Roof/wall pairing, nine-slice roofs, door events
+│   ├── props.ts                # Named-object lookup and placement
+│   │
 │   ├── mapgen.ts               # Dungeon / cave layout generation
-│   └── version-sync.ts         # System.json versionId auto-sync
+│   ├── towngen.ts              # Town planning — streets, plots, tree line
+│   ├── interiorgen.ts          # Rooms behind doors, wired both ways
+│   ├── npcgen.ts               # NPC pages + connectivity-safe placement
+│   ├── dungeon-dressing.ts     # Torches, treasure, floor clutter
+│   ├── stairs.ts               # Stair transfer pages + furthest-pair planning
+│   │
+│   ├── switches.ts             # Named global flags, allocation and array growth
+│   ├── shop.ts                 # Goods encoding + stock selection
+│   ├── loot.ts                 # Loot tables, dealt without repeats
+│   └── locked-door.ts          # Conditional branches + the two pages of a locked door
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
 │   ├── map.ts                  # Map & audio schemas
 │   ├── event.ts                # Event & command schemas + converter
 │   ├── tileset.ts              # Tilesets.json schema
 │   └── system.ts               # System.json schema
-├── tools/
-│   ├── project-tools.ts        # 4 project management tools
-│   ├── database-tools.ts       # 6 database CRUD tools
-│   ├── map-tools.ts            # 5 map management tools
-│   ├── map-grid-tools.ts       # 1 spatial/grid analysis tool
-│   ├── map-graph-tools.ts      # 1 map connection graph tool
-│   ├── map-paint-tools.ts      # 1 tile painting tool
-│   ├── mapgen-tools.ts         # 1 layout generation tool
-│   ├── event-tools.ts          # 5 event editing tools
-│   ├── event-flow-tools.ts     # 2 event flow analysis tools
-│   ├── consistency-tools.ts    # 1 project consistency checker
-│   └── scenario-tools.ts       # 3 AI scenario tools
-└── templates/
-    └── defaults.ts             # RPG Maker MZ default data templates
+├── tools/                      # 54 MCP tools across 24 modules
+│   ├── project-tools.ts        # 4  project management
+│   ├── database-tools.ts       # 6  database CRUD
+│   ├── map-tools.ts            # 5  map management
+│   ├── event-tools.ts          # 5  event editing
+│   ├── map-paint-tools.ts      # 3  fill_map_region, paint_tiles, apply_wall_shadows
+│   ├── npc-tools.ts            # 3  character sheets, place_npc, populate_map
+│   ├── passage-tools.ts        # 3  tileset passage configuration
+│   ├── scenario-tools.ts       # 3  AI scenario generation
+│   ├── event-flow-tools.ts     # 2  event flow analysis
+│   ├── interior-tools.ts       # 2  generate_interior(s)
+│   ├── prop-tools.ts           # 2  list_tileset_props, place_prop
+│   ├── stairs-tools.ts         # 2  place_stairs, link_dungeon_floors
+│   ├── blueprint-tools.ts      # 1  place_building
+│   ├── switch-tools.ts         # 3  allocate/list/release_switch
+│   ├── consistency-tools.ts    # 1  check_project
+│   ├── shop-tools.ts           # 1  place_shop
+│   ├── locked-door-tools.ts    # 1  place_locked_door
+│   ├── dungeon-dressing-tools.ts # 1 decorate_dungeon
+│   ├── map-graph-tools.ts      # 1  get_map_graph
+│   ├── map-grid-tools.ts       # 1  get_map_grid
+│   ├── mapgen-tools.ts         # 1  generate_map_layout
+│   ├── tileset-tools.ts        # 1  describe_tileset_materials
+│   ├── towngen-tools.ts        # 1  generate_town
+│   └── walkability-tools.ts    # 1  check_map_walkability
+├── templates/
+│   ├── defaults.ts             # RPG Maker MZ default data templates
+│   └── engine-files.ts         # Engine files written by create_project
+scripts/
+├── build-passage-catalogue.mjs # Regenerate passage-catalogue.ts from the editor
+├── build-prop-catalogue.mjs    # Regenerate prop-catalogue.ts from the editor
+└── render-map.mjs              # Render any map to a PNG (ports Tilemap's drawing)
 ```
+
+The two `*-catalogue.ts` files are **generated and committed**. They are built from the
+tilesets and `.txt` label files the editor ships, which projects do not include — rerun the
+matching script against an editor install to pick up DLC or custom sheets.
 
 ### Key Design Decisions
 
@@ -632,8 +869,9 @@ npm run dev
 |---------|---------|
 | `@modelcontextprotocol/sdk` | MCP protocol implementation |
 | `zod` | Schema validation |
+| `pngjs` | Reading tileset images to measure material opacity and edge contrast |
 
-That's it. Just 2 runtime dependencies.
+That's it. Just 3 runtime dependencies.
 
 ---
 
@@ -665,16 +903,20 @@ You are free to use, modify, and distribute this software, provided that derivat
 - **stderr 日誌**：MCP 使用 stdout 進行 JSON-RPC 通訊，任何 `console.log` 都會破壞協議。本專案只用 `console.error`
 - **版本同步**：每次修改資料檔案後自動更新 `System.json` 的 `versionId`，強制 RPG Maker MZ 編輯器重新載入
 
-### 可用工具（共 30 個）
+### 可用工具（共 53 個）
 
 | 類別 | 工具數 | 說明 |
 |------|:---:|------|
 | 專案管理 | 4 | 載入 / 建立 / 查詢專案資訊 / 列出素材資源 |
 | 資料庫 CRUD | 6 | 列出 / 取得 / 新增 / 更新 / 刪除 / 搜尋（支援角色、職業、技能、道具、武器、防具、敵人、狀態） |
-| 地圖管理 | 9 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊）/ 地圖連線圖（單向通道、無法抵達的地圖、失效的場所移動）/ 繪製區域（自動計算 autotile 接邊）/ 產生地城或洞窟地形 |
+| 地圖管理 | 22 | 列出 / 建立 / 查看 / 更新 / 刪除地圖 / 以文字網格呈現地圖（牆壁、梯子、事件位置等空間資訊）/ 地圖連線圖（單向通道、無法抵達的地圖、失效的場所移動）/ 繪製區域（自動計算 autotile 接邊）/ 批次寫入圖塊 / 放置建築（屋頂、牆壁、門事件）/ 依名稱放置物件 / 產生城鎮、室內、地城或洞窟 / 地城裝飾（火把、寶箱、雜物）/ 樓梯與地城樓層連接 / 陰影圖層 / 通行性檢查 / 圖塊材質分析 |
+| 角色配置 | 3 | 列出角色圖檔 / 放置單一 NPC / 在不阻斷通路的前提下佈置多個 NPC |
+| 圖塊通行度 | 3 | 依編輯器內建設定寫入通行度旗標 / 手動設定指定圖塊 / 查詢已支援的圖塊表 |
 | 事件編輯 | 5 | 列出 / 建立 / 更新 / 新增指令 / 刪除事件（支援 40+ 種人類可讀指令格式） |
 | 事件流程分析 | 2 | 解析事件實際行為：各頁的觸發條件、指令流程，以及所使用的開關 / 變數 / 獨立開關 / 公共事件 / 場所移動 |
 | 專案一致性檢查 | 1 | 全專案靜態檢查：無法停止的自動執行、永遠無法開啟的獨立開關、失效的場所移動與公共事件、從未設定的開關 / 變數、無法抵達的地圖、未設定通行度的圖塊組 |
+| 開關與變數 | 3 | 列出 / 配置 / 釋放全域開關與變數。依名稱重複使用同一 ID，並在必要時擴充陣列（超出陣列長度的 ID 引擎會靜默忽略） |
+| 商店 | 1 | 放置商人與買賣視窗，商品從專案資料庫中挑選（依引擎自身的可交易判斷：售價大於零） |
 | AI 劇情生成 | 3 | 生成遊戲劇情大綱 / NPC 對話 / 任務設計 |
 
 ### 使用範例
@@ -700,11 +942,11 @@ You are free to use, modify, and distribute this software, provided that derivat
 ### 安裝與設定
 
 ```bash
-git clone https://github.com/a951753abc/rpgmaker-mz-mcp.git
+git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 42 個測試應全部通過
+npm test  # 534 個測試應全部通過
 ```
 
 在你的專案目錄建立 `.mcp.json`：
@@ -742,16 +984,20 @@ npm test  # 42 個測試應全部通過
 - **stderr 専用ログ**：MCP は stdout を JSON-RPC 通信に使用。`console.log` はプロトコルを破壊するため、`console.error` のみ使用
 - **バージョン同期**：データファイル変更のたびに `System.json` の `versionId` を自動更新し、RPGツクールMZ エディタに再読み込みを強制
 
-### 利用可能なツール（全 30 個）
+### 利用可能なツール（全 53 個）
 
 | カテゴリ | ツール数 | 説明 |
 |---------|:---:|------|
 | プロジェクト管理 | 4 | 読み込み / 作成 / 情報取得 / リソース一覧 |
 | データベース CRUD | 6 | 一覧 / 取得 / 作成 / 更新 / 削除 / 検索（アクター、職業、スキル、アイテム、武器、防具、敵キャラ、ステート対応） |
-| マップ管理 | 9 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報）/ マップ接続グラフ（一方通行・到達不能マップ・無効な場所移動）/ 領域の塗りつぶし（オートタイル形状を自動計算）/ ダンジョン・洞窟の自動生成 |
+| マップ管理 | 22 | 一覧 / 作成 / 詳細 / 更新 / 削除 / テキストグリッド表示（壁・はしご・イベント位置などの空間情報）/ マップ接続グラフ（一方通行・到達不能マップ・無効な場所移動）/ 領域の塗りつぶし（オートタイル形状を自動計算）/ タイルの一括書き込み / 建物の配置（屋根・壁・ドアイベント）/ 名前によるオブジェクト配置 / 町・室内・ダンジョン・洞窟の自動生成 / ダンジョンの装飾（松明・宝箱・小物）/ 階段とフロア間の接続 / 影レイヤー / 通行可能性チェック / タイルセット素材の判定 |
+| キャラクター配置 | 3 | キャラチップ一覧 / NPC を 1 体配置 / 通路を塞がないように複数の NPC を配置 |
+| タイルセット通行度 | 3 | エディタ同梱の設定から通行フラグを書き込み / 指定タイルを手動設定 / 対応シート一覧 |
 | イベント編集 | 5 | 一覧 / 作成 / 更新 / コマンド追加 / 削除（40以上の人間が読めるコマンド形式対応） |
 | イベントフロー解析 | 2 | イベントの実際の動作を解析：各ページのトリガー・出現条件・コマンドの流れ、使用しているスイッチ / 変数 / セルフスイッチ / コモンイベント / 場所移動 |
 | プロジェクト整合性チェック | 1 | プロジェクト全体の静的解析：停止できない自動実行、絶対にONにならないセルフスイッチ、存在しないマップ / コモンイベントへの参照、未設定のスイッチ / 変数、到達不能マップ、通行設定が未構成のタイルセット |
+| スイッチと変数 | 3 | グローバルスイッチ / 変数の一覧・確保・解放。同名なら同じ ID を返し、必要に応じて配列を拡張（配列長を超える ID はエンジンが無視） |
+| ショップ | 1 | 店主と売買ウィンドウを配置。商品はプロジェクトのデータベースから選択（エンジン自身の取引可否判定：価格 0 より大） |
 | AI シナリオ生成 | 3 | ゲームシナリオ概要 / NPC 会話 / クエスト設計の生成 |
 
 ### 使用例
@@ -777,11 +1023,11 @@ MCP サーバー接続後、Claude に自然言語で話しかけるだけで操
 ### インストールと設定
 
 ```bash
-git clone https://github.com/a951753abc/rpgmaker-mz-mcp.git
+git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 42 テストがすべてパスするはず
+npm test  # 534 テストがすべてパスするはず
 ```
 
 プロジェクトディレクトリに `.mcp.json` を作成：

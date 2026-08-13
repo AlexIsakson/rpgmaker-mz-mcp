@@ -130,6 +130,23 @@ Broader database integrity — event commands referencing items, skills, actors,
 troops that no longer exist. The pattern is the same as `missing-common-event`; it just
 needs the remaining database files loaded and their valid ID sets checked.
 
+**Started.** `checkProject` now takes an optional `databaseIds`, and the first rule to use it
+is `shop-sells-missing-entry`. Shops went first because they are the case with *no* runtime
+symptom at all: `Window_ShopBuy.goodsToItem` returns undefined for a missing id and
+`makeItemList` skips the row, so the shop simply sells one thing fewer and nothing anywhere
+says why. `branch-checks-missing-entry` followed, for the conditional branches that ask
+whether the party holds an item, weapon or armour — a key deleted after a door was locked
+with it leaves a branch that can never be taken, which is strictly worse than a shop losing a
+row: whatever the branch guards leaves the game. The remaining commands that name a database
+id — Change Items/Weapons/Armors, Change Party Member, Battle Processing, Change
+Skill/Class/State — follow the same shape and can reuse the same input.
+
+`databaseIds` is optional on purpose: a caller that cannot load the database files loses the
+rule rather than reporting every reference in the project as missing. `flagNames`, added
+alongside it for `switch-out-of-range` and for naming flags in findings, works the same way
+and for the same reason — a missing array would read as a bound of zero and condemn every
+flag in the project.
+
 ## 5. Procedural map generation 🚧
 
 > **Status: in progress.** Steps 1 and 2 are done and confirmed against the editor. Step 3
@@ -138,7 +155,7 @@ needs the remaining database files loaded and their valid ID sets checked.
 > [Visual review findings](#visual-review-findings) and the table of
 > [what came out of them](#what-has-been-built-from-these-findings). Towns, interiors, NPCs,
 > dungeon dressing, stairs between maps and writable passage flags all came from that list.
-> What is left is collected under [Still open](#still-open-2): everything the generators emit
+> What is left is collected under [Still open](#still-open-1): everything the generators emit
 > is a rectangle, and nothing has any game logic behind it.
 
 Generate the `data` tile array algorithmically — rooms and corridors, town layouts, interiors.
@@ -357,12 +374,19 @@ batching writes would remove the exposure entirely.
 | 6, 7 — cave and dungeon silhouettes | `generate_map_layout` (`src/core/mapgen.ts`) — see [Layout shape](#layout-shape) |
 | 9 — generated dungeons had no props and no events | `decorate_dungeon` (`src/core/dungeon-dressing.ts`) — see [Dungeon dressing](#dungeon-dressing) |
 | a generated dungeon connected to nothing | `place_stairs` / `link_dungeon_floors` (`src/core/stairs.ts`) — see [Stairs and entrances](#stairs-and-entrances) |
+| no shops; every chest holding the same item | `place_shop` (`src/core/shop.ts`) and a real loot table for `decorate_dungeon` (`src/core/loot.ts`) — see [Commerce and loot](#commerce-and-loot) |
+| nothing with a switch behind it | `allocate_switch` / `list_switches` / `release_switch` (`src/core/switches.ts`) — see [Switches and variables](#switches-and-variables) |
+| nothing gated behind anything; no locked doors | `place_locked_door` (`src/core/locked-door.ts`) — see [Locked doors](#locked-doors) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
 **Still not in the server:**
 
-- Shops, quests, or anything with a switch behind it.
+- ~~Shops~~ *(done: `place_shop`)*, ~~switches~~ *(done: `allocate_switch`)* and
+  ~~locked doors~~ *(done: `place_locked_door`)*. Quests are still missing, and they are now
+  the gap that matters: a locked door and a chest exist, but nothing decides that *this* chest
+  holds the key to *that* door. See [Commerce and loot](#commerce-and-loot),
+  [Switches and variables](#switches-and-variables) and [Locked doors](#locked-doors).
 
 ### Layout shape
 
@@ -470,7 +494,11 @@ so rather than leaving treasure floating in solid rock.
 
 - ~~Nothing places stairs or an entrance, so a generated dungeon connects to nothing.~~
   *Fixed:* [Stairs and entrances](#stairs-and-entrances).
-- Chests all hand over the same item, and there are no enemies, switches or locked doors.
+- ~~Chests all hand over the same item, and there are no enemies, switches or locked doors.~~
+  *Mostly fixed:* chests are dealt from a real loot table ([Commerce and loot](#commerce-and-loot)),
+  flags can be allocated ([Switches and variables](#switches-and-variables)) and doors can be
+  locked ([Locked doors](#locked-doors)). Enemies are still absent, and nothing the *generator*
+  emits is gated — a locked door has to be placed on a generated floor by hand.
 - Pillars are single tiles, so they read as regular studs rather than rock formations. Growing
   them into clumps would look better and would need the sweep redone.
 - The generator itself writes one layer; `decorate_dungeon` is a separate pass over the result.
@@ -774,8 +802,9 @@ restricted to the area the reference tile can actually reach.
 **Deliberately not guaranteed:** `movement=random`. A wandering NPC can walk into a doorway at
 runtime, and no static check can see that — the tool says so rather than pretending otherwise.
 
-**Still open here:** the dialogue is placeholder text, and there are no shopkeepers, quest givers
-or anything with a switch behind it — every NPC is one page that says one thing.
+**Still open here:** the dialogue is placeholder text, and apart from the shopkeeper
+`place_shop` emits there are no quest givers or anything with a switch behind it — every NPC
+`populate_map` produces is one page that says one thing.
 
 ### The prop catalogue
 
@@ -940,6 +969,225 @@ it differs from grass, so a per-pixel metric calls it "outlined" against its own
 mean is stable under noise, and on the real RTP sheets the separation is clean — seamless
 fills score 0.000-0.002 edge contrast, outlined patches 0.10-0.17.
 
+### Commerce and loot
+
+`place_shop` puts a working shop on a map; `decorate_dungeon` now fills its chests from the
+project's own database instead of handing over the same id every time.
+
+- `src/core/shop.ts` — goods encoding, stock selection (pure, unit-tested)
+- `src/core/loot.ts` — loot tables and dealing (pure, unit-tested)
+- `src/tools/shop-tools.ts` — the MCP tool
+
+**This is the first phase where counting sample events was not available.** Every project on
+hand holds just **4 shop pages**, all in one project — nothing like the 157 stair pages or 635
+torches earlier phases rested on. Four events cannot settle what a shop page looks like, and
+pretending otherwise would have been the first invented rule in the codebase.
+
+**So the ground truth moved from the sample maps to the corescript**, which ships with every
+*project* rather than only with the editor. An interpreter is not a matter of taste the way art
+direction is, so what it defines is settled exactly:
+
+- `Game_Interpreter.command302` builds `goods = [params]` and then absorbs the parameters of
+  every `605` that immediately follows. **The 302's own parameters are the first goods row**,
+  not a list of rows — which is what the existing `shop_processing` converter had already got
+  right, and what a reading of the docs alone would probably get wrong.
+- It passes `params[4]` to the scene as `purchaseOnly`, so that flag belongs to the shop and
+  exists only on the first row.
+- `Window_ShopBuy.goodsToItem` switches on `goods[0]` — 0 items, 1 weapons, 2 armours — and
+  `makeItemList` prices a row as `goods[2] === 0 ? item.price : goods[3]`.
+
+The 4 measured pages agree with all of it, and two of the four are exactly `101, 401, 302, 605`
+— greet, then sell. That is the shape emitted, but the *page settings* come from `npcgen`'s
+talking-NPC page, which rests on 70 samples: a shopkeeper is an NPC who then opens a shop, so
+`npcEventPage` gained an optional `commands` list rather than the page being copied.
+
+**What a shop sells is filtered by the engine's own test.** `Window_ShopSell.isEnabled` is
+`item && item.price > 0`, so a price of zero already means "not tradeable" to MZ — which is
+exactly what excludes the `-----Recovery Items` separator rows the RTP database is full of
+(23 named items in a default project, only 19 priced). Key items go too, since
+`Window_ItemCategory` splits `itypeId === 2` off from goods. That filter is shared with the
+loot table, because "a real, tradeable entry" is the same question in both places.
+
+**The chest bug this turned up.** `treasureEventPages` documented a `kind` field selecting the
+database and had no such field: it always emitted command 126, so a weapon id handed the player
+whichever *item* shared that number. `command126` gains `$dataItems`, `127` `$dataWeapons`,
+`128` `$dataArmors`, and the two equipment ones take a fifth `includeEquip` parameter — the
+reward now carries its database and the command follows it.
+
+The default reward was worse than wrong: id 1, which in the RTP database is `-----Reserved`.
+Every chest in every generated dungeon handed over a nameless nothing.
+
+**Chests are dealt, not rolled.** With six chests and independent draws, two the same is
+likelier than not, and two identical chests in one dungeon reads as a bug even though each draw
+was fair — so a shuffled bag is dealt from and only cycles once exhausted. Rewards come from a
+price band (the middle half by default), banded per database rather than over the three
+combined: armours outnumber items four to one in the RTP database, so a shared band would be
+almost entirely armour.
+
+**`shop-sells-missing-entry` exists because nothing else would ever tell you.** `goodsToItem`
+returns undefined for an id that is not there and `makeItemList` skips the row, so a shop that
+has lost an item just sells one thing fewer, silently, forever. See
+[phase 4's Still open](#still-open) for how it opens up database integrity generally.
+
+**Verified by driving the real server** against a copy of a real project: three shops written
+and read back out of the map file as `101, 401, 302, 605...` with the price override landing as
+`[0, 7, 1, 25, true]` and a mixed-database shelf as `[2, 2, 0, 0]`; a shop asked for item 9999
+refused before writing; six chests on a generated floor coming out as six *different* rewards
+across all three databases with commands 126/127/128 matching; the same seed reproducing them;
+and `check_project` naming the map and event after an item a shop sold was deleted.
+
+**Still open here:**
+
+- ~~Nothing allocates a switch.~~ *(done — see [Switches and variables](#switches-and-variables).)*
+- **A shop is one page with one greeting.** No stock that changes, nothing gated behind a
+  switch, no haggling, and the shopkeeper says the same line forever.
+- **Nothing decides *where* a shop goes.** `generate_town` builds buildings and `place_shop`
+  needs a coordinate; the two do not know about each other, so a generated town has no
+  merchant in it unless one is placed by hand.
+- **The loot band is stated, not measured.** Nothing in a project's data says "this is
+  treasure", so which slice of the price range belongs in a chest is a judgement — unlike the
+  filters around it, which are the engine's.
+
+### Switches and variables
+
+`allocate_switch` gets an id for a named flag; `list_switches` says what exists and what is
+free; `release_switch` gives a slot back.
+
+- `src/core/switches.ts` — allocation, growth, naming (pure, unit-tested)
+- `src/tools/switch-tools.ts` — the three MCP tools
+
+**The thing that makes this more than a naming convenience is a guard in the engine.**
+`Game_Switches.setValue` is:
+
+```js
+if (switchId > 0 && switchId < $dataSystem.switches.length) { ... }
+```
+
+and `Game_Variables.setValue` is the identical test on `variables`. So the names array in
+System.json is **not decoration — its length is the bound on which flags work at all.** And
+going outside it fails silently in both directions, because `value()` is unguarded and
+answers `false` for any id: a write does nothing, a read is false forever, and nothing at
+runtime says a word. That is the worst shape a bug can have, and it is invisible in the
+editor too, which simply does not list the id.
+
+Allocation therefore has one hard rule: **never hand out an id the array does not already
+cover.** `allocate_switch` extends it first, in the `20n + 1` blocks the shipped projects
+use — a new project has 21 slots, and the two larger projects on hand have 101 and 201, the
+odd slot in each being the unusable index 0.
+
+Self switches are deliberately not managed here: `Game_SelfSwitches` is a plain keyed
+dictionary with no bound at all, which is exactly why chests and doors can use one without
+allocating anything.
+
+**Reuse by name is what makes it callable from a generator.** Asking twice for "Village gate
+open" returns the same id — matching is trimmed and case-insensitive, since the editor stores
+free text and a caller who varies the case means the same flag. Claiming an id that already
+carries a different name is refused outright: renaming a flag silently repoints every event
+that uses it, which is how two features end up sharing one switch. Where a new flag goes was
+taken from the projects rather than assumed — naming is sparse (one project names 28 of its
+200 slots), so the first gap is the natural slot and the array only grows once it is full.
+
+**Two new consistency rules come out of the same guard.** `switch-out-of-range` and
+`variable-out-of-range` report ids past the end of their array, which is the one rule here
+that can catch a bug nothing else could surface. Neither fired on any project on hand, which
+is the right result for a rule about a silent failure — it means the rule is not noisy, not
+that the failure is imaginary.
+
+And now that flags have names, findings use them: `switch 12 ("Met the mayor") is checked but
+never turned on` instead of a bare id. Unnamed ids are left bare rather than padded with
+"(unnamed)", which would only add noise to a project that names nothing. That is most of what
+makes allocating worth doing — otherwise naming is write-only plumbing.
+
+**Verified by driving the real server**: a fresh 21-slot project taken through allocation,
+case-insensitive reuse, an explicit id of 45 growing the array to 61 slots, both conflict
+cases refused, and `check_project` catching an event that sets switch 900.
+
+**Still open here:**
+
+- **Almost nothing reads a flag's name back into the tools that use one.**
+  `place_locked_door` takes `switchName` and allocates behind it, but `add_event_commands`
+  still takes `control_switches` by id, so a caller has to allocate, remember the number and
+  pass it — the same treatment applied to the command converter is the next step.
+- **Nothing populates a flag's *meaning*.** An allocated switch is a name and an id; what
+  turns it on and what it gates is still entirely up to the caller.
+
+### Locked doors
+
+`place_locked_door` puts a door on a map that asks for a key item or a switch first, says so
+when the player has neither, and stops asking once it has been opened.
+
+- `src/core/locked-door.ts` — the branch primitive and the two pages (pure, unit-tested)
+- `src/tools/locked-door-tools.ts` — the MCP tool
+
+This is the piece the previous section said was missing: the smallest thing that needs a
+condition, a second page and a memory of what the player already did.
+
+**The sample is one event.** Across every project on hand there is exactly one locked door —
+`Wicked Heart` map 13, event 18 — and it is `111 [8, 35]` → SE, call the door common event;
+else → SE, "Locked." One event settles nothing about wording or sound, so both are parameters
+and the module says as much rather than dressing a single sample up as a convention.
+
+**What the corpus does settle is which mechanism gets used**, and there it is not thin at all.
+The engine offers two ways to gate on holding an item: a conditional branch, or `itemValid`,
+the page condition built for exactly this. **`itemValid` is used on 0 of the 544 event pages
+measured.** Branches on a held item appear 4 times, switch page conditions 59 times. So an
+item lock is a branch, and that is a measurement rather than a preference.
+
+Three things about the branch are exact, because the interpreter defines them:
+
+- **The parameter shape differs per database.** `command111` case 8 is
+  `hasItem($dataItems[params[1]])` and takes no third parameter, but cases 9 and 10 pass
+  `params[2]` to `hasItem` as `includeEquip`. A weapon key can therefore count while it is
+  equipped, and an item key cannot — the option exists on one and not the other, which is
+  not something a docs-first reading would produce.
+- **A branch body ends with a `0` at the body's own indent** — all 32 branches measured
+  across the projects do this. `skipBranch` is
+  `while (this._list[this._index + 1].indent > this._indent) this._index++`, purely
+  indent-driven, so a body written flat is a body the engine runs unconditionally. That is
+  why `conditionalBranch` is a function rather than three commands written inline anywhere
+  they are needed.
+- **Nothing may follow a transfer.** `Game_Player.performTransfer` calls `Game_Map.setup`,
+  which rebuilds `_events` — the running `Game_Event` and its interpreter go with it. So the
+  self switch that remembers the door is open is written *before* the 201, unlike a chest,
+  which has no transfer and writes its own last. Getting this backwards would produce a door
+  that asks for the key every single time, with nothing in the data looking wrong.
+
+**The asking page is Action Button**, where an ordinary door is Player Touch. That is what the
+measured locked door uses, and it is the only trigger that makes sense for a refusal: a
+touch-triggered locked door announces itself every time the player brushes past. The second
+page is an ordinary door conditioned on self switch A, and it goes *after* the asking page
+because `findProperPageIndex` scans `for (let i = pages.length - 1; i >= 0; i--)` and takes
+the first match — a conditioned page placed first can never win.
+
+**Both ways of getting the lock wrong are silent, so both are refused before anything is
+written.** A key that is not in the database makes `hasItem` false forever; a switch past the
+end of System.json's array can never be turned on, because `setValue` is bounded by the array
+length. Either way the door simply never opens, and nothing at runtime says why. A
+`switchName` with no flag behind it is allocated exactly as `allocate_switch` would — which is
+the first tool to take a flag by name rather than by id, and the gap the previous section
+listed as still open.
+
+`branch-checks-missing-entry` covers the same failure after the fact, for a key deleted later.
+It is a strictly worse bug than the shop rule it sits beside: a shop missing a row still sells
+everything else, but a branch that can never be taken takes whatever it guards out of the game.
+
+**Verified by driving the real server** against a copy of a real project: an item-locked door
+written and read back out of the map file as `111 [8, 7]` with the branch body at indent 1,
+the `126` and `123` before the `201` and the transfer last in its body; the unlocked page
+following it with the self-switch condition and a Player Touch trigger; a `switchName`
+allocating switch 1 and the same name in different case reusing it; and four refusals — item
+9999, switch 900, a destination map with no data file, and (after deleting the key) a
+`check_project` naming the map and event whose lock can no longer be opened.
+
+**Still open here:**
+
+- **Nothing puts the key anywhere.** A locked door and `decorate_dungeon`'s chests do not know
+  about each other, so the key has to be placed by hand — which is the whole of a quest, and
+  the next thing worth building.
+- **`remember` is all or nothing.** A door either forgets its lock forever after one opening
+  or re-tests it every time; there is nothing in between, such as a door that relocks at night.
+- **The refusal is one line of text.** No guard who stops you, no hint about where the key is.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.
@@ -964,9 +1212,13 @@ That is the honest measure of what is missing:
 - **Everything the generators emit is a rectangle.** Finding 7 is the one that has not moved:
   roofs have no L-shapes, an interior room is a single box, and a town's streets are straight
   and its plots a grid. Hand-made maps have almost no straight material boundaries.
-- **Nothing has game logic behind it.** Every chest hands over the same item, every NPC is one
-  page saying one placeholder line, and there are no shops, quests, switches, locked doors or
-  enemies anywhere.
+- **Game logic is started but thin.** Shops exist, chests hold real varied rewards, switches
+  can be allocated by name, and a door can be locked behind either a key or a flag — see
+  [Commerce and loot](#commerce-and-loot), [Switches and variables](#switches-and-variables)
+  and [Locked doors](#locked-doors). What is still missing is anything that *joins* those
+  pieces up: nothing decides that this chest holds the key to that door, so a quest is still
+  assembled by hand. Gated NPCs, enemies and NPCs who say more than one placeholder line are
+  all still absent too.
 
 ### Scope and open questions
 

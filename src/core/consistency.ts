@@ -44,6 +44,34 @@ export interface ConsistencyInput {
   /** Switch IDs used by troop page conditions (Game_Troop.meetsConditions). */
   troopConditionSwitches: number[];
   tilesets: TilesetLike[];
+  /**
+   * Ids that exist in each database, for commands that point at one.
+   *
+   * Optional: a caller that cannot load the database files gets every other
+   * rule and simply no database findings, rather than a wave of false
+   * positives claiming everything is missing.
+   */
+  databaseIds?: DatabaseIds;
+  /**
+   * `System.switches` and `System.variables`.
+   *
+   * Two rules want them. Findings read far better with a name attached — "switch
+   * 12" says nothing, "switch 12 (Met the mayor)" says which feature is broken —
+   * and the array *lengths* are what `Game_Switches.setValue` bounds writes
+   * against, so they are the only way to spot an id the engine ignores.
+   */
+  flagNames?: FlagNames;
+}
+
+export interface FlagNames {
+  switches: string[];
+  variables: string[];
+}
+
+export interface DatabaseIds {
+  items: Set<number>;
+  weapons: Set<number>;
+  armors: Set<number>;
 }
 
 export interface ConsistencyReport {
@@ -196,6 +224,75 @@ export function resolveCommonEventSelfSwitchWrites(
 
 const SEVERITY_RANK: Record<Severity, number> = { error: 0, warning: 1, info: 2 };
 
+const CODE_SHOP_PROCESSING = 302;
+const CODE_SHOP_GOODS = 605;
+
+/** `Window_ShopBuy.goodsToItem` switches on goods[0]. */
+const GOODS_DATABASE = ['items', 'weapons', 'armors'] as const;
+
+interface GoodsRow {
+  database: (typeof GOODS_DATABASE)[number];
+  dataId: number;
+}
+
+/**
+ * Every goods row in a command list.
+ *
+ * `command302` takes its own parameters as the first row and then absorbs each
+ * `605` that immediately follows, so a 605 is only a goods row when it is part
+ * of such a run — the code is shared with other continuation commands.
+ */
+function extractShopGoods(list: EventCommand[]): GoodsRow[] {
+  const rows: GoodsRow[] = [];
+
+  const read = (parameters: unknown[]): void => {
+    const kind = parameters[0];
+    const dataId = parameters[1];
+    if (typeof kind !== 'number' || typeof dataId !== 'number') return;
+    const database = GOODS_DATABASE[kind];
+    if (database) rows.push({ database, dataId });
+  };
+
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].code !== CODE_SHOP_PROCESSING) continue;
+    read(list[i].parameters);
+    for (let j = i + 1; j < list.length && list[j].code === CODE_SHOP_GOODS; j++) {
+      read(list[j].parameters);
+      i = j;
+    }
+  }
+
+  return rows;
+}
+
+/** `command111` cases 8, 9 and 10 — the party-holds-this tests. */
+const BRANCH_DATABASE: Record<number, (typeof GOODS_DATABASE)[number]> = {
+  8: 'items',
+  9: 'weapons',
+  10: 'armors',
+};
+
+/**
+ * Every conditional branch that asks whether the party holds a database entry.
+ *
+ * This is how a locked door is written — `itemValid`, the engine's page
+ * condition for the same question, is used on none of the 544 event pages
+ * measured — so a key that gets deleted turns into a branch that is false
+ * forever: `hasItem(undefined)` goes through `numItems`, which answers 0.
+ */
+function extractHeldItemBranches(list: EventCommand[]): GoodsRow[] {
+  const rows: GoodsRow[] = [];
+  for (const cmd of list) {
+    if (cmd.code !== 111) continue;
+    const database = BRANCH_DATABASE[asNumber(cmd.parameters[0])];
+    if (!database) continue;
+    const dataId = cmd.parameters[1];
+    if (typeof dataId !== 'number') continue;
+    rows.push({ database, dataId });
+  }
+  return rows;
+}
+
 export function checkProject(input: ConsistencyInput): ConsistencyReport {
   const { startMapId, maps, mapInfos, commonEvents, troopCommandLists, troopConditionSwitches, tilesets } = input;
 
@@ -235,13 +332,25 @@ export function checkProject(input: ConsistencyInput): ConsistencyReport {
   for (const id of troopConditionSwitches) if (id > 0) usage.switchReads.add(id);
 
   // --- R1/R2: reads with no writer, writes with no reader ---
+  //
+  // "Switch 12" tells you an id and nothing else; "switch 12 (Met the mayor)"
+  // tells you which feature is broken. Unnamed ids are left bare rather than
+  // padded with "(unnamed)", which would only add noise to a project that names
+  // nothing.
+  const flagLabel = (kind: 'switch' | 'variable', id: number): string => {
+    const names = kind === 'switch' ? input.flagNames?.switches : input.flagNames?.variables;
+    const name = names?.[id];
+    return name && name.trim() !== '' ? `${kind} ${id} ("${name}")` : `${kind} ${id}`;
+  };
+  const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
   for (const id of [...usage.switchReads].sort((a, b) => a - b)) {
     if (id <= 0) continue;
     if (!usage.switchWrites.has(id)) {
       findings.push({
         rule: 'switch-read-never-written',
         severity: 'warning',
-        message: `Switch ${id} is checked but never turned on or off anywhere. Conditions depending on it can never change.`,
+        message: `${capitalise(flagLabel('switch', id))} is checked but never turned on or off anywhere. Conditions depending on it can never change.`,
       });
     }
   }
@@ -251,7 +360,7 @@ export function checkProject(input: ConsistencyInput): ConsistencyReport {
       findings.push({
         rule: 'switch-written-never-read',
         severity: 'info',
-        message: `Switch ${id} is set but never checked.`,
+        message: `${capitalise(flagLabel('switch', id))} is set but never checked.`,
       });
     }
   }
@@ -261,8 +370,43 @@ export function checkProject(input: ConsistencyInput): ConsistencyReport {
       findings.push({
         rule: 'variable-read-never-written',
         severity: 'warning',
-        message: `Variable ${id} is read but never assigned. It will always be 0.`,
+        message: `${capitalise(flagLabel('variable', id))} is read but never assigned. It will always be 0.`,
       });
+    }
+  }
+
+  // --- R10: ids past the end of the System.json array ---
+  //
+  // The nastiest of these rules to find by hand, because there is no symptom at
+  // all. `Game_Switches.setValue` is guarded by
+  // `switchId > 0 && switchId < $dataSystem.switches.length`, so a write to an
+  // id past the array does nothing, and `value()` is unguarded and answers false
+  // — the flag reads as permanently off and no error is raised anywhere.
+  if (input.flagNames) {
+    const bounds: [('switch' | 'variable'), Set<number>, Set<number>, number][] = [
+      ['switch', usage.switchWrites, usage.switchReads, input.flagNames.switches.length],
+      ['variable', usage.variableWrites, usage.variableReads, input.flagNames.variables.length],
+    ];
+
+    for (const [kind, writes, reads, length] of bounds) {
+      const offenders = [...new Set([...writes, ...reads])]
+        .filter((id) => id > 0 && id >= length)
+        .sort((a, b) => a - b);
+
+      for (const id of offenders) {
+        const written = writes.has(id);
+        findings.push({
+          rule: `${kind}-out-of-range`,
+          severity: 'error',
+          message:
+            `${capitalise(kind)} ${id} is past the end of System.json's ${kind === 'switch' ? 'switches' : 'variables'} ` +
+            `array, which reaches ${length - 1}. ` +
+            (written
+              ? 'setValue ignores it, so the write does nothing and the flag stays false forever.'
+              : 'It can never be set, so this condition is always false.') +
+            ` Extend the array with allocate_switch.`,
+        });
+      }
     }
   }
 
@@ -338,6 +482,63 @@ export function checkProject(input: ConsistencyInput): ConsistencyReport {
             });
           }
         }
+      }
+    }
+  }
+
+  // --- R9: shop goods pointing at an entry that no longer exists ---
+  //
+  // Worth a rule of its own because the engine says nothing at all:
+  // `Window_ShopBuy.goodsToItem` returns undefined for a missing id and
+  // `makeItemList` skips the row, so the only symptom is a shop quietly one
+  // item short — which nobody notices unless they remember what it used to sell.
+  if (input.databaseIds) {
+    const ids = input.databaseIds;
+    const sources: { list: EventCommand[]; where: string }[] = [];
+
+    for (const map of maps) {
+      for (const event of map.data.events.filter((e): e is Event => e !== null)) {
+        for (const page of event.pages) {
+          sources.push({
+            list: page.list,
+            where: `map ${map.id} "${mapName(map.id)}", event ${event.id} "${event.name || '(unnamed)'}"`,
+          });
+        }
+      }
+    }
+    for (const ce of commonEvents) {
+      sources.push({ list: ce.list, where: `common event ${ce.id} "${ce.name || '(unnamed)'}"` });
+    }
+    for (const list of troopCommandLists) sources.push({ list, where: 'a troop page' });
+
+    for (const { list, where } of sources) {
+      for (const row of extractShopGoods(list)) {
+        if (ids[row.database].has(row.dataId)) continue;
+        findings.push({
+          rule: 'shop-sells-missing-entry',
+          severity: 'error',
+          message:
+            `Shop offers ${row.database.replace(/s$/, '')} ${row.dataId}, which is not in the ` +
+            'database. The engine drops the row without a word, so the shop just sells one ' +
+            'thing fewer.',
+          where,
+        });
+      }
+
+      // R11: a lock whose key was deleted. Worse than the shop case, because the
+      // branch does not lose a row — it can never be taken, so whatever it
+      // guards is unreachable for the rest of the game.
+      for (const row of extractHeldItemBranches(list)) {
+        if (ids[row.database].has(row.dataId)) continue;
+        findings.push({
+          rule: 'branch-checks-missing-entry',
+          severity: 'error',
+          message:
+            `Branches on the party holding ${row.database.replace(/s$/, '')} ${row.dataId}, ` +
+            'which is not in the database. hasItem answers false for an entry that is not ' +
+            'there, so that branch can never be taken — a door locked this way never opens.',
+          where,
+        });
       }
     }
   }

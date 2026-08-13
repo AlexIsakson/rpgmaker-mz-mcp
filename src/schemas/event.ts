@@ -357,15 +357,31 @@ export function convertCommand(cmd: {
     }
 
     case 'shop_processing': {
-      const goods = (cmd.goods as [number, number][]) || [];
+      // A row is [kind, dataId] or [kind, dataId, price]. Without a price the
+      // row uses price type 0, which Window_ShopBuy reads as "charge whatever
+      // the database says"; with one it uses type 1 and the price field.
+      const goods = (cmd.goods as [number, number, number?][]) || [];
       const purchaseOnly = (cmd.purchaseOnly as boolean) ?? false;
-      const result: EventCommand[] = [
-        { code: 302, indent: 0, parameters: [goods[0]?.[0] ?? 0, goods[0]?.[1] ?? 1, 0, 0, purchaseOnly] },
-      ];
-      for (let i = 1; i < goods.length; i++) {
-        result.push({ code: 605, indent: 0, parameters: [goods[i][0], goods[i][1], 0, 0] });
+
+      // No goods used to emit a shop selling item id 1 — a real window offering
+      // whatever happens to be first in the database, with nothing to say it was
+      // never asked for.
+      if (goods.length === 0) {
+        throw new Error(
+          'shop_processing needs at least one row of goods, each [kind, dataId] or ' +
+            '[kind, dataId, price] where kind is 0 item, 1 weapon, 2 armor.'
+        );
       }
-      return result;
+
+      const row = (g: [number, number, number?]): number[] =>
+        g[2] === undefined ? [g[0], g[1], 0, 0] : [g[0], g[1], 1, g[2]];
+
+      // command302 takes its own parameters as the first row and reads
+      // params[4] as the shop-wide purchaseOnly flag.
+      return [
+        { code: 302, indent: 0, parameters: [...row(goods[0]), purchaseOnly] },
+        ...goods.slice(1).map((g) => ({ code: 605, indent: 0, parameters: row(g) })),
+      ];
     }
 
     case 'change_hp': {

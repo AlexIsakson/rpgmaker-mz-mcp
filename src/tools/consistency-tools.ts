@@ -41,7 +41,8 @@ export function registerConsistencyTools(server: McpServer): void {
     'Run static consistency checks across the whole project: switches and variables ' +
       'read but never written, self-switches a page needs but nothing can set, autorun ' +
       'pages that can never stop, transfers to deleted maps, unreachable maps, missing ' +
-      'common events, and unconfigured tileset passage settings.',
+      'common events, shops offering entries that no longer exist, locks testing for a ' +
+      'key that was deleted, and unconfigured tileset passage settings.',
     {
       minSeverity: z.enum(['error', 'warning', 'info']).default('info')
         .describe('Lowest severity to report. "error" shows only game-breaking issues.'),
@@ -57,7 +58,7 @@ export function registerConsistencyTools(server: McpServer): void {
 
         const system = (await FileHandler.readJsonRaw(
           path.join(dataPath, 'System.json')
-        )) as { startMapId?: number };
+        )) as { startMapId?: number; switches?: unknown; variables?: unknown };
 
         const maps: LoadedMap[] = [];
         for (let id = 0; id < mapInfos.length; id++) {
@@ -96,6 +97,26 @@ export function registerConsistencyTools(server: McpServer): void {
         )) ?? []) as (TilesetLike | null)[];
         const tilesets = rawTilesets.filter((t): t is TilesetLike => t !== null && Array.isArray(t.flags));
 
+        // Which database ids exist, for rules that check a reference. A file
+        // that will not load leaves an empty set, and an empty set would report
+        // every reference as missing — so a database is only checked when it
+        // actually loaded as an array.
+        const loadIds = async (file: string): Promise<Set<number> | null> => {
+          const raw = await readOptionalJson(path.join(dataPath, file));
+          if (!Array.isArray(raw)) return null;
+          const ids = new Set<number>();
+          for (const row of raw) {
+            if (row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'number') {
+              ids.add((row as { id: number }).id);
+            }
+          }
+          return ids;
+        };
+
+        const [items, weapons, armors] = await Promise.all([
+          loadIds('Items.json'), loadIds('Weapons.json'), loadIds('Armors.json'),
+        ]);
+
         const report = checkProject({
           startMapId: system.startMapId ?? 1,
           maps,
@@ -104,6 +125,15 @@ export function registerConsistencyTools(server: McpServer): void {
           troopCommandLists,
           troopConditionSwitches,
           tilesets,
+          databaseIds:
+            items && weapons && armors ? { items, weapons, armors } : undefined,
+          // Both arrays or neither: the out-of-range rule reads their lengths as
+          // the engine's bound, and a missing array would read as a bound of 0
+          // and condemn every flag in the project.
+          flagNames:
+            Array.isArray(system.switches) && Array.isArray(system.variables)
+              ? { switches: system.switches as string[], variables: system.variables as string[] }
+              : undefined,
         });
 
         return {

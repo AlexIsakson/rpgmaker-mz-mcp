@@ -48,13 +48,39 @@ describe('treasureEventPages', () => {
   });
 
   it('hands over the item and flips the self switch', () => {
-    const [closed] = treasureEventPages({ itemId: 7, amount: 3 });
+    const [closed] = treasureEventPages({
+      loot: { kind: 'item', dataId: 7, name: 'Potion', price: 100, amount: 3 },
+    });
     const give = closed.list.find((c) => c.code === 126)!;
     const remember = closed.list.find((c) => c.code === 123)!;
     // [itemId, operation (0 = gain), operand (0 = constant), amount]
     expect(give.parameters).toEqual([7, 0, 0, 3]);
     // [switch, value (0 = ON)]
     expect(remember.parameters).toEqual(['A', 0]);
+  });
+
+  it('uses the command that matches the database the reward came from', () => {
+    // command126 gains $dataItems, 127 $dataWeapons, 128 $dataArmors — emitting
+    // 126 for a weapon id hands over whichever *item* shares that number.
+    const weapon = treasureEventPages({
+      loot: { kind: 'weapon', dataId: 4, name: 'Sword', price: 500, amount: 1 },
+    })[0];
+    expect(weapon.list.map((c) => c.code)).toEqual([250, 101, 401, 127, 123, 0]);
+    // the equipment commands carry includeEquip as a fifth parameter
+    expect(weapon.list.find((c) => c.code === 127)!.parameters).toEqual([4, 0, 0, 1, false]);
+
+    const armor = treasureEventPages({
+      loot: { kind: 'armor', dataId: 9, name: 'Shield', price: 300, amount: 1 },
+    })[0];
+    expect(armor.list.find((c) => c.code === 128)!.parameters).toEqual([9, 0, 0, 1, false]);
+  });
+
+  it('names the reward in the message rather than saying "something"', () => {
+    const [closed] = treasureEventPages({
+      loot: { kind: 'item', dataId: 7, name: 'Potion', price: 100, amount: 1 },
+    });
+    const body = closed.list.find((c) => c.code === 401)!;
+    expect(body.parameters[0]).toBe('You found \\c[6]Potion\\c[0]!');
   });
 
   it('leaves a second page behind the self switch that does nothing', () => {

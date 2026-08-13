@@ -387,6 +387,59 @@ export interface DoorOptions {
 }
 
 /**
+ * The door opening itself, without the transfer: play the open SE, step the
+ * sprite through its three opening frames, turn Through on so the player can
+ * walk into the doorway, then move the player forward.
+ *
+ * Split out from {@link doorEventPage} so a door that asks for a key can put
+ * this run inside a conditional branch — see `locked-door.ts`. The commands are
+ * emitted at indent 0; the caller shifts them if they are going in a branch.
+ */
+export function doorOpenCommands(options: { openSe?: string } = {}): EventCommand[] {
+  const { openSe = 'Open1' } = options;
+
+  return [
+    { code: CODE_PLAY_SE, indent: 0, parameters: [audio(openSe)] },
+    ...moveRouteCommands(
+      THIS_EVENT,
+      [
+        { code: ROUTE_TURN_LEFT },
+        { code: ROUTE_WAIT, parameters: [3] },
+        { code: ROUTE_TURN_RIGHT },
+        { code: ROUTE_WAIT, parameters: [3] },
+        { code: ROUTE_TURN_UP },
+        { code: ROUTE_THROUGH_ON },
+      ],
+      { skippable: false, wait: true }
+    ),
+    ...moveRouteCommands(THE_PLAYER, [{ code: ROUTE_MOVE_FORWARD }], {
+      skippable: true,
+      wait: true,
+    }),
+  ];
+}
+
+/**
+ * Where the door leads: the travel SE and the transfer.
+ *
+ * **Nothing may follow this in a map event's list.** `Game_Player.performTransfer`
+ * calls `Game_Map.setup`, which rebuilds `_events` from scratch — the running
+ * `Game_Event` and its interpreter are thrown away with it, so commands after a
+ * 201 never run. Anything the door has to remember has to be written first.
+ */
+export function doorTransferCommands(target: DoorTarget, moveSe = 'Move1'): EventCommand[] {
+  return [
+    { code: CODE_PLAY_SE, indent: 0, parameters: [audio(moveSe)] },
+    // [designation, mapId, x, y, direction (0 = retain), fade (0 = black)]
+    {
+      code: CODE_TRANSFER_PLAYER,
+      indent: 0,
+      parameters: [0, target.mapId, target.x, target.y, 0, 0],
+    },
+  ];
+}
+
+/**
  * The canonical RPG Maker door page, matching the one the shipped sample maps
  * use (60 of the 107 sample door pages are this exact command sequence):
  * play the open SE, step the sprite through its three opening frames, turn
@@ -406,35 +459,9 @@ export function doorEventPage(options: DoorOptions = {}): EventPage {
     moveSe = 'Move1',
   } = options;
 
-  const list: EventCommand[] = [
-    { code: CODE_PLAY_SE, indent: 0, parameters: [audio(openSe)] },
-    ...moveRouteCommands(
-      THIS_EVENT,
-      [
-        { code: ROUTE_TURN_LEFT },
-        { code: ROUTE_WAIT, parameters: [3] },
-        { code: ROUTE_TURN_RIGHT },
-        { code: ROUTE_WAIT, parameters: [3] },
-        { code: ROUTE_TURN_UP },
-        { code: ROUTE_THROUGH_ON },
-      ],
-      { skippable: false, wait: true }
-    ),
-    ...moveRouteCommands(THE_PLAYER, [{ code: ROUTE_MOVE_FORWARD }], {
-      skippable: true,
-      wait: true,
-    }),
-  ];
+  const list: EventCommand[] = [...doorOpenCommands({ openSe })];
 
-  if (target) {
-    list.push({ code: CODE_PLAY_SE, indent: 0, parameters: [audio(moveSe)] });
-    // [designation, mapId, x, y, direction (0 = retain), fade (0 = black)]
-    list.push({
-      code: CODE_TRANSFER_PLAYER,
-      indent: 0,
-      parameters: [0, target.mapId, target.x, target.y, 0, 0],
-    });
-  }
+  if (target) list.push(...doorTransferCommands(target, moveSe));
 
   list.push({ code: CODE_END, indent: 0, parameters: [] });
 

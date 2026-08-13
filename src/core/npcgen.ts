@@ -166,6 +166,15 @@ export interface NpcOptions {
   /** 2 down, 4 left, 6 right, 8 up. */
   direction?: number;
   wrapAt?: number;
+  /**
+   * Commands appended after the dialogue and before the terminator — what the
+   * NPC *does* once it has finished talking.
+   *
+   * A shopkeeper is a talking NPC that then opens a shop, so it belongs on this
+   * page rather than on a copy of it: the settings here rest on 70 measured
+   * pages, and the four shop pages on hand agree with them.
+   */
+  commands?: EventCommand[];
 }
 
 export class NpcError extends Error {}
@@ -180,6 +189,7 @@ export function npcEventPage(options: NpcOptions): EventPage {
     movement = 'fixed',
     direction = 2,
     wrapAt,
+    commands = [],
   } = options;
 
   if (characterName === '') {
@@ -199,6 +209,7 @@ export function npcEventPage(options: NpcOptions): EventPage {
 
   const list: EventCommand[] = [
     ...dialogueCommands(text, { face, wrapAt }),
+    ...commands,
     { code: CODE_END, indent: 0, parameters: [] },
   ];
 
