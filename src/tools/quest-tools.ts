@@ -10,7 +10,7 @@ import { addEvent } from '../core/building-placement.js';
 import { buildMapGraph, type LoadedMap, type CommonEventLike, type MapGraph } from '../core/map-graph.js';
 import { readLock, describeLock } from '../core/locked-door.js';
 import { treasureEvent, rejectSealingSlots } from '../core/dungeon-dressing.js';
-import { keyItemFields, checkKeyPlacement, QuestError } from '../core/quest.js';
+import { keyItemFields, checkOpenerPlacement, QuestError } from '../core/quest.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import type { MapData, MapInfo } from '../schemas/map.js';
@@ -231,12 +231,13 @@ export function registerQuestTools(server: McpServer): void {
 
         // --- is the key behind its own door? ---
         const world = await loadWorldGraph(dataPath);
-        const verdict = checkKeyPlacement({
+        const verdict = checkOpenerPlacement({
           edges: world.graph.edges,
           startMapId: world.startMapId,
           door: { mapId: args.doorMapId, eventId: args.doorEventId },
-          keyMapId: args.mapId,
+          placedOnMapId: args.mapId,
           hasDynamicTransfers: world.hasDynamicTransfers,
+          opener: 'key',
         });
 
         if (!verdict.reachable && !args.allowBehindDoor) {

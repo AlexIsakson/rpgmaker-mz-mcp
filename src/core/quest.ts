@@ -135,8 +135,11 @@ export function mapsReachableWithout(
   return seen;
 }
 
-export interface KeyPlacementVerdict {
-  /** False when the key's map cannot be reached without opening the door. */
+/** What is being placed: the thing that opens the door. */
+export type Opener = 'key' | 'lever';
+
+export interface OpenerPlacementVerdict {
+  /** False when the map cannot be reached without opening the door. */
   reachable: boolean;
   /**
    * False when something in the project makes the answer unprovable — a
@@ -148,28 +151,37 @@ export interface KeyPlacementVerdict {
   message: string;
 }
 
-export interface KeyPlacementInput {
+export interface OpenerPlacementInput {
   edges: MapEdge[];
   startMapId: number;
   door: DoorRef;
-  keyMapId: number;
+  /** The map the key or lever is going on. */
+  placedOnMapId: number;
   /** True when the project has transfers whose destination is a variable. */
   hasDynamicTransfers: boolean;
+  opener: Opener;
 }
 
 /**
- * Whether putting the key on `keyMapId` leaves the game winnable.
+ * Whether putting the thing that opens a door on `placedOnMapId` leaves the game
+ * winnable.
+ *
+ * A key and a lever ask the identical question — *can this be got at without
+ * the door it opens* — so they share the walk and differ only in wording. A
+ * lever beyond its own gate is the shape people reach for deliberately (find
+ * another way in, open the gate from inside), and that case passes here: it only
+ * fails when there is no other route at all, which is a dead end either way.
  *
  * The door's own map is a special case worth being explicit about: standing in
- * front of a locked door is not the same as being through it, so a key on the
+ * front of a locked door is not the same as being through it, so placing on the
  * *near* side is fine and this reports it as such — the check is about the maps
  * the door leads to, not about the door's neighbourhood.
  */
-export function checkKeyPlacement(input: KeyPlacementInput): KeyPlacementVerdict {
-  const { edges, startMapId, door, keyMapId, hasDynamicTransfers } = input;
+export function checkOpenerPlacement(input: OpenerPlacementInput): OpenerPlacementVerdict {
+  const { edges, startMapId, door, placedOnMapId, hasDynamicTransfers, opener } = input;
 
   const reachableMaps = mapsReachableWithout(edges, startMapId, door);
-  const reachable = reachableMaps.has(keyMapId);
+  const reachable = reachableMaps.has(placedOnMapId);
 
   if (reachable) {
     return {
@@ -177,8 +189,8 @@ export function checkKeyPlacement(input: KeyPlacementInput): KeyPlacementVerdict
       certain: true,
       reachableMaps,
       message:
-        `Map ${keyMapId} is reachable from the start map without opening the door, so the key ` +
-        'can be fetched before it is needed.',
+        `Map ${placedOnMapId} is reachable from the start map without opening the door, so the ` +
+        `${opener} can be ${opener === 'key' ? 'fetched' : 'reached'} before it is needed.`,
     };
   }
 
@@ -188,7 +200,7 @@ export function checkKeyPlacement(input: KeyPlacementInput): KeyPlacementVerdict
       certain: false,
       reachableMaps,
       message:
-        `No route to map ${keyMapId} avoids the door — but this project has transfers whose ` +
+        `No route to map ${placedOnMapId} avoids the door — but this project has transfers whose ` +
         'destination comes from a variable, and those cannot be resolved statically. The route ' +
         'may exist and be invisible here.',
     };
@@ -199,8 +211,11 @@ export function checkKeyPlacement(input: KeyPlacementInput): KeyPlacementVerdict
     certain: true,
     reachableMaps,
     message:
-      `Map ${keyMapId} can only be reached by going through the door this key opens. The player ` +
-      'would need the key to reach the key, which no amount of exploring solves and nothing at ' +
-      'runtime reports.',
+      `Map ${placedOnMapId} can only be reached by going through the door this ${opener} opens. ` +
+      (opener === 'key'
+        ? 'The player would need the key to reach the key, which no amount of exploring solves '
+        : 'The player would need the door open to reach the lever that opens it, which no ' +
+          'amount of exploring solves ') +
+      'and nothing at runtime reports.',
   };
 }

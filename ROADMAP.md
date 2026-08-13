@@ -378,6 +378,7 @@ batching writes would remove the exposure entirely.
 | nothing with a switch behind it | `allocate_switch` / `list_switches` / `release_switch` (`src/core/switches.ts`) — see [Switches and variables](#switches-and-variables) |
 | nothing gated behind anything; no locked doors | `place_locked_door` (`src/core/locked-door.ts`) — see [Locked doors](#locked-doors) |
 | nothing joined the pieces up into a quest | `create_key_item` / `place_key_for_door` (`src/core/quest.ts`) — see [Quests](#quests--joining-the-pieces-up) |
+| a switch-locked door with nothing to open it | `place_lever` (`src/core/lever.ts`) — see [Levers](#levers--the-thing-that-sets-a-switch) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
 
@@ -1184,8 +1185,8 @@ allocating switch 1 and the same name in different case reusing it; and four ref
 **Still open here:**
 
 - ~~**Nothing puts the key anywhere.**~~ *Done:* `place_key_for_door` — see
-  [Quests](#quests--joining-the-pieces-up). A switch lock still has no counterpart, because
-  what opens one is a lever rather than a key.
+  [Quests](#quests--joining-the-pieces-up) — and ~~a switch lock has nothing to open it~~
+  *(done: `place_lever`, see [Levers](#levers--the-thing-that-sets-a-switch))*.
 - **`remember` is all or nothing.** A door either forgets its lock forever after one opening
   or re-tests it every time; there is nothing in between, such as a door that relocks at night.
 - **The refusal is one line of text.** No guard who stops you, no hint about where the key is.
@@ -1257,14 +1258,91 @@ and a second key of the same name.
 
 **Still open here:**
 
-- **A switch lock has no counterpart.** `place_key_for_door` refuses one, correctly — a switch
-  is opened by something that *sets* it. The matching tool is a lever or an NPC who throws it,
-  and it does not exist yet.
+- ~~**A switch lock has no counterpart.**~~ *Done:* `place_lever` — see
+  [Levers](#levers--the-thing-that-sets-a-switch). An NPC who throws the flag for you, a
+  pressure plate, or a battle that sets it are all still missing.
 - **Nothing chooses the placement.** The caller still picks the map and the tile; the tool only
   proves the choice is not fatal. Choosing a good spot — far from the door, on the way to
   somewhere else — is the next step, and `decorate_dungeon` already knows how to find dead ends.
 - **One key, one door.** No multi-step chains, no quest that needs two things, and nothing
   tracks a quest's state as a whole.
+
+### Levers — the thing that sets a switch
+
+`place_lever` puts an object on a map that turns a switch on. It is the other half of a
+switch-locked door: `place_key_for_door` refuses one, correctly, because a switch has no key
+to find.
+
+- `src/core/lever.ts` — the two pages and the Control Switches command (pure, unit-tested)
+- `src/tools/lever-tools.ts` — the MCP tool
+
+**There is no lever anywhere in the corpus.** Of 422 events, 38 pages set a switch and not one
+is an object the player pulls — they are cutscenes, autoruns, parallel processes and NPCs. So
+unlike the shop (4 samples) or the locked door (1), this had *nothing* to copy, and saying so
+is the point: the shape is assembled from parts that were measured elsewhere, and from the
+engine.
+
+**The art was measured off the sheets**, which is where the strongest finding came from.
+`!Switch1` and `!Switch2` are 576x384 — eight 48x48 character slots — and in every slot the
+four *direction* rows are four frames of one movement rather than four facings. Rendering them
+and looking settles what they are: `!Switch1` slot 0 is a handle swinging from one side to the
+other, slot 4 a button pressing flat, `!Switch2` slot 0 a wall lever whose handle drops from
+top to bottom. The three pattern columns differ by 2-3%, an idle bob rather than a state. That
+is the same layout `!Chest` uses, so **direction 2 is resting and direction 8 is thrown**.
+
+**Which makes `directionFix` load-bearing rather than decorative — and explains an older
+mystery.** `Game_Event.start` calls `lock()` for triggers 0, 1 and 2, and `lock()` calls
+`turnTowardPlayer()`. On a sheet whose direction axis carries *state*, that means the engine
+changes the lever's frame the instant the player uses it. The guard is in `setDirection`:
+
+```js
+if (!this.isDirectionFixed() && d) { this._direction = d; }
+```
+
+so `directionFix: true` makes the turn a no-op. The measured chest and torch pages both set it,
+which until now read as a stylistic habit and is in fact the same necessity.
+
+**The thrown page is gated on the switch, not on a self switch.** A lever is the flag's
+display: if a quest or another lever turns that flag off, the lever should spring back to
+resting, and a self switch would freeze it thrown forever. That is exactly the opposite of the
+chest, whose self switch is right because "already looted" is a fact about the chest rather
+than about the world — the two cases look identical and are not, which is worth stating
+because getting it backwards produces a lever that lies about the state of the game.
+
+**One way by default.** Without `toggle` the thrown page has no commands at all, and
+`Game_Event.start` needs `list && list.length > 1` before an event will even start — so a
+thrown lever is inert in the engine's own terms rather than by convention. A toggle's thrown
+page writes `[id, id, 1]`, the off value, which 9 of the 38 measured switch writes also use.
+
+**Setting a switch does not cut the page short**, unlike the transfer case in
+[Locked doors](#locked-doors). `Game_Map.setupStartingMapEvent` hands `event.list()` to the
+interpreter, which keeps its own reference (`this._list = list`), so the page change the switch
+triggers cannot truncate the run already in flight — a lever can say a line after throwing
+itself. The two rules are opposite and both are the interpreter's, not a matter of taste.
+
+**It reuses the key's reachability walk.** A lever behind the only door it opens can never be
+thrown, which is the same dead end as a key behind its own door, so `checkOpenerPlacement`
+serves both and differs only in wording. The deliberate case — find another way in, open the
+gate from inside — passes the check, because it only fails when *no* other route exists.
+
+The tool also reports which doors the switch opens, by scanning every map with `readLock`, and
+says plainly when nothing reads the flag yet.
+
+**Verified by driving the real server**: a switch-locked gate to a walled garden; the key tool
+refusing it; the lever refused *inside* the garden and named the door that traps it; the same
+lever accepted outside, listing the door it opens; a toggle on `!Switch2` writing `[2,2,0]` on
+one page and `[2,2,1]` on the other; and refusals for switch 900 and for no switch at all.
+Afterwards `check_project` reports nothing at all — the `switch-read-never-written` warning the
+gate produced on its own is gone, because something now writes it.
+
+**Still open here:**
+
+- **A lever is the only thing that throws a flag.** An NPC who opens the gate when you have
+  done them a favour, a pressure plate, a switch thrown by finishing a battle — none exist.
+- **Nothing places it.** As with the key, the caller picks the tile and the tool only proves
+  the choice is not fatal.
+- **No lever puzzles.** Two levers that must both be on, or a sequence — anything needing more
+  than one flag has to be assembled by hand, and nothing checks such a combination is solvable.
 
 ### Tool ergonomics, from building a town by hand
 
@@ -1293,11 +1371,12 @@ That is the honest measure of what is missing:
 - **Game logic is started but thin.** Shops exist, chests hold real varied rewards, switches
   can be allocated by name, and a door can be locked behind either a key or a flag — see
   [Commerce and loot](#commerce-and-loot), [Switches and variables](#switches-and-variables)
-  and [Locked doors](#locked-doors), and [Quests](#quests--joining-the-pieces-up) joins a key
-  to the door it opens with a graph walk that refuses to make the game unwinnable. What is
-  still missing is everything past *one* key and *one* door: nothing sets a switch, nothing
-  chains two steps together, and nothing tracks a quest's state as a whole. Gated NPCs,
-  enemies and NPCs who say more than one placeholder line are all still absent too.
+  and [Locked doors](#locked-doors); [Quests](#quests--joining-the-pieces-up) joins a key to
+  the door it opens with a graph walk that refuses to make the game unwinnable, and
+  [Levers](#levers--the-thing-that-sets-a-switch) does the same for the flag side. What is
+  still missing is everything past *one* opener and *one* door: nothing chains two steps
+  together, nothing tracks a quest's state as a whole, and no puzzle needs two flags at once.
+  Gated NPCs, enemies and NPCs who say more than one placeholder line are all still absent too.
 
 ### Scope and open questions
 

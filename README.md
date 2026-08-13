@@ -3,7 +3,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.26.0-orange)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/Tests-552%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/Tests-568%20passed-brightgreen)]()
 
 **English** | [繁體中文](#繁體中文) | [日本語](#日本語)
 
@@ -23,7 +23,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 | stderr-only logging (no stdout pollution) | ✅ | ❌ |
 | Correct `.rmmzproject` extension | ✅ | ❌ |
 | Generic `DatabaseManager<T>` (no copy-paste) | ✅ | ❌ |
-| Unit & integration tests (552 tests) | ✅ | ❌ |
+| Unit & integration tests (568 tests) | ✅ | ❌ |
 | MCP SDK v1.26+ | ✅ | ❌ |
 | Event editing with human-readable commands | ✅ | Partial |
 | AI scenario generation tools | ✅ | ❌ |
@@ -36,7 +36,7 @@ A **stable, well-tested** [Model Context Protocol](https://modelcontextprotocol.
 
 ---
 
-## 🛠 Available Tools (56 total)
+## 🛠 Available Tools (57 total)
 
 ### Project Management (4)
 | Tool | Description |
@@ -631,11 +631,12 @@ conditioned on self switch A, and it goes *after* page 1 because
 `Game_Event.findProperPageIndex` scans backwards and takes the first match. `remember=false`
 drops it, for a gate that must follow its switch forever.
 
-### Quests (2)
+### Quests (3)
 | Tool | Description |
 |------|-------------|
 | `create_key_item` | A key the player cannot sell, use or destroy |
 | `place_key_for_door` | Put a particular door's key in a chest — and refuse if that would make the game unwinnable |
+| `place_lever` | A lever that throws a switch — what opens a switch-locked door, which has no key to find |
 
 Everything above this point existed separately: chests, shops, flags, locked doors. Nothing
 decided that *this* chest holds the key to *that* door.
@@ -671,6 +672,32 @@ lets a player eat it.
 
 The chest itself is not new code — it is the measured pickup shape `decorate_dungeon` already
 uses, with the key as its loot.
+
+**A switch lock has no key**, so `place_key_for_door` refuses one and `place_lever` is the
+answer: an Action Button object that turns the flag on. It runs the same reachability walk —
+a lever behind the only door it opens can never be thrown — and reports which doors in the
+project that switch actually opens, or warns that nothing reads it yet.
+
+```
+place_lever  mapId=1 x=5 y=8  switchName="Garden gate open"  text="The bar lifts with a clunk."
+```
+
+**Nothing in the corpus is a lever** — of 422 events, the 38 pages that set a switch are all
+cutscenes, autoruns and NPCs — so the shape comes from the engine and from the sprite sheets.
+`!Switch1` and `!Switch2` lay their four states out along the *direction* axis exactly as
+`!Chest` does: slot 0 of `!Switch1` is a handle swinging from one side to the other, slot 4 a
+button pressing flat, so **direction 2 is resting and direction 8 is thrown**.
+
+That makes `directionFix` load-bearing rather than cosmetic. `Game_Event.start` calls `lock()`
+for triggers 0/1/2, `lock()` calls `turnTowardPlayer()`, and `setDirection` only obeys while
+direction is *not* fixed — so without it the lever changes frame the instant the player uses
+it. It also explains why the measured chest and torch pages both set it.
+
+The thrown page is conditioned on the **switch**, not a self switch: a lever is the flag's
+display, so if a quest turns that flag off the lever springs back. (A chest uses a self switch
+because "already looted" is a fact about the chest rather than about the world.) `toggle`
+makes the thrown page turn it off again; without it the thrown page has no commands at all,
+which `Game_Event.start` treats as nothing to run — it requires `list.length > 1`.
 
 ### Consistency Checking (1)
 | Tool | Description |
@@ -727,7 +754,7 @@ npm install
 # Build
 npm run build
 
-# Verify (552 tests should pass)
+# Verify (568 tests should pass)
 npm test
 ```
 
@@ -833,14 +860,15 @@ src/
 │   ├── shop.ts                 # Goods encoding + stock selection
 │   ├── loot.ts                 # Loot tables, dealt without repeats
 │   ├── locked-door.ts          # Conditional branches + the two pages of a locked door
-│   └── quest.ts                # Key items, and proving a key is not behind its own door
+│   ├── quest.ts                # Key items, and proving a key is not behind its own door
+│   └── lever.ts                # The event that throws a switch
 ├── schemas/
 │   ├── database.ts             # Zod schemas for 8 entity types
 │   ├── map.ts                  # Map & audio schemas
 │   ├── event.ts                # Event & command schemas + converter
 │   ├── tileset.ts              # Tilesets.json schema
 │   └── system.ts               # System.json schema
-├── tools/                      # 56 MCP tools across 25 modules
+├── tools/                      # 57 MCP tools across 26 modules
 │   ├── project-tools.ts        # 4  project management
 │   ├── database-tools.ts       # 6  database CRUD
 │   ├── map-tools.ts            # 5  map management
@@ -859,6 +887,7 @@ src/
 │   ├── shop-tools.ts           # 1  place_shop
 │   ├── locked-door-tools.ts    # 1  place_locked_door
 │   ├── quest-tools.ts          # 2  create_key_item, place_key_for_door
+│   ├── lever-tools.ts          # 1  place_lever
 │   ├── dungeon-dressing-tools.ts # 1 decorate_dungeon
 │   ├── map-graph-tools.ts      # 1  get_map_graph
 │   ├── map-grid-tools.ts       # 1  get_map_grid
@@ -989,7 +1018,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 552 個測試應全部通過
+npm test  # 568 個測試應全部通過
 ```
 
 在你的專案目錄建立 `.mcp.json`：
@@ -1070,7 +1099,7 @@ git clone https://github.com/AlexIsakson/rpgmaker-mz-mcp.git
 cd rpgmaker-mz-mcp
 npm install
 npm run build
-npm test  # 552 テストがすべてパスするはず
+npm test  # 568 テストがすべてパスするはず
 ```
 
 プロジェクトディレクトリに `.mcp.json` を作成：

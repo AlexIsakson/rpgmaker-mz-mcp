@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   keyItemFields,
   mapsReachableWithout,
-  checkKeyPlacement,
+  checkOpenerPlacement,
   KEY_ITEM_FIELDS,
   QuestError,
 } from '../../src/core/quest.js';
@@ -92,27 +92,27 @@ describe('mapsReachableWithout', () => {
   });
 });
 
-describe('checkKeyPlacement', () => {
+describe('checkOpenerPlacement', () => {
   const edges = [edge(1, 2, 5), edge(2, 3, 6)];
   const door = { mapId: 2, eventId: 6 };
 
   it('passes a key on a map reachable without the door', () => {
-    const verdict = checkKeyPlacement({
-      edges, startMapId: 1, door, keyMapId: 1, hasDynamicTransfers: false,
+    const verdict = checkOpenerPlacement({
+      edges, startMapId: 1, door, placedOnMapId: 1, hasDynamicTransfers: false, opener: 'key',
     });
     expect(verdict).toMatchObject({ reachable: true, certain: true });
   });
 
   it('passes a key on the door\'s own map — standing in front of it is not being through it', () => {
-    const verdict = checkKeyPlacement({
-      edges, startMapId: 1, door, keyMapId: 2, hasDynamicTransfers: false,
+    const verdict = checkOpenerPlacement({
+      edges, startMapId: 1, door, placedOnMapId: 2, hasDynamicTransfers: false, opener: 'key',
     });
     expect(verdict.reachable).toBe(true);
   });
 
   it('catches a key behind the door it opens', () => {
-    const verdict = checkKeyPlacement({
-      edges, startMapId: 1, door, keyMapId: 3, hasDynamicTransfers: false,
+    const verdict = checkOpenerPlacement({
+      edges, startMapId: 1, door, placedOnMapId: 3, hasDynamicTransfers: false, opener: 'key',
     });
     expect(verdict).toMatchObject({ reachable: false, certain: true });
     expect(verdict.message).toContain('the key to reach the key');
@@ -121,16 +121,16 @@ describe('checkKeyPlacement', () => {
   it('will not claim certainty when transfers are variable-driven', () => {
     // The route may exist and be invisible to static analysis, so the verdict
     // stops short of "unwinnable" rather than refusing on a guess.
-    const verdict = checkKeyPlacement({
-      edges, startMapId: 1, door, keyMapId: 3, hasDynamicTransfers: true,
+    const verdict = checkOpenerPlacement({
+      edges, startMapId: 1, door, placedOnMapId: 3, hasDynamicTransfers: true, opener: 'key',
     });
     expect(verdict).toMatchObject({ reachable: false, certain: false });
     expect(verdict.message).toContain('variable');
   });
 
   it('reports what is reachable, for a caller that has to choose again', () => {
-    const verdict = checkKeyPlacement({
-      edges, startMapId: 1, door, keyMapId: 3, hasDynamicTransfers: false,
+    const verdict = checkOpenerPlacement({
+      edges, startMapId: 1, door, placedOnMapId: 3, hasDynamicTransfers: false, opener: 'key',
     });
     expect([...verdict.reachableMaps].sort()).toEqual([1, 2]);
   });
