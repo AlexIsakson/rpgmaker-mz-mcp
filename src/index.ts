@@ -9,6 +9,7 @@ import { registerMapTools } from './tools/map-tools.js';
 import { registerMapGridTools } from './tools/map-grid-tools.js';
 import { registerMapGraphTools } from './tools/map-graph-tools.js';
 import { registerMapPaintTools } from './tools/map-paint-tools.js';
+import { registerRegionTools } from './tools/region-tools.js';
 import { registerBlueprintTools } from './tools/blueprint-tools.js';
 import { registerPropTools } from './tools/prop-tools.js';
 import { registerTowngenTools } from './tools/towngen-tools.js';
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
   registerMapGridTools(server);
   registerMapGraphTools(server);
   registerMapPaintTools(server);
+  registerRegionTools(server);
   registerBlueprintTools(server);
   registerPropTools(server);
   registerTowngenTools(server);

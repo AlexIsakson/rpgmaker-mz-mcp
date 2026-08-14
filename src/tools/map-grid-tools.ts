@@ -3,7 +3,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { FileHandler } from '../core/file-handler.js';
 import { TilesetReader } from '../core/tileset-reader.js';
-import { buildGrid, renderAsciiGrid, type GridEventMarker } from '../core/map-grid.js';
+import { buildGrid, renderAsciiGrid, renderRegionGrid, type GridEventMarker } from '../core/map-grid.js';
+import { summariseRegions } from '../core/regions.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import type { MapData } from '../schemas/map.js';
@@ -23,8 +24,13 @@ export function registerMapGridTools(server: McpServer): void {
       y: z.number().int().min(0).optional().describe('Top edge of the window (tiles)'),
       width: z.number().int().positive().optional().describe('Window width (tiles)'),
       height: z.number().int().positive().optional().describe('Window height (tiles)'),
+      showRegions: z.boolean().default(false)
+        .describe(
+          'Also print the region plane (z=5) as a second grid. Off by default because most ' +
+          'maps have no regions; when a map does have them, the output says so.'
+        ),
     },
-    async ({ mapId, x, y, width, height }) => {
+    async ({ mapId, x, y, width, height, showRegions }) => {
       try {
         const project = requireProject();
         const mapPath = path.join(project.dataPath, mapFilename(mapId));
@@ -77,6 +83,33 @@ export function registerMapGridTools(server: McpServer): void {
         if (legend.length > 0) {
           parts.push('', 'Events:', ...legend);
         }
+
+        const areas = summariseRegions(mapData, flags);
+        if (showRegions) {
+          const region = renderRegionGrid(grid, bounds);
+          parts.push(
+            '',
+            `Region plane (z=5) — . = no region${areas.length > 0 ? '' : ', and there are none'}`,
+            '',
+            region.text
+          );
+          if (region.legend.length > 0) parts.push('', ...region.legend);
+          if (region.truncatedEvents) {
+            parts.push('', 'Note: more distinct region ids in view than there are symbols; some print as ?.');
+          }
+          for (const area of areas) {
+            parts.push(
+              `region ${area.regionId}: ${area.tiles} tile(s) in ${area.areas} area(s)` +
+              (area.impassable > 0 ? `, ${area.impassable} of them impassable` : '')
+            );
+          }
+        } else if (areas.length > 0) {
+          notes.push(
+            `Note: this map uses the region plane (${areas.map((a) => `region ${a.regionId}: ${a.tiles} tiles`).join(', ')}). ` +
+            'Pass showRegions to see where.'
+          );
+        }
+
         if (notes.length > 0) {
           parts.push('', ...notes);
         }

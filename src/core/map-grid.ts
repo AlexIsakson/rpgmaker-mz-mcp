@@ -203,3 +203,73 @@ export function renderAsciiGrid(
 
   return { text: lines.join('\n'), legend, truncatedEvents };
 }
+
+/**
+ * The region plane (z=5) as its own grid.
+ *
+ * A separate grid rather than a glyph in the main one, because a region is not
+ * a property of the terrain — it is an orthogonal overlay, and a tile commonly
+ * has both a wall glyph and a region. Ids 1-9 print as themselves so the usual
+ * case reads directly; anything above that gets a letter and a legend line,
+ * since a region id can go to 255 and a cell is one character wide.
+ */
+const REGION_SYMBOLS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+export function renderRegionGrid(grid: TileInfo[][], bounds?: GridBounds): RenderedGrid {
+  const mapWidth = grid[0]?.length ?? 0;
+  const mapHeight = grid.length;
+  const x0 = bounds?.x ?? 0;
+  const y0 = bounds?.y ?? 0;
+  const x1 = bounds ? Math.min(mapWidth, x0 + bounds.width) : mapWidth;
+  const y1 = bounds ? Math.min(mapHeight, y0 + bounds.height) : mapHeight;
+
+  const present = new Set<number>();
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const id = grid[y][x].regionId;
+      if (id !== 0) present.add(id);
+    }
+  }
+
+  const symbolById = new Map<number, string>();
+  const legend: string[] = [];
+  let truncated = false;
+  let nextSymbol = 0;
+  for (const id of [...present].sort((a, b) => a - b)) {
+    if (id >= 1 && id <= 9) {
+      symbolById.set(id, String(id));
+      continue;
+    }
+    if (nextSymbol >= REGION_SYMBOLS.length) {
+      truncated = true;
+      continue;
+    }
+    const symbol = REGION_SYMBOLS[nextSymbol++];
+    symbolById.set(id, symbol);
+    legend.push(`${symbol} = region ${id}`);
+  }
+
+  const colWidth = String(x1 - 1).length;
+  const rowLabelWidth = String(y1 - 1).length;
+  const lines: string[] = [];
+
+  if (colWidth > 1) {
+    let tens = ' '.repeat(rowLabelWidth + 1);
+    for (let x = x0; x < x1; x++) tens += Math.floor(x / 10) % 10;
+    lines.push(tens);
+  }
+  let units = ' '.repeat(rowLabelWidth + 1);
+  for (let x = x0; x < x1; x++) units += x % 10;
+  lines.push(units);
+
+  for (let y = y0; y < y1; y++) {
+    let line = String(y).padStart(rowLabelWidth, ' ') + ' ';
+    for (let x = x0; x < x1; x++) {
+      const id = grid[y][x].regionId;
+      line += id === 0 ? '.' : (symbolById.get(id) ?? '?');
+    }
+    lines.push(line);
+  }
+
+  return { text: lines.join('\n'), legend, truncatedEvents: truncated };
+}

@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 1 / 26**
+**Progress: 2 / 27**
 
 ---
 
@@ -26,13 +26,18 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   and **no** column is opaque-and-outlined in all four sheets, so no column rule can be right.
   See [A2 columns predict nothing](ROADMAP.md#a2-columns-predict-nothing). Turned up P5-26.
 
-- [ ] **P5-02 — Write the region plane (z=5)**
+- [x] **P5-02 — Write the region plane (z=5)**
   Map data is `data[(z * height + y) * width + x]`; z 0–3 are tiles, z 4 is shadow, **z 5 is the
   region id** and no tool can reach it. `fill_map_region` caps `layer` at 0–3. Regions drive
   encounter zones and a great many plugins, so a generated map cannot participate in either.
   Add `paint_regions` (and/or a region argument to the batch writer), mirroring how
   `apply_wall_shadows` reached z=4.
   *Done when:* a region can be written and read back, and `get_map_grid` can show it.
+  *Done:* `paint_regions` takes a rectangle or a tile list; `get_map_grid showRegions` prints
+  the plane. The corpus turned out to be silent — 0 of 293 sample maps use z=5 and all 293 ship
+  an empty `encounterList` — so the semantics come from the engine (`Game_Map.regionId`,
+  `meetsEncounterConditions`) and no convention was invented. See
+  [The region plane](ROADMAP.md#the-region-plane--the-sixth-layer). Turned up P5-27.
 
 - [ ] **P5-03 — Resolve switch *names* in `add_event_commands`**
   `allocate_switch` gives a named flag an id, and `place_locked_door` accepts `switchName` and
@@ -82,6 +87,17 @@ architectural model into an inhabited place.
   *Done when:* a building can be entered from above, and the town planner uses both.
   *Note:* the samples say 98 of 107 doors are on the bottom row, so bottom stays the default —
   this adds an option, it does not change the norm.
+
+- [ ] **P5-27 — Generators mark their own regions**
+  *(turned up by P5-02.)* `paint_regions` can write z=5, but every caller has to work out the
+  coordinates itself — which is exactly the knowledge the generators already have and throw
+  away. `generate_map_layout` knows which tiles are floor and which are surround,
+  `generate_town` knows street from plot from doorway, and `lock_dungeon_floor` knows which
+  side of the chokepoint is which. Each could mark its areas as it builds them.
+  *Done when:* a generated map comes back with regions it did not have to be told about, and
+  the ids it used are named in the result.
+  *Note:* the other half of encounter zones is `encounterList`, which no tool writes at all —
+  that belongs with P5-17, and until it exists a regioned map has nothing to gate.
 
 ## M3 — Shape (visual review finding 7)
 

@@ -383,6 +383,7 @@ batching writes would remove the exposure entirely.
 | a locked door with no reason to exist | themed rooms and a generated inscription (`src/core/vault.ts`) — see [Why the door is there](#why-the-door-is-there) |
 | robustness — transient rename failures | `FileHandler.writeJson` retries the rename on EPERM/EACCES/EBUSY |
 | verification caveat | `scripts/render-map.mjs` renders any map to a PNG |
+| the region plane (z=5) was unreachable | `paint_regions` (`src/core/regions.ts`) and `get_map_grid showRegions` — see [The region plane](#the-region-plane--the-sixth-layer) |
 
 **Still not in the server:**
 
@@ -1514,6 +1515,70 @@ clause matches where the opener was put.
   meaningful division at all, which is a fact about the cave generator rather than about this
   tool.
 
+### The region plane — the sixth layer
+
+`data[(z * height + y) * width + x]` has six planes. Five were reachable: 0-3 through
+`fill_map_region` and `paint_tiles`, 4 through `apply_wall_shadows`. **z=5, the region id, had
+no tool at all** — so a generated map could not carry an encounter zone, and none of the very
+many plugins keyed on region id could see anything.
+
+**What the engine does with it** — the strongest kind of claim here, straight from v1.9.0
+`rmmz_objects.js`:
+
+- `Game_Map.regionId(x, y)` is `this.isValid(x, y) ? this.tileId(x, y, 5) : 0`. The raw stored
+  value, no decoding, no tileset. Every other plane needs the tileset to mean anything; this
+  one does not, which is why the tool is small.
+- `Game_Player.meetsEncounterConditions` returns
+  `encounter.regionSet.length === 0 || encounter.regionSet.includes(this.regionId())`. That is
+  the entire mechanism for "wolves in the woods, not on the road".
+- Get Location Info (interpreter command 285) reads it into a variable at its `default:` case.
+
+**What the corpus says: nothing — and that is the finding.** Counted over all 293 sample maps:
+**0 write a single non-zero region tile**, and **all 293 ship an empty `encounterList`**. Across
+the user's own projects, 1 map of 64 uses the plane (Wicked Heart Map025: region id 1, 335 tiles
+in 11 disconnected areas, 5 of them a single tile), and 0 of 64 have an encounter list either.
+
+So the corpus cannot say how big a region should be, which ids mean what, or whether an area
+ought to be contiguous. `src/core/regions.ts` therefore invents no convention: it writes what
+the caller asks for and reports what it wrote. The one bound that is **stated, not measured** is
+the id range 1-255 — that is the editor's region palette, not an engine limit (`regionId` would
+happily return 4096), and it is refused because a value the editor cannot display is a value
+nobody can maintain by hand afterwards.
+
+**What `paint_regions` refuses**, each naming what was wrong:
+
+- an id outside 0-255, before writing anything;
+- a rectangle lying *entirely* off the map — clipping it to nothing and reporting success would
+  be the silent no-op this repo exists to avoid. A rectangle that merely *overruns* the edge is
+  clipped, matching `fill_map_region`, and the clipped bounds come back in the result;
+- a tile list with any entry off the map — all-or-nothing, like `paint_tiles`, because a partial
+  write leaves the caller unable to tell which half landed;
+- both a rectangle and a tile list in one call, or neither.
+
+**What it surfaces rather than hides:** how many of a region's tiles are impassable, computed
+with the same `Game_Map.checkPassage` port `check_map_walkability` uses. This is the failure
+mode nothing else catches — an encounter `regionSet` over tiles the player cannot stand on never
+fires, and neither the editor nor the engine complains. Driving the real server over stdio MCP
+against a generated 17x13 dungeon, an 8x5 region painted across it came back
+`3 of region 3's 40 tile(s) are impassable`; a single tile painted onto a wall came back as the
+stronger `all 1 tile(s) ... the player can never stand in it`.
+
+`get_map_grid` gained `showRegions`, which prints the plane as a second grid — a separate grid
+rather than a glyph in the first, because a region is orthogonal to terrain and a tile commonly
+has both. Ids 1-9 print as themselves so the usual case reads directly; higher ids get a letter
+and a legend line, since a cell is one character wide and an id can reach 255. When a map has
+regions and the caller did not ask to see them, the output says so rather than staying silent.
+
+**Verification note:** this is the one map-writing feature a PNG cannot check. The region plane
+is not drawn — `Tilemap` never reads z=5 — so `scripts/render-map.mjs` renders a map with
+regions identically to one without. The text grid *is* the visual check here, and the read-back
+above was done by driving the real server, not a test harness.
+
+**Still open here:** nothing generates regions. `generate_map_layout`, `generate_town` and
+`lock_dungeon_floor` all know exactly where their floor, streets and rooms are and could mark
+them without being told — tracked as P5-27. And no tool writes `encounterList`, so even a
+correctly regioned map has nothing to gate: that half belongs with P5-17.
+
 ### A2 columns predict nothing
 
 A documentation fix, but the measurement behind it changes what the docs are allowed to say.
@@ -1596,7 +1661,8 @@ That is the honest measure of what is missing:
   [A2 columns predict nothing](#a2-columns-predict-nothing). The claim turned out to be wrong
   in a bigger way than "off by one".
 - ~~The shadow (z=4) plane has no tool at all.~~ *Fixed:* `apply_wall_shadows`, and
-  `place_building` runs it. The region plane (z=5) still has none.
+  `place_building` runs it. ~~The region plane (z=5) still has none.~~ *Fixed:*
+  `paint_regions` — see [The region plane](#the-region-plane--the-sixth-layer).
 - A1 (water, waterfalls) is not supported, so a generated map can have no water.
 
 ### Still open
