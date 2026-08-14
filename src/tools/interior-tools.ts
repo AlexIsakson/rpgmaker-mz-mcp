@@ -140,7 +140,12 @@ function buildInterior(
 function styleSchema() {
   return {
     floorKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX).default(32)
-      .describe('A2 material for the floor'),
+      .describe(
+        'A2 material for the floor. Goes on layer 0 across the whole room, so it wants an ' +
+        'opaque ground material; an overlay would show the map background as black through ' +
+        'its edges. describe_tileset_materials says which kinds are ground for this tileset — ' +
+        'it is not predictable from the sheet column.'
+      ),
     wallTopKind: z.number().int().min(A4_KIND_MIN).max(A4_KIND_MAX).default(98)
       .describe(
         'A4 material for the wall. Must be a wall *top* — an even block row of the A4 sheet ' +

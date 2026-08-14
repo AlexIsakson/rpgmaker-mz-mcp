@@ -130,11 +130,47 @@ describe('classifyA2Sheet', () => {
     }
   });
 
-  it('records the sheet column, which callers use to reason about layout', () => {
+  it('records where in the sheet each kind sits', () => {
     const materials = classifyA2Sheet(makeSheet(() => [10, 10, 10, 255]));
     expect(materials.find((m) => m.kind === 16)?.column).toBe(0);
     expect(materials.find((m) => m.kind === 23)?.column).toBe(7);
     expect(materials.find((m) => m.kind === 24)?.column).toBe(0);
     expect(materials.find((m) => m.kind === 24)?.row).toBe(1);
+  });
+
+  /**
+   * The column says nothing about the material, and this is the test that keeps
+   * anyone from putting the shortcut back. Measured over the four A2 sheets the
+   * RTP ships (`scripts/measure-a2-columns.mjs`, 128 kinds): the columns that
+   * are opaque and outlined in every row are 1-3 in Outside_A2, 3 in
+   * Inside_A2, 2-5 in Dungeon_A2 and 0 in World_A2 — nothing in common. The
+   * sheet below inverts the old prose rule, making column 0 the outlined patch
+   * and column 4 the transparent overlay.
+   */
+  it('classifies by pixels, not by column position', () => {
+    const sheet = makeSheet((kind, qsx, qsy) => {
+      const column = kind % 8;
+      if (column === 0) {
+        // outlined ground where the rule expected a seamless fill
+        return isMiddle(qsx, qsy) ? [210, 200, 170, 255] : [50, 60, 40, 255];
+      }
+      if (column === 4) {
+        // an overlay where the rule expected a safe patch material
+        return isMiddle(qsx, qsy) ? [40, 160, 40, 255] : [0, 0, 0, 0];
+      }
+      return [120, 120, 120, 255];
+    });
+
+    for (const material of classifyA2Sheet(sheet)) {
+      if (material.column === 0) {
+        expect(material.opacity).toBe('ground');
+        expect(material.outline).toBe('outlined');
+      } else if (material.column === 4) {
+        expect(material.opacity).toBe('overlay');
+      } else {
+        expect(material.opacity).toBe('ground');
+        expect(material.outline).toBe('seamless');
+      }
+    }
   });
 });

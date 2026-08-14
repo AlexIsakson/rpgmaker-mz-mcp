@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 0 / 25**
+**Progress: 1 / 26**
 
 ---
 
@@ -14,12 +14,17 @@ Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engi
 
 Small, self-contained, and each removes a papercut that currently misleads or blocks a caller.
 
-- [ ] **P5-01 — Fix the `autotileKind` description**
+- [x] **P5-01 — Fix the `autotileKind` description**
   The parameter doc says "columns 1-4 are patch materials with visible outlines". Column 4 is the
   first *overlay* material, so a caller who follows the description lands straight in the
   transparent-holes bug the classifier exists to prevent. Correct the wording in the tool schema
   and check no other tool description repeats it.
   *Done when:* the description matches what `src/core/tileset-image.ts` actually classifies.
+  *Done:* `fill_map_region`'s own description had already been rewritten; the claim survived in
+  the ROADMAP verification caveat and in CLAUDE.md. Measured all four RTP A2 sheets with the new
+  `scripts/measure-a2-columns.mjs`: the sentence is wrong for 30 of the 64 kinds in columns 1-4,
+  and **no** column is opaque-and-outlined in all four sheets, so no column rule can be right.
+  See [A2 columns predict nothing](ROADMAP.md#a2-columns-predict-nothing). Turned up P5-26.
 
 - [ ] **P5-02 — Write the region plane (z=5)**
   Map data is `data[(z * height + y) * width + x]`; z 0–3 are tiles, z 4 is shadow, **z 5 is the
@@ -35,6 +40,16 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   caller has to allocate, remember the number, and pass it. Apply the same name resolution in the
   command converter.
   *Done when:* a command list can name a flag and the converter allocates or looks it up.
+
+- [ ] **P5-26 — Check the material in the generators that paint one**
+  *(turned up by P5-01.)* `fill_map_region`, `paint_tiles` and `generate_town` all consult
+  `loadA2Materials` before writing an A2 kind. `generate_map_layout` (`floorKind`,
+  `surroundKind`) and `generate_interior` (`floorKind`) do not — so they will paint a
+  transparent overlay across a whole floor and say nothing, which is the exact bug the
+  classifier was written to prevent, at a much larger scale than one `fill_map_region` call.
+  Their descriptions now warn; the code still does not check.
+  *Done when:* those three arguments are checked the way `fill_map_region` checks, the refusal
+  names the kind and the tileset, and `allowOverlayOnGround` exists as the deliberate override.
 
 ## M2 — Make the generators compose
 

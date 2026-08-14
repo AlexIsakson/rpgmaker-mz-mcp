@@ -83,9 +83,12 @@ Then, for anything that changes what a map looks like:
    is what the engine would draw.
 3. Look at it. Change something. Render again.
 
-When picking a test material, avoid A2 column 0 — it is a seamless fill whose edge pieces look
-identical to its middle pieces, so the render cannot reveal an error either way. Use columns 1–3,
-which have visible outlines.
+When picking a test material, avoid a **seamless** one — its edge pieces look identical to its
+middle pieces, so the render cannot reveal an error either way. In `Outside_A2` use kind 17, 18
+or 19. Do not turn that into a column rule: across the four A2 sheets the RTP ships, no column
+is opaque-and-outlined in all of them (`Outside_A2` 1–3, `Inside_A2` 3, `Dungeon_A2` 2–5,
+`World_A2` 0 — intersection empty). Ask `describe_tileset_materials`, or re-run
+`node scripts/measure-a2-columns.mjs`.
 
 ## Commit convention
 

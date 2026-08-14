@@ -34,13 +34,19 @@ export function registerMapgenTools(server: McpServer): void {
       mapId: z.number().int().positive().describe('Map ID to fill'),
       style: z.enum(['dungeon', 'cave']).describe('Layout algorithm'),
       floorKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX)
-        .describe(`A2 material for walkable floor (${A2_KIND_MIN}-${A2_KIND_MAX})`),
+        .describe(
+          `A2 material for walkable floor (${A2_KIND_MIN}-${A2_KIND_MAX}). It is painted on ` +
+          'the given layer, so it wants an opaque *ground* material — an overlay has ' +
+          'transparent edge pieces that render black. Which kinds are which cannot be read ' +
+          'off the sheet column; call describe_tileset_materials.'
+        ),
       surroundKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX)
         .describe(
           `Material for everything that is not floor. ${A2_KIND_MIN}-${A2_KIND_MAX} is A2 ground, ` +
           `48-79 A3 walls, 80-${AUTOTILE_KIND_MAX} A4 walls and wall tops — an A4 wall top makes ` +
           'a dungeon read as rooms with raised walls instead of two kinds of floor. Shapes are ' +
-          'computed with the right table either way.'
+          'computed with the right table either way. If you pass an A2 kind here it covers most ' +
+          'of the map, so the same warning as floorKind applies: check it is a ground material.'
         ),
       wallFaceKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX).optional()
         .describe(

@@ -1514,6 +1514,70 @@ clause matches where the opener was put.
   meaningful division at all, which is a fact about the cave generator rather than about this
   tool.
 
+### A2 columns predict nothing
+
+A documentation fix, but the measurement behind it changes what the docs are allowed to say.
+
+The repo carried a shortcut in prose: *"columns 1-4 are patch materials with visible
+outlines"*. It appeared in `autotileKind`'s description, in the verification caveat above and
+in CLAUDE.md's advice on picking a test material. Finding 1 had already established that the
+opaque/overlay split is per-tileset — but the shortcut survived anyway, in the one place a
+caller would read it, and following it lands directly in finding 1's black holes.
+
+**Measured** with `scripts/measure-a2-columns.mjs`, which runs the existing classifier
+(`src/core/tileset-image.ts`) over every A2 sheet the RTP ships and joins the result to the
+editor's own tile-label `.txt` files — 4 sheets, all 32 kinds each, 128 kinds total:
+
+| column | ground | overlay | empty | of the ground ones: outlined / seamless |
+|---|---|---|---|---|
+| 0 | 16 | 0 | 0 | 4 / 12 |
+| 1 | 12 | 4 | 0 | 4 / 8 |
+| 2 | 16 | 0 | 0 | 13 / 3 |
+| 3 | 12 | 4 | 0 | 12 / 0 |
+| 4 | 5 | 10 | 1 | 5 / 0 |
+| 5 | 7 | 5 | 4 | 7 / 0 |
+| 6 | 3 | 11 | 2 | 3 / 0 |
+| 7 | 3 | 9 | 4 | 3 / 0 |
+
+The old sentence is wrong for **30 of the 64 kinds in columns 1-4** — and wrong in both
+directions. Column 4 is an overlay 10 times out of 16 (`Bush` in `Outside_A2`,
+`Hole A (Orange Cave)` in `Inside_A2`), so a caller painting it on layer 0 gets the background
+showing through. Column 1 is a *seamless* ground 8 times out of 16 (`Ground B (Grass Maze)`,
+`Ground F (Stone Floor Brick)`), so a caller using it for a path gets no visible boundary.
+
+The stronger result is that **no column rule can be right**. The columns that are opaque *and*
+outlined in every row of their own sheet are:
+
+| sheet | safe columns |
+|---|---|
+| `Outside_A2` | 1, 2, 3 |
+| `Inside_A2` | 3 |
+| `Dungeon_A2` | 2, 3, 4, 5 |
+| `World_A2` | 0 |
+
+The intersection is empty. `World_A2` is the sheet that breaks every candidate: its column 0
+(`Grassland A`) is the only safe material it has, and it is the one column every other sheet
+uses for a seamless fill. Column 3 comes closest — 12 ground, all 12 outlined — but the other
+4 are `World_A2` overlays.
+
+**What changed:** the sentence is gone from every tool schema, from the module header and from
+CLAUDE.md, replaced by a pointer to `describe_tileset_materials`, which reads the actual sheet.
+`generate_map_layout`'s `floorKind`/`surroundKind` and `generate_interior`'s `floorKind` had no
+guidance at all and now carry the warning, since all three paint an A2 material across most of
+a map. `tests/core/tileset-image.test.ts` gained a case that classifies a synthetic sheet whose
+column 0 is an outlined patch and whose column 4 is a transparent overlay — the inverse of the
+old rule — so the shortcut cannot be reintroduced in the classifier without a red test.
+
+**Sample caveat:** 4 sheets is every A2 sheet the RTP ships and every one present in the
+user's projects, but it is not a sample of third-party or custom art. The claim proved here is
+the negative one — *no column rule holds across the sheets that exist* — which custom art can
+only strengthen.
+
+**Still open here:** the descriptions now warn, but `generate_map_layout` and
+`generate_interior` still do not *check*. `fill_map_region`, `paint_tiles` and `generate_town`
+consult `loadA2Materials`; those two do not, so they will paint an overlay across a whole floor
+without a word. That is a refusal the repo's own rule asks for — tracked as P5-26.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.
@@ -1526,9 +1590,11 @@ That is the honest measure of what is missing:
   map is now one call.
 - ~~A3 shapes had to be computed outside the server and written as raw tile ids, because shape
   computation is A2-only.~~ *Fixed:* `src/core/wall-autotile.ts`.
-- `autotileKind`'s description says "columns 1-4 are patch materials with visible outlines".
+- ~~`autotileKind`'s description says "columns 1-4 are patch materials with visible outlines".
   Column 4 is the first *overlay* material, so a caller following the description lands
-  directly in finding 1.
+  directly in finding 1.~~ *Fixed:* see
+  [A2 columns predict nothing](#a2-columns-predict-nothing). The claim turned out to be wrong
+  in a bigger way than "off by one".
 - ~~The shadow (z=4) plane has no tool at all.~~ *Fixed:* `apply_wall_shadows`, and
   `place_building` runs it. The region plane (z=5) still has none.
 - A1 (water, waterfalls) is not supported, so a generated map can have no water.
@@ -1575,11 +1641,15 @@ from `rmmz_core.js` and turns any map file into a PNG, which closes the loop: ge
 look, change something, render again. Every finding above came out of that loop, and several of
 them (the transparent-material holes especially) are invisible in a text grid.
 
-**Pick the test material carefully.** The first visual check used A2 column 0, which is the
-plain seamless fill — its edge pieces look identical to its middle pieces, so the render could
-not have revealed an error either way. Columns 1–4 are patch materials with visible outlines;
-use one of those. A control shape placed away from the map border, next to one touching it,
-makes border behaviour a direct comparison rather than a judgement call.
+**Pick the test material carefully.** The first visual check used A2 kind 16 — column 0 of
+`Outside_A2`, the plain seamless Meadow fill. Its edge pieces are drawn identically to its
+middle, so the render could not have revealed an error either way. Use an **opaque, outlined**
+material instead; in `Outside_A2` that is kinds 17, 18 and 19 (Dirt, Road, Cobblestones A).
+Do not generalise that to a column rule — see
+[A2 columns predict nothing](#a2-columns-predict-nothing) — ask
+`describe_tileset_materials` on any other tileset. A control shape placed away from the map
+border, next to one touching it, makes border behaviour a direct comparison rather than a
+judgement call.
 
 ## 6. Battle simulation *(engine tier)*
 

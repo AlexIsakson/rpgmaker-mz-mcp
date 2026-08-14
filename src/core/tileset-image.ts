@@ -13,12 +13,18 @@ import { sheetColumn, sheetRow } from './blueprint.js';
  *    are transparent. Painted on layer 0 those edges show the map background,
  *    which renders black in game. They belong on layer 1 or above, over ground.
  *
- *  - **Does it have an outline?** Column 0 of each A2 row is a seamless fill:
- *    its edge pieces are drawn identically to its middle, so a patch of it has
- *    no visible boundary and reads as a floating slab rather than a path.
+ *  - **Does it have an outline?** A seamless fill draws its edge pieces
+ *    identically to its middle, so a patch of it has no visible boundary and
+ *    reads as a floating slab rather than a path.
  *
- * Which slots are which varies by tileset — `Outside_A2` and `World_A2` have
- * completely different layouts — so this has to be measured, not tabulated.
+ * Which slots are which varies by tileset, and **no column rule survives
+ * contact with the four A2 sheets the RTP ships.** Measured with
+ * `scripts/measure-a2-columns.mjs` over all 128 of their kinds: the columns
+ * that are opaque *and* outlined in every row of their sheet are 1-3 in
+ * `Outside_A2`, 3 alone in `Inside_A2`, 2-5 in `Dungeon_A2` and 0 alone in
+ * `World_A2` — an empty intersection. Column 0 is the seamless fill in 12 of
+ * 16 rows, but all four exceptions are `World_A2`, where column 0 is the only
+ * safe column there is. So this is measured per sheet, not tabulated.
  *
  * The A2 sheet is 8 blocks across and 4 down; each block is 2 tiles wide by 3
  * tall, addressed in half-tiles as `bx = (kind % 8) * 2`, `by = (floor(kind / 8)
@@ -49,7 +55,11 @@ export type Outline = 'outlined' | 'seamless';
 
 export interface A2Material {
   kind: number;
-  /** Column within the A2 sheet, 0-7. Column 0 is conventionally the seamless fill. */
+  /**
+   * Column within the A2 sheet, 0-7. Reported so a caller can see the sheet's
+   * layout — not so it can predict `opacity` or `outline` from it, which the
+   * measurement above shows does not work.
+   */
   column: number;
   row: number;
   opacity: Opacity;

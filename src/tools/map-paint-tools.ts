@@ -277,7 +277,8 @@ export function registerMapPaintTools(server: McpServer): void {
           autotileKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX).optional()
             .describe(
               'Autotile material, as an alternative to tileId, when a cell should take part ' +
-              'in shape computation with its neighbours.'
+              'in shape computation with its neighbours. An A2 kind on layer 0 is checked ' +
+              'against the tileset image the same way fill_map_region checks it.'
             ),
           layer: z.number().int().min(0).max(TILE_LAYERS - 1).optional()
             .describe('Tile layer 0-3. Defaults to 0.'),
