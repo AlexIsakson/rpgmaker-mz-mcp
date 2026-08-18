@@ -229,3 +229,31 @@ describe('requireTileset', () => {
     expect(checkPassage(flags, [2816, 0], 0x02)).toBe(false);
   });
 });
+
+describe('a transfer whose destination is in variables', () => {
+  const inventory: MapRefInventory = {
+    mapIds: new Set([1, 2]),
+    mapSizes: new Map([[2, { width: 17, height: 13 }]]),
+  };
+  const fromVariables = {
+    type: 'transfer_player',
+    mapVariableId: 1,
+    xVariableId: 2,
+    yVariableId: 3,
+  };
+
+  it('is not counted as a target, since there is no static id to read', () => {
+    expect(transferTargets([fromVariables])).toEqual([]);
+  });
+
+  it('is not refused, and the limitation is reported rather than passed over', () => {
+    const result = checkMapRefs([fromVariables], inventory);
+    expect(result.targets).toEqual([]);
+    expect(result.notes.join(' ')).toContain('cannot be checked');
+    expect(result.notes.join(' ')).toContain('blank 100x100 void');
+  });
+
+  it('still checks a direct transfer sitting beside it', () => {
+    expect(() => checkMapRefs([fromVariables, transfer(9)], inventory)).toThrow(MapRefError);
+  });
+});

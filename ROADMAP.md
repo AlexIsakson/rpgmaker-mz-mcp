@@ -2152,6 +2152,96 @@ accepted; `create_event characterName: "NoSuchSheet"` refused; `characterName: "
 project; `create_map tilesetId: 5` accepted. `generate_town` on the same copy still writes its 10
 buildings with 10 door events, so the sheet check costs a working call nothing.
 
+### Designation is a fork in the engine
+
+Two commands carry a `params[0]` that decides whether the numbers after it are *values* or
+*variable ids*, and `convertCommand` hardcoded 0 on both — so half of each command was
+unreachable:
+
+```js
+command301: if (params[0] === 0) { troopId = params[1]; }
+            else if (params[0] === 1) { troopId = $gameVariables.value(params[1]); }
+            else { troopId = $gamePlayer.makeEncounterTroopId(); }
+
+command201: if (params[0] === 0) { mapId = params[1]; x = params[2]; y = params[3]; }
+            else { mapId = $gameVariables.value(params[1]); x = ...; y = ...; }
+```
+
+The transfer fork is the one worth pointing at: **one flag covers all three numbers.** There is
+no mixed mode where the map is literal and the coordinates come from variables, so a partial set
+is refused rather than quietly promoted — the two missing numbers would be read as variable ids
+either way.
+
+**The corpus settles nothing here, and says so loudly.** Swept across every project on this
+machine — 44 data directories, including the 293 sample maps, the `newdata` reference project,
+everything under `M:/Projects/RPGMZ`, and the VisuMZ sample — there are **926 maps, and not one
+uses designation 1 or 2**: all 13 `battle_processing` commands and all 766 `transfer_player`
+commands are designation 0. So the semantics come from the engine, exactly as they did for the
+region plane.
+
+**Designation 2 has a silent failure mode, and it is the default state of every map that
+exists.** `makeEncounterTroopId` returns 0 when nothing survives its filters, and 0 lands in
+`command301`'s `if ($dataTroops[troopId])`, which is null at index 0 — P5-33's failure again: no
+battle, no `setEventCallback`, and every win/escape/lose arm skipped, with nothing reported.
+
+```js
+makeEncounterTroopId: for (const e of $gameMap.encounterList()) {
+                        if (this.meetsEncounterConditions(e)) { list.push(e); weightSum += e.weight; }
+                      }
+                      if (weightSum > 0) { ...pick one... }
+                      return 0;
+meetsEncounterConditions: e.regionSet.length === 0 || e.regionSet.includes(this.regionId())
+```
+
+Measured with the new `scripts/measure-encounters.mjs`: **all 926 maps ship
+`encounterList: []`**, and every one ships `encounterStep: 30`, the editor default. Exactly **1
+of the 361 maps in the seven named projects paints a single region tile.** So a "same as random
+encounters" battle written today would do nothing, on every map on disk. That is why
+`checkEncounterSource` refuses rather than warns, and the refusal names the three ways a table
+can be unusable: empty, every row weight 0 (`weightSum > 0` guards the pick), or every row gated
+on a `regionSet` the map never paints.
+
+That last one is the P5-02 region plane finally load-bearing: `paint_regions` writes the plane
+`meetsEncounterConditions` matches against, and the refusal says so. Verified over stdio — the
+same command was refused, then accepted with *"3 of 3 row(s) can be picked"* after one
+`paint_regions` call put region 7 on the ground.
+
+A row naming a troop that is not in Troops.json is **warned about, not refused**: it fails only
+when the weighted roll lands on it, so the battle happens most times and vanishes occasionally,
+which is worse to diagnose than never — but it is the *map's* data rather than this command's,
+and refusing a battle over it would be over-reach.
+
+**The checks from P5-33 and P5-34 had to learn about designation**, and this is the part that
+would have rotted quietly. `database-refs.ts` was checking `troopId` with a fallback of 1, so a
+variable-driven battle would have "passed" a check that read a number the engine never looks at;
+it now skips the check and says it is skipping it. `map-refs.ts` was collecting transfer targets
+by reading `mapId`, so a dynamic transfer would have been checked against map 1. Both now call
+`battleDesignationOf` / `transferDesignationOf`, so one module decides.
+
+`describe_event` had the same bug in reverse: it read `params[1]` as a troop id whatever the
+designation, so a designation-2 battle read back as *"Battle Processing: troop 1"* — a troop the
+event never mentions. It now names the source. `collectReferences` likewise now counts the troop
+variable and a dynamic transfer's three variables as reads, which they are and nothing else in
+the list mentions.
+
+**Variable names work here the way P5-03 made them work elsewhere.** `troopVariableName`,
+`mapVariableName`, `xVariableName` and `yVariableName` allocate or reuse exactly as `switchName`
+does — and a variable holding a return destination is precisely the kind a real project names.
+The name-key list moved behind `usesFlagName` so the tool no longer restates it; adding a key
+used to mean remembering to widen a condition in `add_event_commands` as well.
+
+**Still open:** nothing in the server writes `encounterList`. Until it does, designation 2 is
+reachable only on a map whose encounters were set in the editor — which is the honest position,
+and the refusal says as much. That belongs with the encounter work (P5-17), where the table is
+the feature rather than a precondition.
+
+**Verified** by driving the real server over stdio against a scratch copy of `Learn` and reading
+the JSON back: `301 [2,1,true,true]` with 601/603/604 arms at the right indents, `301 [1,1,...]`
+pointing at the variable allocated as "Ambush troop", and `201 [1,2,3,4,8,1]` with the three
+destination variables allocated as "Return map"/"Return X"/"Return Y" and direction and fade
+still in `params[4]`/`params[5]`. Two sources on one battle refused naming both; a lone
+`mapVariableId` refused naming the two it was missing.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

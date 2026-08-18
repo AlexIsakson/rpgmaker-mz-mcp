@@ -295,3 +295,53 @@ describe('renderEventOverview', () => {
     expect(lines[2]).toBe('    p2: Action Button | when self-switch A is ON | 0 command(s)');
   });
 });
+
+describe('a battle command reads back as the source it actually uses', () => {
+  const battle = (extra: Record<string, unknown>) =>
+    convertCommand({ type: 'battle_processing', ...extra })[0];
+
+  it('names the troop id only at designation 0', () => {
+    expect(describeCommand(battle({ troopId: 4 }))).toContain('troop 4');
+  });
+
+  it('says which variable holds the troop at designation 1', () => {
+    // Reading params[1] as a troop id here would report "troop 12", a troop
+    // the event never mentions.
+    expect(describeCommand(battle({ troopVariableId: 12 }))).toContain('troop from variable 12');
+  });
+
+  it('does not invent a troop at designation 2, where params[1] is never read', () => {
+    const text = describeCommand(battle({ sameAsRandomEncounter: true }));
+    expect(text).toContain('encounter table');
+    expect(text).not.toMatch(/troop [0-9]/);
+  });
+});
+
+describe('collectReferences follows a designation into its variables', () => {
+  const refsFor = (...list: Record<string, unknown>[]) =>
+    collectReferences(
+      makeEvent([makePage({ list: [...list.flatMap((c) => convertCommand(c)), cmd(0)] })])
+    );
+
+  it('counts the troop variable as read', () => {
+    expect(refsFor({ type: 'battle_processing', troopVariableId: 6 }).variablesRead).toContain(6);
+  });
+
+  it('counts all three of a dynamic transfer, and still flags it dynamic', () => {
+    const refs = refsFor({
+      type: 'transfer_player',
+      mapVariableId: 1,
+      xVariableId: 2,
+      yVariableId: 3,
+    });
+    expect(refs.variablesRead).toEqual(expect.arrayContaining([1, 2, 3]));
+    expect(refs.hasDynamicTransfer).toBe(true);
+    expect(refs.transfersTo).toEqual([]);
+  });
+
+  it('still records a direct transfer as a static target', () => {
+    const refs = refsFor({ type: 'transfer_player', mapId: 7, x: 1, y: 1 });
+    expect(refs.transfersTo).toEqual([7]);
+    expect(refs.hasDynamicTransfer).toBe(false);
+  });
+});

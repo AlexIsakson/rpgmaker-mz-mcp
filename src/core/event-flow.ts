@@ -137,6 +137,25 @@ function describeTransfer(params: unknown[]): string {
   );
 }
 
+/**
+ * `params[0]` decides what `params[1]` is, so reading it as a troop id
+ * regardless would report a made-up troop for two of the three forms.
+ * `command301` designation 2 does not read `params[1]` at all.
+ */
+function describeBattle(params: unknown[]): string {
+  const designation = asNumber(params[0]);
+  const source =
+    designation === 0
+      ? `troop ${asNumber(params[1])}`
+      : designation === 1
+        ? `troop from variable ${asNumber(params[1])}`
+        : "troop from this map's encounter table";
+  return (
+    `Battle Processing: ${source}` +
+    `${params[2] ? ' (can escape)' : ''}${params[3] ? ' (can lose)' : ''}`
+  );
+}
+
 function describeRange(startId: number, endId: number, singular: string, plural: string): string {
   return startId === endId ? `${singular} ${startId}` : `${plural} ${startId}-${endId}`;
 }
@@ -220,7 +239,7 @@ export function describeCommand(cmd: EventCommand): string {
     case 282: return `Change Tileset to ${asNumber(p[0])}`;
     case 283: return 'Change Battle Background';
     case 284: return 'Change Parallax';
-    case 301: return `Battle Processing: troop ${asNumber(p[1])}${p[2] ? ' (can escape)' : ''}${p[3] ? ' (can lose)' : ''}`;
+    case 301: return describeBattle(p);
     case 302: return 'Shop Processing';
     case 303: return `Name Input Processing (actor ${asNumber(p[0])})`;
     case 311: return `Change HP (actor ${asNumber(p[1])})`;
@@ -419,7 +438,16 @@ function scanCommandList(list: EventCommand[], acc: RefAccumulator): void {
       }
       case 201:
         if (asNumber(p[0]) === 0) acc.transfersTo.push(asNumber(p[1]));
-        else acc.hasDynamicTransfer = true;
+        else {
+          acc.hasDynamicTransfer = true;
+          // The three variables holding the destination are read here, and
+          // nothing else in the list will mention them.
+          for (const i of [1, 2, 3]) acc.variablesRead.push(asNumber(p[i]));
+        }
+        break;
+      // command301 designation 1 reads params[1] as a variable id.
+      case 301:
+        if (asNumber(p[0]) === 1) acc.variablesRead.push(asNumber(p[1]));
         break;
     }
   }

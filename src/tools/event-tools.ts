@@ -9,7 +9,16 @@ import {
   describeResolutions,
   resolveCommandFlags,
   unusableFlagIds,
+  usesFlagName,
 } from '../core/command-flags.js';
+import {
+  battleDesignationOf,
+  checkEncounterSource,
+  resolveBattleDesignation,
+  resolveTransferDesignation,
+  DesignationError,
+} from '../core/designation.js';
+import { readRegion } from '../core/regions.js';
 import {
   assignIndents,
   maxIndent,
@@ -83,6 +92,25 @@ async function loadDatabaseTables(dataPath: string): Promise<DatabaseTables> {
     })
   );
   return tables;
+}
+
+/**
+ * The region ids this map's z=5 plane actually uses.
+ *
+ * `readRegion` reads `data[(5 * height + y) * width + x] ?? 0`, so a map whose
+ * data array is short of six planes reports no regions — which is what
+ * `Game_Map.regionId` answers for it too, and therefore the right answer for
+ * whether a region-gated encounter row can ever fire.
+ */
+function paintedRegions(mapData: MapData): Set<number> {
+  const ids = new Set<number>();
+  for (let y = 0; y < mapData.height; y++) {
+    for (let x = 0; x < mapData.width; x++) {
+      const id = readRegion(mapData, x, y);
+      if (id > 0) ids.add(id);
+    }
+  }
+  return ids;
 }
 
 async function readMap(dataPath: string, mapId: number): Promise<MapData> {
@@ -350,6 +378,18 @@ matched against Troops.json (a troop is content, not a slot, so an unknown
 name is refused rather than created), and a troop with no members is refused
 because the battle is won on its first frame.
 
+battle_processing and transfer_player each carry a designation, which decides
+whether the numbers after it are values or variable ids:
+- battle: troopId / troopName (direct), troopVariableId / troopVariableName
+  (read the troop id from a variable), or sameAsRandomEncounter: true (roll on
+  this map's encounter table). Exactly one — the others would be written and
+  never read. sameAsRandomEncounter is refused on a map whose encounterList
+  cannot produce a troop, because makeEncounterTroopId then returns 0 and the
+  battle silently does not happen.
+- transfer: mapId/x/y (direct), or mapVariableId/xVariableId/yVariableId — all
+  three together, since the engine has one flag covering all three numbers.
+  The *VariableName forms allocate the way switchName does.
+
   { type: "conditional_branch", conditionType: 0, switchName: "Gate open", param2: 0 },
   { type: "show_text", text: "It swings open." },
   { type: "else" },
@@ -408,9 +448,7 @@ An unbalanced list is refused, naming which block was left open and where.
         // project whose System.json is missing or unreadable.
         let resolved = commands as Record<string, unknown>[];
         const notes: string[] = [];
-        const namesUsed = commands.some(
-          (cmd) => cmd.switchName !== undefined || cmd.variableName !== undefined
-        );
+        const namesUsed = commands.some((cmd) => usesFlagName(cmd));
 
         if (namesUsed) {
           const systemPath = path.join(project.dataPath, 'System.json');
@@ -487,6 +525,67 @@ An unbalanced list is refused, naming which block was left open and where.
           }
         }
 
+        // Designation structure first: which source a command names is a
+        // question about the command alone, and answering it before the
+        // encounter table means a caller who gave two sources is told that,
+        // rather than being told the table is empty.
+        try {
+          for (let i = 0; i < resolved.length; i++) {
+            const cmd = resolved[i];
+            if (cmd.type === 'battle_processing') resolveBattleDesignation(cmd, i);
+            if (cmd.type === 'transfer_player') resolveTransferDesignation(cmd, i);
+          }
+        } catch (error) {
+          if (error instanceof DesignationError) {
+            return {
+              content: [{ type: 'text' as const, text: error.message }],
+              isError: true,
+            };
+          }
+          throw error;
+        }
+
+        // A "same as random encounters" battle takes its troop from *this*
+        // map's encounter table, so the map being written is the one to check.
+        // Every map on this machine ships an empty list, which is why an
+        // unusable table is a refusal rather than a note.
+        try {
+          const fromEncounters = resolved.some(
+            (cmd) => cmd.type === 'battle_processing' && battleDesignationOf(cmd) === 2
+          );
+          const troopRows = fromEncounters
+            ? ((await loadDatabaseTables(project.dataPath)).troops ?? [])
+            : [];
+          const regions = fromEncounters ? paintedRegions(mapData) : new Set<number>();
+
+          for (let i = 0; i < resolved.length; i++) {
+            const cmd = resolved[i];
+            if (cmd.type !== 'battle_processing' || battleDesignationOf(cmd) !== 2) continue;
+            const check = checkEncounterSource(
+              mapData.encounterList,
+              regions,
+              i,
+              mapId,
+              troopRows.length === 0
+                ? undefined
+                : (troopId) => troopId > 0 && troopId < troopRows.length && !!troopRows[troopId]
+            );
+            notes.push(
+              `Encounters: ${check.usable} of ${mapData.encounterList.length} row(s) on map ` +
+              `${mapId} can be picked, every ${mapData.encounterStep} steps.`,
+              ...check.notes
+            );
+          }
+        } catch (error) {
+          if (error instanceof DesignationError) {
+            return {
+              content: [{ type: 'text' as const, text: error.message }],
+              isError: true,
+            };
+          }
+          throw error;
+        }
+
         // Then the references the map itself carries. A transfer to a map with
         // no file does not fail quietly the way a database row does — the load
         // 404s and the next isMapLoaded() throws a LoadError, so the player
@@ -530,9 +629,19 @@ An unbalanced list is refused, naming which block was left open and where.
         // lines); all of them belong at the indent the source command got, or
         // the body would fall out of its own block.
         const convertedCommands: EventCommand[] = [];
-        for (const { command, indent } of placed) {
-          const converted = convertCommand(command as { type: string; [key: string]: unknown });
-          for (const c of converted) convertedCommands.push({ ...c, indent });
+        try {
+          for (const { command, indent } of placed) {
+            const converted = convertCommand(command as { type: string; [key: string]: unknown });
+            for (const c of converted) convertedCommands.push({ ...c, indent });
+          }
+        } catch (error) {
+          if (error instanceof DesignationError) {
+            return {
+              content: [{ type: 'text' as const, text: error.message }],
+              isError: true,
+            };
+          }
+          throw error;
         }
 
         const deepest = maxIndent(placed);

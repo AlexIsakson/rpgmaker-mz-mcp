@@ -241,3 +241,39 @@ describe('DatabaseRefError', () => {
     expect(() => check([{ type: 'battle_processing', troopId: 9 }])).toThrow(DatabaseRefError);
   });
 });
+
+describe('a battle whose troop is not a static id', () => {
+  it('does not check Troops.json, and says so', () => {
+    const result = checkDatabaseRefs(
+      [{ type: 'battle_processing', sameAsRandomEncounter: true }],
+      tables
+    );
+
+    // troopId would default to 1 and pass, which would be a meaningless pass.
+    expect(result.notes.join(' ')).toContain("encounter table");
+    expect(result.notes.join(' ')).toContain('$dataTroops[troopId]');
+  });
+
+  it('does not refuse the empty-troop case it cannot see', () => {
+    // Troop 3 in the fixture has no members. From a variable, nothing here can
+    // know that is the one that turns up.
+    expect(() =>
+      checkDatabaseRefs([{ type: 'battle_processing', troopVariableId: 4 }], tables)
+    ).not.toThrow();
+  });
+
+  it('still refuses a bad static id when the designation is direct', () => {
+    expect(() => checkDatabaseRefs([{ type: 'battle_processing', troopId: 9 }], tables)).toThrow(
+      DatabaseRefError
+    );
+  });
+
+  it('refuses a troopName alongside a variable troop', () => {
+    expect(() =>
+      checkDatabaseRefs(
+        [{ type: 'battle_processing', troopName: 'Treant', troopVariableId: 4 }],
+        tables
+      )
+    ).toThrow(/exactly one source/);
+  });
+});

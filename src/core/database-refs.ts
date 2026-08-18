@@ -53,6 +53,8 @@
  * This module is pure: it is handed the loaded tables and returns text.
  */
 
+import { battleDesignationOf } from './designation.js';
+
 export const DATABASE_NAMES = [
   'troops',
   'commonEvents',
@@ -210,6 +212,12 @@ export function checkDatabaseRefs(
             'battle_processing takes one.'
         );
       }
+      if (battleDesignationOf(command) !== 0) {
+        throw new DatabaseRefError(
+          `${ordinal(i)} gives troopName as well as a variable or encounter-table troop. ` +
+            'command301 reads params[0] and then takes exactly one source — pick one.'
+        );
+      }
       const resolved = resolveTroopName(command.troopName, tables.troops, i);
       if (resolved !== null) {
         command.troopId = resolved.id;
@@ -218,7 +226,22 @@ export function checkDatabaseRefs(
       delete command.troopName;
     }
 
+    // A battle whose troop comes from a variable or from the encounter table
+    // has no static id to check. Say so rather than checking the fallback and
+    // reporting a pass that means nothing.
+    const battleDesignation = type === 'battle_processing' ? battleDesignationOf(command) : 0;
+    if (battleDesignation !== 0) {
+      const source =
+        battleDesignation === 1 ? 'from a variable' : "from the map's encounter table";
+      notes.push(
+        `Note: ${ordinal(i)} takes its troop ${source}, so Troops.json cannot be checked ` +
+          "here — whatever id turns up at runtime lands in command301's " +
+          '`if ($dataTroops[troopId])`, and a miss is silent.'
+      );
+    }
+
     for (const ref of REFS[type] ?? []) {
+      if (battleDesignation !== 0 && ref.db === 'troops') continue;
       const raw = command[ref.field];
       const id = typeof raw === 'number' ? raw : ref.fallback;
       if (ref.zeroMeansParty && id === 0) continue;
@@ -226,7 +249,9 @@ export function checkDatabaseRefs(
     }
 
     if (type === 'shop_processing') checkGoods(command, tables, i);
-    if (type === 'battle_processing') checkTroopHasMembers(command, tables, i, notes);
+    if (type === 'battle_processing' && battleDesignation === 0) {
+      checkTroopHasMembers(command, tables, i, notes);
+    }
 
     out.push(command);
   }

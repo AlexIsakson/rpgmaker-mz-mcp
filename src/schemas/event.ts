@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  resolveBattleDesignation,
+  resolveTransferDesignation,
+} from '../core/designation.js';
 
 export const EventCommandSchema = z.object({
   code: z.number(),
@@ -238,13 +242,13 @@ export function convertCommand(cmd: {
     }
 
     case 'transfer_player': {
-      const mapId = (cmd.mapId as number) || 1;
-      const x = (cmd.x as number) || 0;
-      const y = (cmd.y as number) || 0;
+      // One designation flag covers map, x and y together — there is no mixed
+      // mode. See src/core/designation.ts.
+      const { designation, operands } = resolveTransferDesignation(cmd, 0);
       const direction = (cmd.direction as number) || 0;
       const fadeType = (cmd.fadeType as number) || 0;
       return [
-        { code: 201, indent: 0, parameters: [0, mapId, x, y, direction, fadeType] },
+        { code: 201, indent: 0, parameters: [designation, ...operands, direction, fadeType] },
       ];
     }
 
@@ -364,11 +368,14 @@ export function convertCommand(cmd: {
     }
 
     case 'battle_processing': {
-      const troopId = (cmd.troopId as number) || 1;
+      // params[0] is the designation and it decides what params[1] means —
+      // a troop id, a variable holding one, or nothing at all. See
+      // src/core/designation.ts.
+      const { designation, operand } = resolveBattleDesignation(cmd, 0);
       const canEscape = (cmd.canEscape as boolean) ?? true;
       const canLose = (cmd.canLose as boolean) ?? false;
       return [
-        { code: 301, indent: 0, parameters: [0, troopId, canEscape, canLose] },
+        { code: 301, indent: 0, parameters: [designation, operand, canEscape, canLose] },
       ];
     }
 

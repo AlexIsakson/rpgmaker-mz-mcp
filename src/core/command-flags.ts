@@ -82,8 +82,41 @@ const NAME_KEYS: Record<string, { key: string; kind: FlagKind }[]> = {
   ],
 };
 
+/**
+ * Names that resolve to an id and land in a named field, rather than steering a
+ * range or a branch. Added for the designation work: `battle_processing` and
+ * `transfer_player` can read their operands from variables, and a variable that
+ * drives a transfer destination is exactly the kind a project names.
+ */
+const DIRECT_NAME_KEYS: Record<string, { nameKey: string; idKey: string; kind: FlagKind }[]> = {
+  battle_processing: [
+    { nameKey: 'troopVariableName', idKey: 'troopVariableId', kind: 'variable' },
+  ],
+  transfer_player: [
+    { nameKey: 'mapVariableName', idKey: 'mapVariableId', kind: 'variable' },
+    { nameKey: 'xVariableName', idKey: 'xVariableId', kind: 'variable' },
+    { nameKey: 'yVariableName', idKey: 'yVariableId', kind: 'variable' },
+  ],
+};
+
 /** Every name key this module knows about, for the "no flag to name" refusal. */
-const ALL_NAME_KEYS = ['switchName', 'variableName'];
+const ALL_NAME_KEYS = [
+  'switchName',
+  'variableName',
+  ...Object.values(DIRECT_NAME_KEYS).flatMap((refs) => refs.map((r) => r.nameKey)),
+];
+
+/**
+ * Whether a command carries any flag name at all.
+ *
+ * `add_event_commands` uses this to decide whether System.json needs reading —
+ * an id-only caller keeps working in a project whose System.json is missing.
+ * Exported so the list of name keys stays in one place: adding a key here used
+ * to mean remembering to widen a condition in the tool as well.
+ */
+export function usesFlagName(cmd: Record<string, unknown>): boolean {
+  return ALL_NAME_KEYS.some((key) => cmd[key] !== undefined);
+}
 
 interface Arrays {
   switch: string[];
@@ -180,15 +213,25 @@ export function resolveCommandFlags(
     const type = typeof cmd.type === 'string' ? cmd.type : '';
     const where = `command ${i + 1} (${type || 'no type'})`;
     const accepted = NAME_KEYS[type] ?? [];
+    const direct = DIRECT_NAME_KEYS[type] ?? [];
 
     // A name on a command with no flag in it is a caller who believes something
     // is being gated when nothing is. Say so rather than dropping the key.
     for (const key of ALL_NAME_KEYS) {
       if (cmd[key] === undefined) continue;
-      if (!accepted.some((a) => a.key === key)) {
+      if (!accepted.some((a) => a.key === key) && !direct.some((d) => d.nameKey === key)) {
+        const takers = Object.entries({ ...NAME_KEYS, ...DIRECT_NAME_KEYS })
+          .filter(([, refs]) =>
+            (refs as { key?: string; nameKey?: string }[]).some(
+              (r) => (r.key ?? r.nameKey) === key
+            )
+          )
+          .map(([t]) => t);
         throw new CommandFlagError(
-          `${where} has no flag for ${key} to name. Only ${Object.keys(NAME_KEYS).join(', ')} ` +
-            'take a flag name.'
+          `${where} has no flag for ${key} to name. ` +
+            (takers.length > 0
+              ? `Only ${takers.join(', ')} take${takers.length === 1 ? 's' : ''} one.`
+              : `Only ${Object.keys(NAME_KEYS).join(', ')} take a flag name.`)
         );
       }
     }
@@ -205,6 +248,16 @@ export function resolveCommandFlags(
       (switchName !== undefined || variableName !== undefined)
     ) {
       applyBranchName(cmd, where, arrays, switchName, variableName, seen);
+    }
+
+    // A named operand resolves straight into its id field. The id alongside a
+    // name is the id to claim, the same as everywhere else in this module.
+    for (const ref of direct) {
+      const name = readName(cmd, ref.nameKey);
+      if (name === undefined) continue;
+      const requested = asOptionalInt(cmd[ref.idKey], `${where} ${ref.idKey}`);
+      cmd[ref.idKey] = resolveOne(arrays, ref.kind, name, requested, seen);
+      delete cmd[ref.nameKey];
     }
 
     delete cmd.switchName;

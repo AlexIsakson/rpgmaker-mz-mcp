@@ -71,6 +71,8 @@
  * This module is pure: it is handed what the project has and returns text.
  */
 
+import { transferDesignationOf } from './designation.js';
+
 export class MapRefError extends Error {}
 
 /** A map's dimensions, for the landing-square check. */
@@ -188,6 +190,7 @@ export function transferTargets(commands: readonly Record<string, unknown>[]): n
   const targets: number[] = [];
   for (const command of commands) {
     if (command.type !== 'transfer_player') continue;
+    if (transferDesignationOf(command) !== 0) continue;
     const raw = command.mapId;
     const mapId = typeof raw === 'number' && raw !== 0 ? raw : 1;
     if (mapId > 0 && !targets.includes(mapId)) targets.push(mapId);
@@ -211,6 +214,19 @@ export function checkMapRefs(
   for (let i = 0; i < commands.length; i++) {
     const command = commands[i];
     if (command.type !== 'transfer_player') continue;
+
+    // At designation 1 the destination is three variable ids read at runtime,
+    // so there is nothing here to resolve against the files on disk. Recorded
+    // rather than passed over in silence: this is the one transfer the server
+    // cannot vouch for.
+    if (transferDesignationOf(command) !== 0) {
+      notes.push(
+        `Note: ${ordinal(i)} takes its destination from variables, so the target map and ` +
+          'landing square cannot be checked. If the variables are unset the transfer goes to ' +
+          'map 0, which DataManager.loadMapData turns into a blank 100x100 void.'
+      );
+      continue;
+    }
 
     // `convertCommand` reads this as `(cmd.mapId as number) || 1`, so 0 and a
     // missing field both mean map 1 by the time the engine sees it.

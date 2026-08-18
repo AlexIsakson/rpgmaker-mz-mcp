@@ -3,6 +3,7 @@ import {
   resolveCommandFlags,
   unusableFlagIds,
   describeResolutions,
+  usesFlagName,
   CommandFlagError,
 } from '../../src/core/command-flags.js';
 import { convertCommand } from '../../src/schemas/event.js';
@@ -290,5 +291,85 @@ describe('describeResolutions', () => {
 
     expect(lines[0]).toContain('extending the switches array');
     expect(lines[1]).toContain('already existed and was reused');
+  });
+});
+
+describe('naming the variable a designation reads', () => {
+  it('resolves troopVariableName into troopVariableId', () => {
+    const result = resolveCommandFlags(
+      [{ type: 'battle_processing', troopVariableName: 'Ambush troop' }],
+      fresh(),
+      fresh()
+    );
+
+    const cmd = result.commands[0];
+    expect(cmd.troopVariableName).toBeUndefined();
+    expect(typeof cmd.troopVariableId).toBe('number');
+    expect(result.variables[cmd.troopVariableId as number]).toBe('Ambush troop');
+  });
+
+  it('resolves all three of a transfer destination, reusing one name across two slots', () => {
+    const result = resolveCommandFlags(
+      [
+        {
+          type: 'transfer_player',
+          mapVariableName: 'Return map',
+          xVariableName: 'Return X',
+          yVariableName: 'Return Y',
+        },
+        { type: 'battle_processing', troopVariableName: 'Return map' },
+      ],
+      fresh(),
+      fresh()
+    );
+
+    const [tp, bp] = result.commands;
+    expect(new Set([tp.mapVariableId, tp.xVariableId, tp.yVariableId]).size).toBe(3);
+    // The same name is one variable, wherever it turns up.
+    expect(bp.troopVariableId).toBe(tp.mapVariableId);
+    expect(result.resolutions).toHaveLength(3);
+  });
+
+  it('treats an id alongside the name as the id to claim', () => {
+    const result = resolveCommandFlags(
+      [{ type: 'battle_processing', troopVariableName: 'Ambush troop', troopVariableId: 9 }],
+      fresh(),
+      fresh()
+    );
+
+    expect(result.commands[0].troopVariableId).toBe(9);
+    expect(result.variables[9]).toBe('Ambush troop');
+  });
+
+  it('refuses a designation name on a command that has no such operand', () => {
+    expect(() =>
+      resolveCommandFlags([{ type: 'show_text', troopVariableName: 'Nope' }], fresh(), fresh())
+    ).toThrow(/no flag for troopVariableName to name/);
+  });
+
+  it('names the command that does take it', () => {
+    let message = '';
+    try {
+      resolveCommandFlags([{ type: 'battle_processing', xVariableName: 'Nope' }], fresh(), fresh());
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('transfer_player');
+  });
+});
+
+describe('usesFlagName', () => {
+  it('covers every name key, so the tool never has to list them again', () => {
+    for (const key of [
+      'switchName',
+      'variableName',
+      'troopVariableName',
+      'mapVariableName',
+      'xVariableName',
+      'yVariableName',
+    ]) {
+      expect(usesFlagName({ type: 'x', [key]: 'A name' })).toBe(true);
+    }
+    expect(usesFlagName({ type: 'battle_processing', troopId: 1 })).toBe(false);
   });
 });

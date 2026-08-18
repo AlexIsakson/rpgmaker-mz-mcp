@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 8 / 36**
+**Progress: 9 / 37**
 
 ---
 
@@ -147,7 +147,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   ten tools. Designation 1/2 recorded as out of reach — see P5-35. See
   [What the map points at](ROADMAP.md#what-the-map-points-at). Turned up P5-35 and P5-36.
 
-- [ ] **P5-35 — Emit the battle and transfer designations**
+- [x] **P5-35 — Emit the battle and transfer designations**
   *(turned up by P5-34.)* `convertCommand` hardcodes `params[0] = 0` on both `301` and `201`, so
   the two variable-driven forms cannot be written at all. `command301` designation 1 reads the
   troop id from a variable and 2 calls `$gamePlayer.makeEncounterTroopId()`; `command201`
@@ -156,6 +156,36 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   encounter-driven battle needs**, which makes this a dependency of P5-17 rather than a papercut.
   *Done when:* a battle can be "same as random encounters" and a transfer can take its
   destination from variables, with the variable ids resolvable by name the way P5-03 does it.
+  *Done:* `src/core/designation.ts` is the one place that knows which source a command names.
+  A battle takes `troopId`/`troopName`, `troopVariableId`/`troopVariableName`, or
+  `sameAsRandomEncounter` — exactly one, since the others would be written and never read; a
+  transfer takes `mapId`/`x`/`y` or all three `*VariableId`s, because **the engine has one
+  designation flag covering all three numbers** and a partial set is refused. Widened the sweep
+  from P5-34's five projects to **44 data directories, 926 maps: 0 use designation 1 or 2, all
+  926 ship `encounterList: []` and `encounterStep: 30`, and 1 of the 361 maps in the seven named
+  projects paints a single region tile** (`scripts/measure-encounters.mjs`). That last figure is
+  why designation 2 is **refused** on a map whose table cannot produce a troop —
+  `makeEncounterTroopId` returns 0, which is not a row, so it is P5-33's silent nothing all over
+  again. The region plane from P5-02 is finally load-bearing: a row gated on an unpainted
+  `regionSet` can never fire, and one `paint_regions` call turns the refusal into an acceptance.
+  Three things the work turned up: `database-refs.ts` was checking a `troopId` the engine would
+  never read, `map-refs.ts` was resolving a dynamic transfer against map 1, and `describe_event`
+  reported *"troop 1"* for a battle that names no troop — all three now read the designation. See
+  [Designation is a fork in the engine](ROADMAP.md#designation-is-a-fork-in-the-engine).
+  Turned up P5-37.
+
+- [ ] **P5-37 — Write a map's encounter table**
+  *(turned up by P5-35.)* Nothing in the server writes `encounterList` or `encounterStep`, so
+  designation 2 is reachable only on a map somebody set up in the editor — **0 of 926 maps on
+  this machine have a single row**. The shape is settled and small: `{ troopId, weight,
+  regionSet }`, picked by weight, filtered by `meetsEncounterConditions`, stepped by
+  `encounterStep` through `makeEncounterCount`. The reasoning that has to come with it is not
+  small, which is why this is P5-17's and not a five-line tool: which troops suit a floor's
+  depth, what weights mean next to each other, and whether the zones are regions or the whole
+  map. `checkEncounterSource` already knows how to say a table is unusable, so the writer has a
+  validator waiting for it.
+  *Done when:* a generated map can come back with encounters that `check_map_walkability`'s
+  player would actually meet, and `paint_regions` can scope them.
 
 - [ ] **P5-36 — Refuse a transfer that lands somewhere the player cannot stand**
   *(turned up by P5-34.)* P5-34 checks the landing square is *inside* the target map, which is
