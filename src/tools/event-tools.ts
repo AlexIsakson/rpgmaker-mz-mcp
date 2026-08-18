@@ -4,9 +4,22 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { FileHandler } from '../core/file-handler.js';
 import { requireProject } from './project-tools.js';
 import { convertCommand, type Event, type EventCommand } from '../schemas/event.js';
+import {
+  CommandFlagError,
+  describeResolutions,
+  resolveCommandFlags,
+  unusableFlagIds,
+} from '../core/command-flags.js';
 import { defaultEventPage, endCommand } from '../templates/defaults.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
+
+/** The System.json shape this file touches — the two names arrays. */
+interface SystemFile {
+  switches: string[];
+  variables: string[];
+  [key: string]: unknown;
+}
 
 function mapFilename(id: number): string {
   return `Map${String(id).padStart(3, '0')}.json`;
@@ -223,6 +236,19 @@ Supported command types:
 - control_variables: { type: "control_variables", startId: 1, operationType: 0, operand: 0, value: 100 }
 - control_self_switch: { type: "control_self_switch", key: "A", value: 0 }
 - conditional_branch: { type: "conditional_branch", conditionType: 0, param1: 1, param2: 0 }
+
+Switches and variables can be named instead of numbered. control_switches and
+conditional_branch (conditionType 0) take switchName; control_variables and
+conditional_branch (conditionType 1) take variableName. An existing flag of that
+name is reused, otherwise one is allocated exactly as allocate_switch would, and
+the result says which id it got:
+- { type: "control_switches", switchName: "Village gate open", value: 0 }
+- { type: "conditional_branch", conditionType: 0, switchName: "Village gate open", param2: 0 }
+A name on a command with no flag in it is refused rather than ignored.
+
+Known limitation: every command is emitted at indent 0, so a conditional_branch
+does not yet gate the commands after it — Game_Interpreter.skipBranch only skips
+commands indented deeper than the branch, and there are none.
 - common_event: { type: "common_event", eventId: 1 }
 - change_gold: { type: "change_gold", operation: 0, value: 100 }
 - change_items: { type: "change_items", itemId: 1, operation: 0, value: 1 }
@@ -260,8 +286,6 @@ Supported command types:
           };
         }
 
-        // Convert human-readable commands to RPG Maker MZ format
-        const convertedCommands: EventCommand[] = [];
         for (const cmd of commands) {
           if (!cmd.type || typeof cmd.type !== 'string') {
             return {
@@ -269,8 +293,84 @@ Supported command types:
               isError: true,
             };
           }
+        }
+
+        // Named flags become ids before conversion. System.json is only touched
+        // when a name is actually used, so an id-only caller keeps working in a
+        // project whose System.json is missing or unreadable.
+        let resolved = commands as Record<string, unknown>[];
+        const notes: string[] = [];
+        const namesUsed = commands.some(
+          (cmd) => cmd.switchName !== undefined || cmd.variableName !== undefined
+        );
+
+        if (namesUsed) {
+          const systemPath = path.join(project.dataPath, 'System.json');
+          const system = (await FileHandler.readJsonRaw(systemPath)) as SystemFile;
+          if (!Array.isArray(system.switches) || !Array.isArray(system.variables)) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: 'System.json has no switches/variables arrays. Refusing to guess at one.',
+              }],
+              isError: true,
+            };
+          }
+
+          let result;
+          try {
+            result = resolveCommandFlags(resolved, system.switches, system.variables);
+          } catch (error) {
+            if (error instanceof CommandFlagError) {
+              return {
+                content: [{ type: 'text' as const, text: error.message }],
+                isError: true,
+              };
+            }
+            throw error;
+          }
+
+          // Written before the map, so a name that resolved is a name that
+          // stays resolved even if the map write then fails.
+          if (result.changed) {
+            system.switches = result.switches;
+            system.variables = result.variables;
+            await FileHandler.writeJson(systemPath, system);
+          }
+          resolved = result.commands;
+          notes.push(...describeResolutions(result.resolutions));
+
+          // An id past the end of the array is silently unwritable and reads as
+          // false forever, so say it here — nothing at runtime will.
+          const unusable = unusableFlagIds(resolved, result.switches, result.variables);
+          for (const ref of unusable) {
+            notes.push(
+              `Warning: ${ref.kind} ${ref.id} is past the end of System.json's ` +
+              `${ref.kind === 'switch' ? 'switches' : 'variables'} array, which reaches ` +
+              `${ref.reach}. setValue is guarded by \`id < length\`, so that command does ` +
+              'nothing and every condition reading it is false forever. Allocate it first, ' +
+              `or use ${ref.kind === 'switch' ? 'switchName' : 'variableName'}.`
+            );
+          }
+        }
+
+        // Convert human-readable commands to RPG Maker MZ format
+        const convertedCommands: EventCommand[] = [];
+        for (const cmd of resolved) {
           const converted = convertCommand(cmd as { type: string; [key: string]: unknown });
           convertedCommands.push(...converted);
+        }
+
+        // Every command lands at indent 0, so skipBranch has nothing deeper to
+        // skip and a false branch runs its body anyway. Surface it rather than
+        // let a caller believe the gate holds.
+        if (convertedCommands.some((c) => c.code === 111)) {
+          notes.push(
+            'Warning: a conditional_branch was added, but every command is emitted at indent 0. ' +
+            'Game_Interpreter.skipBranch advances only while the next command is indented ' +
+            'deeper than the branch, so nothing is skipped and the commands after it run ' +
+            'whether the condition holds or not.'
+          );
         }
 
         const page = event.pages[pageIndex];
@@ -311,6 +411,9 @@ Supported command types:
         let msg = `Added ${convertedCommands.length} command(s) to event ${eventId}, page ${pageIndex} on map ${mapId}.`;
         if (autoPageAdded) {
           msg += `\n\nNote: Auto-added a blank page (self switch condition) to prevent autorun loop.`;
+        }
+        if (notes.length > 0) {
+          msg += `\n\n${notes.join('\n')}`;
         }
 
         return {

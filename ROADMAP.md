@@ -1643,6 +1643,109 @@ only strengthen.
 consult `loadA2Materials`; those two do not, so they will paint an overlay across a whole floor
 without a word. That is a refusal the repo's own rule asks for — tracked as P5-26.
 
+### Naming a flag in a command list
+
+`allocate_switch` gave a named flag an id, and both `place_lever` and `place_locked_door` took a
+`switchName` and allocated behind it. `add_event_commands` did not — a caller had to allocate
+first, remember the number, and hand it back as `startId`. Two ways of naming the same thing, and
+the one used to build the *logic* was the one that spoke only in numbers.
+
+**Measured** with `scripts/measure-flag-usage.mjs`, which counts every command code that carries a
+global switch or variable id across the sample maps, the `newdata` reference project and the three
+projects under `M:/Projects/RPGMZ`:
+
+| | samplemaps (293) | Wicked Heart (64) |
+|---|---|---|
+| 121 Control Switches | **0** | **43** |
+| 111 branch on a switch (type 0) | **0** | **23** |
+| switch page conditions | **0** | **62** |
+| common event trigger switch | 0 | 40 |
+| 122 Control Variables | **0** | **2** |
+| 111 branch on a variable (type 1) | **0** | **2** |
+| variable page conditions | 0 | 1 |
+| self-switch page conditions | 0 | 49 |
+
+Two findings, and the second is the one that decided the design:
+
+1. **The 293 sample maps contain no global switch or variable at all.** Not one 121, one 122, or
+   one switch page condition. As with the region plane, the corpus is silent here — the sample
+   maps are rooms, not scripts — so nothing about naming can be argued from it, and the command
+   shapes come from `Game_Interpreter` instead.
+2. **In the one project on hand with real logic in it, every referenced switch is named.** Wicked
+   Heart refers to **26 distinct switch ids and all 26 carry a name in System.json** (out of 28
+   named in total, so only 2 named flags are unused). Both variable ids it refers to are named as
+   well. The name is already the handle a real project works in; the id is bookkeeping the author
+   keeps in their head.
+
+So `src/core/command-flags.ts` rewrites `switchName` / `variableName` into ids before conversion,
+on the three commands where the traffic is: `control_switches`, `control_variables`, and
+`conditional_branch` on the type that actually reads a flag. Variables get the same machinery
+because it is the same allocation — but 2 and 2 is **far too thin a sample** to claim anything
+about how variables are used, and nothing was invented for them beyond the shape the engine
+defines.
+
+Names resolve the way `place_lever`'s does: an existing flag of that name is reused
+(case-insensitive, trimmed — the same `findFlag` comparison), otherwise one is allocated exactly
+as `allocate_switch` would, growing the array when it is full so the id is one `setValue` can
+actually reach. A `startId` alongside a name is the id to *claim*, not a second way of saying
+which flag. One name used by several commands in a batch resolves once and yields one id.
+
+**What it refuses**, each naming what was wrong:
+
+- a name on a command that has no flag in it — `{ type: "show_text", switchName: ... }` is a
+  caller who believes something is gated when nothing is, so the key is refused rather than
+  dropped;
+- `switchName` on a `conditional_branch` whose `conditionType` is not 0, or `variableName` on one
+  that is not 1. `command111` reads `params[1]` as a switch id only on type 0 and as a variable id
+  only on type 1; on type 2 it is a self-switch letter, on type 4 an actor id;
+- a name and an `endId` together — a name denotes one flag, and `command121` loops
+  `params[0]..params[1]`, so there is no range for a name to cover;
+- a branch naming both a switch and a variable;
+- renaming a flag that already carries a different name, which `allocateFlag` was already
+  refusing.
+
+Resolution runs over the whole list before anything is returned, so a refusal on command 7 leaves
+System.json untouched rather than stranding six freshly allocated flags behind a rejected batch.
+System.json is only opened when a name is actually used, so an id-only caller is unaffected by a
+project whose System.json is missing.
+
+**Two things it surfaces rather than hides:**
+
+- **An id past the end of the array.** `Game_Switches.setValue` is guarded by
+  `id < $dataSystem.switches.length` and `value()` is not guarded at all, so `Set switch 90 = ON`
+  in a 21-slot project does nothing and every condition reading it is false forever, with no
+  error at any point. `add_event_commands` now says so at write time — the only moment anything
+  can. Driven against a real project: *"switch 90 is past the end of System.json's switches array,
+  which reaches 20."*
+- **A conditional branch does not yet gate anything.** `convertCommand` emits every command at
+  `indent: 0`, and `Game_Interpreter.skipBranch` advances only `while (this._list[this._index +
+  1].indent > this._indent)` — so a false branch skips nothing and the commands after it run
+  regardless. Adding a `switchName` to a branch would otherwise be putting a good handle on a
+  broken thing. The warning is emitted whenever a 111 is added; the fix needs a nesting model
+  (`else`, `end`, per-command indent) and is tracked as **P5-28**.
+
+**One engine bug fixed on the way.** `conditional_branch` emitted three parameters for every
+condition type. `command111` case 1 (Variable) reads `params[3]` as the value to compare against
+and does `switch (params[4])` to pick the comparison — with three parameters that switch falls
+through every case and `result` stays `false`, so **a variable branch built through
+`add_event_commands` could never be taken**. It now emits the pair, defaulting to `== 0`, and
+accepts `param3` / `param4`. Type 0 still emits exactly the three parameters `command111` case 0
+reads, so nothing that worked before changed shape.
+
+**Verified** by driving the real server over stdio MCP against a copy of the `Learn` project:
+naming an unknown flag allocated switch 1 and reported it; the same name in the next call was
+reused rather than burning id 2; `startId: 3` alongside a new name claimed exactly 3; and the
+written JSON is `121 [1,1,0]`, `111 [0,1,0]` and `111 [1,1,0,3,1]` — the parameter shapes
+`command121` and `command111` read.
+
+**Still open here:** switch page conditions are the largest single count in the measurement (62)
+and no tool writes one at all, outside the generators that build their own pages — tracked as
+**P5-29**. `control_variables` with `operand: 2` (random) emits five parameters where
+`command122` reads `params[5]` as the range top, giving `Math.randomInt(NaN)` — tracked as
+**P5-30**. The read side of a variable operand (`params[4]` on 122, `params[3]` on a 111 type 1)
+still takes an id rather than a name; the corpus shows 0 uses of either, so nothing argues for it
+yet.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

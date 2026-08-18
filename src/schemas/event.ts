@@ -273,8 +273,17 @@ export function convertCommand(cmd: {
       const conditionType = (cmd.conditionType as number) || 0;
       const param1 = (cmd.param1 as number) || 0;
       const param2 = (cmd.param2 as number) || 0;
+      const parameters: unknown[] = [conditionType, param1, param2];
+      // A variable comparison (type 1) reads two more parameters: what to
+      // compare against and which comparison to use. command111 does
+      // `switch (params[4])` and falls through every case when it is undefined,
+      // leaving result false — so a three-parameter variable branch can never be
+      // taken. Emit the pair, defaulting to "== 0".
+      if (conditionType === 1 || cmd.param3 !== undefined || cmd.param4 !== undefined) {
+        parameters.push((cmd.param3 as number) ?? 0, (cmd.param4 as number) ?? 0);
+      }
       return [
-        { code: 111, indent: 0, parameters: [conditionType, param1, param2] },
+        { code: 111, indent: 0, parameters },
       ];
     }
 

@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 2 / 27**
+**Progress: 3 / 30**
 
 ---
 
@@ -39,12 +39,49 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   `meetsEncounterConditions`) and no convention was invented. See
   [The region plane](ROADMAP.md#the-region-plane--the-sixth-layer). Turned up P5-27.
 
-- [ ] **P5-03 — Resolve switch *names* in `add_event_commands`**
+- [x] **P5-03 — Resolve switch *names* in `add_event_commands`**
   `allocate_switch` gives a named flag an id, and `place_locked_door` accepts `switchName` and
   allocates behind it — but `add_event_commands` still takes `control_switches` by raw id, so a
   caller has to allocate, remember the number, and pass it. Apply the same name resolution in the
   command converter.
   *Done when:* a command list can name a flag and the converter allocates or looks it up.
+  *Done:* `src/core/command-flags.ts` rewrites `switchName` / `variableName` into ids on
+  `control_switches`, `control_variables` and `conditional_branch`, reusing an existing flag of
+  that name and otherwise allocating exactly as `allocate_switch` would. Measured with the new
+  `scripts/measure-flag-usage.mjs`: the 293 sample maps use **no** global switch or variable at
+  all, while `Wicked Heart` refers to **26 distinct switch ids and all 26 are named** — the name
+  is the handle a real project already works in. Fixed on the way: a variable `conditional_branch`
+  emitted 3 parameters where `command111` case 1 reads 5, so it could never be taken. See
+  [Naming a flag in a command list](ROADMAP.md#naming-a-flag-in-a-command-list). Turned up P5-28,
+  P5-29 and P5-30.
+
+- [ ] **P5-28 — Make a conditional branch actually gate**
+  *(turned up by P5-03.)* `convertCommand` emits every command at `indent: 0`, and
+  `Game_Interpreter.skipBranch` advances only `while (list[index + 1].indent > this._indent)` —
+  so a false branch skips nothing and the commands after it run either way. Every
+  `conditional_branch` built through `add_event_commands` is decorative today; the tool now
+  warns, which is not the same as working. Needs a nesting model: per-command `indent`, plus
+  `else` (411) and the branch/loop end markers (412, 413) as command types.
+  *Done when:* a branch whose condition is false skips its body, asserted against a port of
+  `skipBranch` rather than against itself.
+
+- [ ] **P5-29 — Write page conditions**
+  *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic
+  gates itself — 62 uses in `Wicked Heart`, against 43 Control Switches and 23 conditional
+  branches — and no tool writes one. `create_event` and `update_event` do not touch
+  `page.conditions` at all; only the generators that build their own pages (`lever.ts`,
+  `locked-door.ts`, `vault.ts`) ever set one. A caller can set a switch but cannot make anything
+  respond to it.
+  *Done when:* a page's switch / variable / self-switch / item / actor conditions can be set,
+  by name where the flag has one, and `describe_event` reads them back.
+
+- [ ] **P5-30 — Fix the random operand on `control_variables`**
+  *(turned up by P5-03.)* `convertCommand` emits 5 parameters for code 122. `command122`
+  operand 2 (Random) reads `params[5]` as the top of the range: `randomMax = params[5] -
+  params[4] + 1` is `NaN`, `Math.max(NaN, 1)` is `NaN`, and the variable is set to `NaN`. Same
+  class of bug as the conditional branch P5-03 fixed, in the same converter.
+  *Done when:* a random assignment emits the range top, and operands 3 (game data) and 4
+  (script) either work or are refused by name.
 
 - [ ] **P5-26 — Check the material in the generators that paint one**
   *(turned up by P5-01.)* `fill_map_region`, `paint_tiles` and `generate_town` all consult
