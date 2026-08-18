@@ -24,6 +24,7 @@ import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import { TilesetReader } from '../core/tileset-reader.js';
 import { loadA2Materials } from '../core/tileset-image.js';
+import { checkGroundKinds, overlayKindsAmong } from '../core/ground-material.js';
 import { applyWallShadows } from '../core/shadows.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
@@ -126,39 +127,28 @@ export function registerMapPaintTools(server: McpServer): void {
         // Whether a material can go on layer 0, and whether it will show a
         // boundary, are properties of the tileset image — check them before
         // painting rather than leaving the caller to discover it in a render.
-        // Only the A2 family is classified; walls are opaque by construction.
+        // Shared with the generators, which paint far more in one call than
+        // this does; see src/core/ground-material.ts.
         if (autotileKind !== undefined && isTileA2(resolvedTileId)) {
           const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
-          const materials = await loadA2Materials(project.path, tileset.tilesetNames);
-          const material = materials?.find((m) => m.kind === autotileKind);
-
-          if (material && material.opacity !== 'ground' && layer === 0 && !allowOverlayOnGround) {
+          const check = checkGroundKinds(
+            [{
+              kind: autotileKind,
+              label: 'autotileKind',
+              layer,
+              coversMap: clippedWidth >= mapData.width && clippedHeight >= mapData.height,
+            }],
+            await loadA2Materials(project.path, tileset.tilesetNames),
+            tileset.name,
+            { allowOverlayOnGround }
+          );
+          if (check.refusal !== null) {
             return {
-              content: [{
-                type: 'text' as const,
-                text:
-                  `A2 kind ${autotileKind} in "${tileset.name}" is ${material.opacity === 'empty' ? 'an empty slot' : 'an overlay material'}: ` +
-                  'its edge pieces are transparent, so on layer 0 they show the map ' +
-                  'background, which renders black in game.\n\n' +
-                  'Paint it on layer 1 or above, over a ground material on layer 0. ' +
-                  'Use describe_tileset_materials to see which kinds are ground and which ' +
-                  'are overlays for this tileset, or pass allowOverlayOnGround if this is ' +
-                  'deliberate.',
-              }],
+              content: [{ type: 'text' as const, text: check.refusal }],
               isError: true,
             };
           }
-
-          const coversMap = clippedWidth >= mapData.width && clippedHeight >= mapData.height;
-          if (material && material.outline === 'seamless' && !coversMap) {
-            advice.push(
-              `Note: A2 kind ${autotileKind} is a seamless fill — its edge pieces are drawn ` +
-              'the same as its middle, so this patch will have no visible boundary and will ' +
-              'read as a floating slab rather than a path. Seamless materials suit a ' +
-              'whole-map base fill; for a path or patch use an outlined material ' +
-              '(describe_tileset_materials lists them).'
-            );
-          }
+          advice.push(...check.notes);
         }
 
         const grid = readLayer(mapData, layer);
@@ -342,7 +332,6 @@ export function registerMapPaintTools(server: McpServer): void {
         // The whole batch is checked before any of it is written. A partial
         // application would be worse than a refusal: you could not tell from the
         // result which tiles had landed.
-        const overlayKinds = new Set<number>();
         const groundKinds = new Set(
           resolved
             .filter((t) => t.layer === 0 && isTileA2(t.tileId))
@@ -350,19 +339,22 @@ export function registerMapPaintTools(server: McpServer): void {
         );
         if (groundKinds.size > 0 && !allowOverlayOnGround) {
           const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
-          const materials = await loadA2Materials(project.path, tileset.tilesetNames);
-          for (const kind of groundKinds) {
-            const material = materials?.find((m) => m.kind === kind);
-            if (material && material.opacity !== 'ground') overlayKinds.add(kind);
-          }
-          if (overlayKinds.size > 0) {
+          // The judgement is shared (src/core/ground-material.ts); the remedy is
+          // not. Here the fix is to move entries of the batch to another layer,
+          // rather than to pick a different material.
+          const overlayKinds = overlayKindsAmong(
+            groundKinds,
+            await loadA2Materials(project.path, tileset.tilesetNames)
+          );
+          if (overlayKinds.length > 0) {
             return {
               content: [{
                 type: 'text' as const,
                 text:
-                  `A2 kind(s) ${[...overlayKinds].join(', ')} in "${tileset.name}" are overlay ` +
-                  'materials: their edge pieces are transparent, so on layer 0 they show the map ' +
-                  'background, which renders black in game. Nothing was written.\n\n' +
+                  `A2 kind(s) ${overlayKinds.join(', ')} in "${tileset.name}" are overlay ` +
+                  'materials or empty slots: their edge pieces are transparent, so on layer 0 ' +
+                  'they show the map background, which renders black in game. Nothing was ' +
+                  'written.\n\n' +
                   'Move those entries to layer 1 or above over a ground material, use ' +
                   'describe_tileset_materials to see which kinds are ground, or pass ' +
                   'allowOverlayOnGround if this is deliberate.',

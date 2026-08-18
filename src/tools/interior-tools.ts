@@ -26,6 +26,8 @@ import {
   type InteriorPlan,
 } from '../core/interiorgen.js';
 import { isDoorEvent, setDoorDestination } from '../core/blueprint.js';
+import { checkGroundKinds } from '../core/ground-material.js';
+import { loadA2Materials } from '../core/tileset-image.js';
 import { addEvent } from '../core/building-placement.js';
 import { collectProps, findProps, propCells, type Prop } from '../core/props.js';
 import { requireProject } from './project-tools.js';
@@ -202,6 +204,11 @@ export function registerInteriorTools(server: McpServer): void {
         .describe('Map holding the door that should lead here'),
       linkFromEventId: z.number().int().positive().optional()
         .describe('The door event on that map'),
+      allowOverlayOnGround: z.boolean().default(false)
+        .describe(
+          'Lay an overlay A2 material as the floor anyway. Refused by default because its ' +
+          'transparent edges render as black across the whole room.'
+        ),
       ...styleSchema(),
     },
     async (args) => {
@@ -275,6 +282,17 @@ export function registerInteriorTools(server: McpServer): void {
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
         const catalogue = collectProps(tileset.tilesetNames);
 
+        // The floor goes on layer 0 across the whole room, with nothing under
+        // it. An overlay material here is a black room. Checked before the map
+        // is wiped, so a refusal leaves the map as it was.
+        const groundCheck = checkGroundKinds(
+          [{ kind: style.floorKind, label: 'floorKind', layer: 0, coversMap: true }],
+          await loadA2Materials(project.path, tileset.tilesetNames),
+          tileset.name,
+          { allowOverlayOnGround: args.allowOverlayOnGround, reportUncheckable: true }
+        );
+        if (groundCheck.refusal !== null) return errorResult(groundCheck.refusal);
+
         // A fresh room, not a room layered over whatever was there.
         mapData.data = new Array(mapData.width * mapData.height * 6).fill(0);
         mapData.events = [null];
@@ -309,6 +327,7 @@ export function registerInteriorTools(server: McpServer): void {
         if (result.missing.length > 0) {
           lines.push(`Not in this tileset, so skipped: ${result.missing.join(', ')}.`);
         }
+        lines.push(...groundCheck.notes);
         lines.push(
           '',
           renderInteriorAscii(plan),

@@ -12,6 +12,9 @@ import {
   type GeneratedLayout,
 } from '../core/mapgen.js';
 import { getAutotileKind, TILE_ID_A2, TILE_ID_A3, TILE_ID_MAX } from '../core/autotile.js';
+import { checkGroundKinds } from '../core/ground-material.js';
+import { loadA2Materials } from '../core/tileset-image.js';
+import { TilesetReader } from '../core/tileset-reader.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import type { MapData } from '../schemas/map.js';
@@ -56,6 +59,11 @@ export function registerMapgenTools(server: McpServer): void {
         ),
       seed: z.number().int().default(1).describe('Same seed reproduces the same layout'),
       layer: z.number().int().min(0).max(TILE_LAYERS - 1).default(0).describe('Tile layer 0-3'),
+      allowOverlayOnGround: z.boolean().default(false)
+        .describe(
+          'Paint an overlay A2 material on layer 0 anyway. Refused by default because its ' +
+          'transparent edges render as black across the whole layout.'
+        ),
       roomAttempts: z.number().int().positive().default(40)
         .describe('dungeon: how many times to try placing a room; higher is denser'),
       minRoomSize: z.number().int().positive().default(3).describe('dungeon: smallest room side'),
@@ -82,7 +90,7 @@ export function registerMapgenTools(server: McpServer): void {
         ),
     },
     async ({
-      mapId, style, floorKind, surroundKind, wallFaceKind, seed, layer,
+      mapId, style, floorKind, surroundKind, wallFaceKind, seed, layer, allowOverlayOnGround,
       roomAttempts, minRoomSize, maxRoomSize, irregularRoomChance, deadEndAttempts,
       fillProbability, structureSteps, smoothingSteps, pillarDensity,
     }) => {
@@ -115,6 +123,31 @@ export function registerMapgenTools(server: McpServer): void {
               type: 'text' as const,
               text: `Map is ${width}x${height}, too small to generate into. Resize it to at least 5x5 first.`,
             }],
+            isError: true,
+          };
+        }
+
+        // Both materials go down across the whole map, so an overlay here is the
+        // transparent-holes bug at the largest scale there is. Checked before
+        // generating, so a refusal costs nothing.
+        const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
+        const materials = await loadA2Materials(project.path, tileset.tilesetNames);
+        const groundCheck = checkGroundKinds(
+          [
+            // coversMap: floor and surround are large contiguous areas of
+            // *different* materials, so the boundary reads by colour whether or
+            // not either is seamless. The patch advice would fire on almost
+            // every valid call.
+            { kind: floorKind, label: 'floorKind', layer, coversMap: true },
+            { kind: surroundKind, label: 'surroundKind', layer, coversMap: true },
+          ],
+          materials,
+          tileset.name,
+          { allowOverlayOnGround, reportUncheckable: true }
+        );
+        if (groundCheck.refusal !== null) {
+          return {
+            content: [{ type: 'text' as const, text: groundCheck.refusal }],
             isError: true,
           };
         }
@@ -176,6 +209,8 @@ export function registerMapgenTools(server: McpServer): void {
             ? 'All open tiles are reachable from the start position.'
             : `WARNING: only ${stats.reachableTiles} of ${stats.openTiles} open tiles are reachable from the start position.`,
         ];
+
+        lines.push(...groundCheck.notes);
 
         if (width <= PREVIEW_LIMIT && height <= PREVIEW_LIMIT) {
           lines.push('', 'Layout (. open, # solid, @ start):', renderLayoutAscii(layout));

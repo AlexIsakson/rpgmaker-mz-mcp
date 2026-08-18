@@ -8,6 +8,7 @@ import { applyPlacements, type Placement } from '../core/tile-batch.js';
 import { applyWallShadows } from '../core/shadows.js';
 import { TilesetReader } from '../core/tileset-reader.js';
 import { loadA2Materials } from '../core/tileset-image.js';
+import { checkGroundKinds } from '../core/ground-material.js';
 import { placeBuildingOnMap, BuildingPlacementError } from '../core/building-placement.js';
 import { planTown, renderTownAscii, TownError, TOWN_DEFAULTS } from '../core/towngen.js';
 import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
@@ -70,13 +71,20 @@ export function registerTowngenTools(server: McpServer): void {
       seed: z.number().int().default(1).describe('Layout seed; the same seed reproduces the town'),
       groundKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX).default(A2_KIND_MIN)
         .describe(
-          'A2 material for the ground. Wants a seamless fill, since it covers the whole map — ' +
-          'describe_tileset_materials says which are which.'
+          'A2 material for the ground. Must be an opaque *ground* material — it covers the ' +
+          'whole of layer 0, so an overlay renders black everywhere. A seamless fill suits it ' +
+          'best, since there is no edge for an outline to draw. describe_tileset_materials ' +
+          'says which kinds are which for this tileset.'
         ),
       roadKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX).optional()
         .describe(
           'A2 material for the streets. Wants an outlined material so the road reads as a road ' +
           'against the ground. Omit to leave the streets as bare ground.'
+        ),
+      allowOverlayOnGround: z.boolean().default(false)
+        .describe(
+          'Lay an overlay A2 material as the ground or the streets anyway. Refused by default ' +
+          'because its transparent edges render as black.'
         ),
       roofSets: z.array(z.enum(ROOF_SET_NAMES as [string, ...string[]])).optional()
         .describe(
@@ -158,6 +166,23 @@ export function registerTowngenTools(server: McpServer): void {
             'A3 roof materials from this tileset, or use a tileset built on Outside_C.'
           );
         }
+        // The ground covers every tile of layer 0 and the streets run across it.
+        // groundKind went unchecked until now, which made this the largest
+        // unguarded overlay paint in the server — bigger than the fill_map_region
+        // call the check was written for. Checked before the map is cleared.
+        const groundCheck = checkGroundKinds(
+          [
+            { kind: groundKind, label: 'groundKind', layer: 0, coversMap: true },
+            ...(roadKind === undefined
+              ? []
+              : [{ kind: roadKind, label: 'roadKind', layer: 0, coversMap: false }]),
+          ],
+          await loadA2Materials(project.path, tileset.tilesetNames),
+          tileset.name,
+          { allowOverlayOnGround: args.allowOverlayOnGround, reportUncheckable: true }
+        );
+        if (groundCheck.refusal !== null) return errorResult(groundCheck.refusal);
+
         const usingSets = 'roofSet' in roofChoices[0];
         if (usingSets && wallKind === undefined) {
           return errorResult(
@@ -212,26 +237,11 @@ export function registerTowngenTools(server: McpServer): void {
         }
         writeLayer(mapData, 0, ground);
 
-        // Streets want a material with a visible outline or they do not read as
-        // streets — the same advice fill_map_region gives, checked here because
-        // nothing else will look at it.
-        if (roadKind !== undefined) {
-          const materials = await loadA2Materials(project.path, tileset.tilesetNames);
-          const road = materials?.find((m) => m.kind === roadKind);
-          if (road?.outline === 'seamless') {
-            notes.push(
-              `A2 kind ${roadKind} is a seamless fill, so the streets will have no visible edge ` +
-              'against the ground and will not read as streets. An outlined material works better ' +
-              '— describe_tileset_materials lists them.'
-            );
-          }
-          if (road && road.opacity !== 'ground') {
-            notes.push(
-              `A2 kind ${roadKind} is an overlay material, so its edges are transparent and the ` +
-              'streets will show the map background as black. Pick a ground material.'
-            );
-          }
-        }
+        // The overlay half of this used to be a note here; it is now a refusal
+        // made before anything was written. What is left is the advice: a
+        // seamless street has no edge against the ground and does not read as a
+        // street.
+        notes.push(...groundCheck.notes);
 
         // --- buildings ---
         let placed = 0;

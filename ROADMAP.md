@@ -1746,6 +1746,84 @@ and no tool writes one at all, outside the generators that build their own pages
 still takes an id rather than a name; the corpus shows 0 uses of either, so nothing argues for it
 yet.
 
+### One place decides whether a material can go on the ground
+
+Visual review finding 1 said an A2 material whose edge pieces are transparent is an *overlay*:
+on layer 0 there is nothing beneath it but the map background, and `Tilemap` draws that black.
+`fill_map_region` and `paint_tiles` refused it. **The generators, which paint far more of a map
+in a single call than either, did not check at all** — `generate_map_layout` would lay an
+overlay across every open tile of a dungeon, `generate_interior` across a whole room, and
+`generate_town` across the entire ground layer, each without a word.
+
+`generate_town` is the sharpest case of how this happened: it *did* consult `loadA2Materials`,
+but only for `roadKind`. `groundKind` — the fill that covers every tile of layer 0, the largest
+single paint in the server — went past it unlooked-at. Five near-copies of one check, and the
+biggest paint fell through the gap between them.
+
+**How big the trap is, measured** by running the existing classifier (`classifyA2Sheet`) over
+all four A2 sheets the RTP ships — 32 kinds each, 128 in all:
+
+| sheet | ground | overlay | empty | share unusable on layer 0 |
+|---|---|---|---|---|
+| `Dungeon_A2` | 26 | 4 | 2 | 19% |
+| `Inside_A2` | 23 | 5 | 4 | 28% |
+| `Outside_A2` | 17 | 11 | 4 | 47% |
+| `World_A2` | 8 | 23 | 1 | **75%** |
+| **total** | **74** | **43** | **11** | **42%** |
+
+**54 of 128 kinds cannot go on layer 0**, and on `World_A2` only 8 of 32 can. A caller choosing a
+kind without asking is wrong about two-fifths of the time. That is the argument for a refusal
+rather than a note.
+
+The two shipped defaults are safe — kind 16 (`generate_town`'s `groundKind`) and kind 32
+(`generate_interior`'s `floorKind`) classify as ground on all four sheets — so the trap only
+springs when a caller chooses, which is exactly when nothing else is watching.
+
+`src/core/ground-material.ts` is now the one place that decides. It is pure: handed
+already-classified materials, it returns a refusal or a note. Wired into `generate_map_layout`
+(`floorKind`, `surroundKind`), `generate_interior` (`floorKind`), `generate_town` (`groundKind`,
+`roadKind`) and `fill_map_region`. All four gained `allowOverlayOnGround` as the deliberate
+override, matching what `fill_map_region` and `paint_tiles` already had.
+
+`paint_tiles` keeps its own wording and takes only the judgement, through
+`overlayKindsAmong`. Its remedy is genuinely different — "move those entries of the batch to
+another layer", not "pick a different argument" — and flattening the two into one sentence would
+have made the batch message worse. One place decides what is bad; each tool phrases its own fix.
+
+**What the refusals do**, in each case naming the kind, the argument it came from, and the
+tileset — driven against a real project on the `Outside` tileset:
+
+- *"A2 kind 22 (floorKind) is an overlay material — in tileset "Outside"."*
+- *"A2 kind 23 (roadKind) is an empty slot on the sheet"* — an empty slot is a different fault
+  from an overlay and is named as one.
+- Every bad argument in one call is listed together, so a caller who got both `floorKind` and
+  `surroundKind` wrong is told about both rather than finding the second after fixing the first.
+- The check runs **before** anything is written — before `generate_town` clears the map's events
+  and before `generate_interior` wipes the tile data — so a refusal leaves the map as it was.
+
+**What it deliberately does not refuse:**
+
+- a non-A2 kind. `surroundKind` takes an A4 wall top as often as a ground material, and walls are
+  opaque by construction — there is nothing to check;
+- anything above layer 0, which is where overlays belong;
+- an unreadable A2 sheet. `loadA2Materials` returns null for a missing PNG, and failing a whole
+  generation over that would be worse than the bug. The generators pass `reportUncheckable` and
+  say the check did not happen, so a later black patch has a stated cause; the paint tools stay
+  quiet, because a line on every call is noise.
+
+**Verified by PNG, which is the only thing that could settle it.** Two 20x15 maps, same seed and
+therefore the same layout, differing in one argument. With `floorKind: 22` forced through by
+`allowOverlayOnGround`, the render is a black dungeon with fence posts standing in it — kind 22
+in `Outside_A2` is a fence. With `floorKind: 17` it is sand with grass edges. Until this commit
+the first was what a caller got, with a success message and no warning. `check_map_walkability`
+on the accepted map reports 300 of 300 standable in one connected area — unchanged, as expected:
+this touches what a material *looks* like, not what the passage flags say.
+
+**Still open here:** the seamless advice is the same judgement in a weaker form and only
+`fill_map_region` and `generate_town`'s `roadKind` ask for it. `generate_map_layout` suppresses
+it deliberately — floor and surround are different materials, so the boundary reads by colour
+whether or not either is seamless, and the note would fire on nearly every valid call.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

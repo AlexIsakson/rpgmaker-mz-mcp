@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 3 / 30**
+**Progress: 4 / 31**
 
 ---
 
@@ -83,7 +83,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   *Done when:* a random assignment emits the range top, and operands 3 (game data) and 4
   (script) either work or are refused by name.
 
-- [ ] **P5-26 — Check the material in the generators that paint one**
+- [x] **P5-26 — Check the material in the generators that paint one**
   *(turned up by P5-01.)* `fill_map_region`, `paint_tiles` and `generate_town` all consult
   `loadA2Materials` before writing an A2 kind. `generate_map_layout` (`floorKind`,
   `surroundKind`) and `generate_interior` (`floorKind`) do not — so they will paint a
@@ -92,6 +92,27 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   Their descriptions now warn; the code still does not check.
   *Done when:* those three arguments are checked the way `fill_map_region` checks, the refusal
   names the kind and the tileset, and `allowOverlayOnGround` exists as the deliberate override.
+  *Done:* `src/core/ground-material.ts` is now the one place that decides, wired into all three
+  plus `fill_map_region`. The task's premise was slightly off: `generate_town` consulted
+  `loadA2Materials` for `roadKind` only, so **`groundKind` — the largest paint in the server —
+  was unchecked too** and is now covered. Measured over the four RTP A2 sheets: **54 of 128
+  kinds (42%) cannot go on layer 0**, and on `World_A2` only 8 of 32 can, which is why this is a
+  refusal and not a note. Verified by PNG — an overlay floor forced through renders as a black
+  dungeon with fence posts in it. See
+  [One place decides](ROADMAP.md#one-place-decides-whether-a-material-can-go-on-the-ground).
+  Turned up P5-31.
+
+- [ ] **P5-31 — Refuse a material whose sheet the tileset does not have**
+  *(turned up by P5-26.)* P5-26 covers A2, where the classifier can read the image. Nothing
+  checks that a non-A2 kind has a sheet behind it at all. Of the 6 tilesets a new project ships,
+  **`Overworld` has neither an A3 nor an A4 sheet, and `Inside`, `Dungeon` and `SF Inside` have
+  no A3** — so `generate_map_layout` with `surroundKind: 98` on `Overworld` writes tile ids
+  pointing at a sheet that is not there. Verified by PNG: the surround is simply absent, the map
+  renders as an island of floor on nothing, and the tool reports *"Surround: A4 wall kind 98"*
+  as a success. Same failure mode as the overlay bug, one family over, and cheaper to detect —
+  it needs `tilesetNames[n] !== ''`, not an image.
+  *Done when:* an autotile kind whose sheet is missing is refused, naming the kind, the sheet
+  and the tileset, everywhere a kind can be passed.
 
 ## M2 — Make the generators compose
 
