@@ -16,6 +16,14 @@ import {
   NestingError,
   type NestedCommand,
 } from '../core/command-nesting.js';
+import {
+  checkDatabaseRefs,
+  referencesDatabase,
+  DatabaseRefError,
+  DATABASE_NAMES,
+  type DatabaseName,
+  type DatabaseTables,
+} from '../core/database-refs.js';
 import { defaultEventPage, endCommand } from '../templates/defaults.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
@@ -29,6 +37,44 @@ interface SystemFile {
 
 function mapFilename(id: number): string {
   return `Map${String(id).padStart(3, '0')}.json`;
+}
+
+/** Which data file each database lives in. */
+const DATABASE_FILES: Record<DatabaseName, string> = {
+  troops: 'Troops.json',
+  commonEvents: 'CommonEvents.json',
+  items: 'Items.json',
+  weapons: 'Weapons.json',
+  armors: 'Armors.json',
+  actors: 'Actors.json',
+  classes: 'Classes.json',
+  skills: 'Skills.json',
+  states: 'States.json',
+};
+
+/** Cheap test for whether any table needs reading at all. */
+function needsDatabaseCheck(cmd: Record<string, unknown>): boolean {
+  return cmd.troopName !== undefined || referencesDatabase(cmd.type as string);
+}
+
+/**
+ * Read the tables. A file that is missing or will not parse is left out, and
+ * `checkDatabaseRefs` then makes no claim about it — degrading to "unchecked"
+ * beats failing a whole command list over an unreadable Skills.json.
+ */
+async function loadDatabaseTables(dataPath: string): Promise<DatabaseTables> {
+  const tables: DatabaseTables = {};
+  await Promise.all(
+    DATABASE_NAMES.map(async (name) => {
+      try {
+        const raw = await FileHandler.readJsonRaw(path.join(dataPath, DATABASE_FILES[name]));
+        if (Array.isArray(raw)) tables[name] = raw as DatabaseTables[typeof name];
+      } catch {
+        // left undefined on purpose
+      }
+    })
+  );
+  return tables;
 }
 
 async function readMap(dataPath: string, mapId: number): Promise<MapData> {
@@ -262,6 +308,15 @@ indent alone, so it is never passed by hand. Close every block you open:
    if_lose needs canLose: true, or a party wipe goes to Game Over and the
    arm can never run)
 
+Any command naming a database row — a troop, common event, item, weapon,
+armor, actor, class, skill or state — is checked against the project before
+anything is written. The engine guards each of these lookups and then does
+nothing when it fails, so a bad id is silent in play; this is the only place
+it can be caught. battle_processing also takes troopName instead of troopId,
+matched against Troops.json (a troop is content, not a slot, so an unknown
+name is refused rather than created), and a troop with no members is refused
+because the battle is won on its first frame.
+
   { type: "conditional_branch", conditionType: 0, switchName: "Gate open", param2: 0 },
   { type: "show_text", text: "It swings open." },
   { type: "else" },
@@ -371,6 +426,31 @@ An unbalanced list is refused, naming which block was left open and where.
               'nothing and every condition reading it is false forever. Allocate it first, ' +
               `or use ${ref.kind === 'switch' ? 'switchName' : 'variableName'}.`
             );
+          }
+        }
+
+        // Database rows next. The engine guards every one of these lookups and
+        // then does nothing, so a bad id is invisible in play — this is the only
+        // place it can be caught. Tables are loaded only when a command
+        // actually names one, and one that will not parse is skipped rather
+        // than failing the whole call.
+        if (resolved.some((cmd) => needsDatabaseCheck(cmd))) {
+          const tables = await loadDatabaseTables(project.dataPath);
+          try {
+            const checked = checkDatabaseRefs(resolved, tables);
+            resolved = checked.commands;
+            notes.push(...checked.notes);
+            for (const troop of checked.troops) {
+              notes.push(`Troop ${troop.id} "${troop.name}" was matched by name.`);
+            }
+          } catch (error) {
+            if (error instanceof DatabaseRefError) {
+              return {
+                content: [{ type: 'text' as const, text: error.message }],
+                isError: true,
+              };
+            }
+            throw error;
           }
         }
 

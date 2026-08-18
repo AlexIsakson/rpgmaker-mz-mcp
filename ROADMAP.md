@@ -1906,6 +1906,79 @@ what the corpus does too (62 switch page conditions against 23 branches), and P5
 for that half. Nothing checks that a `troopId` exists before writing a battle, which the walk
 above shows is silent in every direction — tracked as P5-33.
 
+### The engine guards, then does nothing
+
+P5-32 left a hole it had itself exposed: a `battle_processing` whose troop id is not in
+Troops.json writes a `301` that starts no battle — and because
+`BattleManager.setEventCallback` sits inside the *same* `if ($dataTroops[troopId])`,
+`_branch[_indent]` is never set either, so **every `if_win` / `if_escape` / `if_lose` arm is
+skipped too**. The player walks through an ambush that does not happen and nothing anywhere
+says a word. That was confirmed by walking a real list with the interpreter port, not argued.
+
+It is not one command's problem. The engine has a consistent habit at every database lookup —
+**guard it, then do nothing** — and `add_event_commands` reached ten of them:
+
+```js
+command117: const commonEvent = $dataCommonEvents[params[0]]; if (commonEvent) {...}
+command301: if ($dataTroops[troopId]) { BattleManager.setup(...); setEventCallback(...); }
+command129: const actor = $gameActors.actor(params[0]); if (actor) {...}
+command321: if (actor && $dataClasses[params[1]]) {...}
+gainItem:   const container = this.itemContainer(item); if (container) {...}
+```
+
+So `src/core/database-refs.ts` checks them all rather than only the one the task named — the
+same argument P5-26 recorded, where `generate_town` checked `roadKind` and let `groundKind`
+through. Covered: troops, common events, items, weapons, armors, actors, classes, skills,
+states, and every row of a shop's `goods`.
+
+**Measured** across the databases on hand:
+
+| | troops | common events | actors | classes | items | weapons | armors | skills | states |
+|---|---|---|---|---|---|---|---|---|---|
+| a new project | **5** | **4** | 8 | 8 | 30 | 50 | 100 | 235 | 30 |
+| `Wicked Heart` | 100 | 40 | 10 | 10 | 150 | 50 | 110 | 350 | 40 |
+
+The small tables are where this bites: a new project ships **5 troops and 4 common events**, so
+an id picked without looking lands past the end far more easily than the 235-row skill list
+would suggest.
+
+**Actor id 0 is the trap in the other direction**, and getting it wrong would have produced
+false refusals on working code. `iterateActorId(0)` iterates the whole party instead of looking
+anything up, and commands 311, 313, 314, 315, 316, 318 and 326 all reach it through
+`iterateActorEx` — so `recover_all` with `actorId: 0` is correct and must pass. Commands 129
+(Change Party Member), 320 (Change Name) and 321 (Change Class) call `$gameActors.actor(params[0])`
+directly and have no such meaning, so 0 there is a real mistake. The refusal says which group
+the command is in rather than just rejecting the number.
+
+**Troops can be named**, and the measurement says that is not a partial answer. In
+`Wicked Heart` only 13 of 100 troop rows carry a name — but the split is exactly whether the row
+is real: **13 named all have members, 87 unnamed all have zero members, and neither diagonal has
+a single row on it.** The unnamed rows are slots the editor allocated and nobody filled. Every
+troop that exists is named, in both projects, with no duplicate names in either.
+
+Naming a troop is therefore not like naming a switch, and the difference is the point: **a troop
+is content, not a slot.** `allocate_switch` creates a flag that was not there; there is nothing
+sensible to create here, so an unknown name is refused — and the refusal lists the names that do
+exist, so the caller can pick. An ambiguous name is refused rather than guessed at.
+
+That 87-empty-rows finding turned into a second check. A troop row with no members is *truthy*,
+so `command301` starts the battle — and `Game_Unit.isAllDead()` is
+`aliveMembers().length === 0`, true on the first frame, so `BattleManager.checkBattleEnd` calls
+`processVictory()` immediately. **An empty troop is a battle won before it begins**, silently.
+It is refused, citing the engine rather than a house rule.
+
+**What it will not do:** claim anything about a table it could not read. A data file that is
+missing or will not parse is left out and simply unchecked — failing a whole command list over
+an unreadable Skills.json would be worse than the bug. Tables are loaded only when a command
+actually names one, so an id-free list costs nothing.
+
+**Verified** against a real project copied to the scratchpad: `troopId: 9` refused against a
+5-troop project; `troopName: "Goblin*2"` matched to id 1 and reported; `troopName: "Dragon"`
+refused with all five names listed; `eventId: 40` refused against 4 common events; `itemId: 400`
+against 30 items; `recover_all` with `actorId: 0` accepted; `change_party_member` with
+`actorId: 0` refused *with the iterateActorId explanation*; a shop stocking armor 900 refused;
+and an empty troop added to the copy refused with the `isAllDead` reasoning.
+
 ### One place decides whether a material can go on the ground
 
 Visual review finding 1 said an A2 material whose edge pieces are transparent is an *overlay*:

@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 6 / 33**
+**Progress: 7 / 34**
 
 ---
 
@@ -97,7 +97,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   a troop page reaches result 1 without consulting `canEscape`. Verified by walking JSON the real
   server wrote. See [Battles lead somewhere](ROADMAP.md#battles-lead-somewhere). Turned up P5-33.
 
-- [ ] **P5-33 — Check that a troop exists before writing a battle**
+- [x] **P5-33 — Check that a troop exists before writing a battle**
   *(turned up by P5-32.)* `command301` only sets up the battle inside
   `if ($dataTroops[troopId])`, and the event callback is installed in the same block. So
   `battle_processing` with a troop id that is not in Troops.json is silent in **every** direction:
@@ -107,6 +107,29 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   troops (`Wicked Heart` has 100), so an id picked without looking is easily past the end.
   *Done when:* a `battle_processing` naming a troop that does not exist is refused, saying how
   many the project has — and ideally troops can be named the way switches are (see P5-03).
+  *Done:* `src/core/database-refs.ts` checks **all ten** databases `add_event_commands` can
+  reach — troops, common events, items, weapons, armors, actors, classes, skills, states and
+  every row of a shop's goods — because the engine's guard-then-do-nothing habit is the same at
+  each. `troopName` matches Troops.json and an unknown name is **refused, not allocated**: a
+  troop is content, not a slot. Measured: **13 of Wicked Heart's 100 troop rows are named, and
+  the split is exactly whether the row is real — 13 named all have members, 87 unnamed all have
+  zero, neither diagonal populated.** That turned into a second check: an empty troop is truthy,
+  so the battle starts and `isAllDead()` is true on the first frame — a battle won before it
+  begins, now refused. Actor id 0 is left alone on the seven commands that reach
+  `iterateActorId`, where it means the whole party. See
+  [The engine guards, then does nothing](ROADMAP.md#the-engine-guards-then-does-nothing).
+  Turned up P5-34.
+
+- [ ] **P5-34 — Check the references the map itself carries**
+  *(turned up by P5-33.)* P5-33 covers the ten databases reachable from `add_event_commands`.
+  The same guard-then-do-nothing shape sits outside it and is unchecked: a `transfer_player` to
+  a map id with no `MapXXX.json`, a page image naming a character sheet that is not in
+  `img/characters`, a map's `tilesetId` past the end of Tilesets.json, and `battle_processing`'s
+  designation 1 (troop from a variable) and 2 (same as random encounters), which the converter
+  cannot emit at all — it hardcodes designation 0, matching 13 of 13 in the corpus, but
+  designation 2 is what an encounter-driven battle needs and belongs with P5-17.
+  *Done when:* a transfer to a map that does not exist is refused, and the other three are
+  either checked or explicitly recorded as out of reach.
 
 - [ ] **P5-29 — Write page conditions**
   *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic
