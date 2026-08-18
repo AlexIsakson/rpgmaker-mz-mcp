@@ -1854,11 +1854,57 @@ on all three.
 `End Choices`, so the command after a choice block read as though it were inside the last `When`.
 Now that the tool emits 404, that asymmetry was actively misleading.
 
+#### Battles lead somewhere
+
+`battle_processing` emitted a bare `301` with nothing after it, so a generated battle could not
+reward a win or handle a loss — the fight happened and the story carried on identically either
+way. The engine has the same indent machinery for it: `command601` / `602` / `603` each
+`skipBranch()` unless `_branch[_indent]` matches the result `BattleManager.endBattle` handed to
+the callback `command301` installed (0 win, 1 escape, 2 lose), and `604` has no method at all.
+
+So this is a fourth `BlockSpec`, not a new mechanism. Two properties it needed that the other
+three did not, both measured over the **13** `battle_processing` commands in the corpus:
+
+- **It is an opener *and* a complete command.** 11 of 13 are immediately followed by a `601` at
+  the same indent; the other 2 have no arms whatever. So `battle_processing` opens a block only
+  when one is written — `opensOnlyBeforeDividers`. The lookahead steps over plain commands to
+  the first structural one, so `battle, show_text, if_win` is read as an armed battle with a
+  command in the wrong place and refused as that, rather than as a stray `if_win`.
+- **Its arms are ordered.** All 11 armed battles run **Win → [Escape] → Lose → End**, without a
+  single exception: 9 are `601 > 603 > 604` and 2 are `601 > 602 > 603 > 604`. Choices are the
+  opposite — `when_choice` repeats once per option — so ordering is a per-block flag.
+
+Two more correlations came out of the same count, and **only one of them became a refusal**:
+
+- **`canLose: false` makes an `if_lose` arm unreachable, so it is refused.**
+  `BattleManager.updateBattleEnd` does `SceneManager.goto(Scene_Gameover)` when
+  `!_escaped && $gameParty.isAllDead() && !_canLose`. `endBattle(2)` does fire the callback, so
+  `_branch[_indent]` really is set to 2 — but the scene never returns to the map, the interpreter
+  never resumes, and the arm is dead code. All 11 armed battles in the corpus set
+  `canLose: true`; both armless ones set it false.
+- **`canEscape: false` with an `if_escape` arm is *not* refused**, though the corpus correlation
+  is exactly as tight — the escape arm appears in precisely the 2 battles whose `canEscape` is
+  true, 11 of 11. Following the count here would have been wrong: result 1 has three routes into
+  `endBattle(1)` — `onEscapeSuccess`, `processPartyEscape`, and `checkAbort` after the **Abort
+  Battle** command (340) run from a troop page — and only the first consults `canEscape`. An
+  escape arm on a no-escape battle is unusual, not unreachable, so it passes. This is the case
+  where the measurement and the engine disagreed about what to enforce, and the engine won.
+
+**Verified** by walking JSON the real server wrote: a roadside ambush with all three arms, a
+switch allocated by name in the win arm and gold lost in the lose arm. Win, escape and lose each
+select exactly one arm, and *"The road goes on."* runs after all three. A fourth case — the troop
+id not existing — skips **every** arm, because `command301` only installs the callback inside
+`if ($dataTroops[troopId])`, so `_branch[_indent]` is never set and all three comparisons fail.
+That behaviour is now pinned by a test, and it is the reason for P5-33.
+
+`describeCommands` gained `If Win` / `If Escape` / `If Lose` / `End Battle`, which previously
+rendered as `[code 601]`.
+
 **Still open here:** nothing generates a branch. `place_locked_door`, `lever.ts` and `vault.ts`
 build their own pages and gate with *page conditions* rather than in-list branches — which is
 what the corpus does too (62 switch page conditions against 23 branches), and P5-29 is the tool
-for that half. Battle-result branches (601-604) and the `if…else` shape inside Shop Processing
-are not modelled; nothing emits them yet.
+for that half. Nothing checks that a `troopId` exists before writing a battle, which the walk
+above shows is silent in every direction — tracked as P5-33.
 
 ### One place decides whether a material can go on the ground
 

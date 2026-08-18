@@ -331,3 +331,148 @@ describe('isStructuralType', () => {
     expect(isStructuralType('break_loop')).toBe(false);
   });
 });
+
+describe('battle result arms', () => {
+  const battle = (extra: Record<string, unknown> = {}) => ({
+    type: 'battle_processing',
+    troopId: 3,
+    canEscape: true,
+    canLose: true,
+    ...extra,
+  });
+
+  const list = () =>
+    build([
+      battle(),
+      { type: 'if_win' },
+      { type: 'show_text', text: 'won' },
+      { type: 'if_escape' },
+      { type: 'show_text', text: 'fled' },
+      { type: 'if_lose' },
+      { type: 'show_text', text: 'lost' },
+      { type: 'end_battle' },
+      { type: 'show_text', text: 'after' },
+    ]);
+
+  it('runs only the arm matching the result BattleManager handed back', () => {
+    // endBattle passes 0 win, 1 escape, 2 lose to the callback command301 set.
+    expect(spoken(list(), { battles: [0] })).toEqual(['won', 'after']);
+    expect(spoken(list(), { battles: [1] })).toEqual(['fled', 'after']);
+    expect(spoken(list(), { battles: [2] })).toEqual(['lost', 'after']);
+  });
+
+  it('skips every arm when the troop does not exist', () => {
+    // command301 only installs the callback inside `if ($dataTroops[troopId])`,
+    // so _branch[_indent] is never set and 601/602/603 all skip.
+    expect(spoken(list(), { battles: [null] })).toEqual(['after']);
+  });
+
+  it('puts the arms at the battle indent and their bodies one deeper', () => {
+    const placed = assignIndents([
+      battle(),
+      { type: 'if_win' },
+      { type: 'show_text', text: 'won' },
+      { type: 'end_battle' },
+    ]);
+    const at = (type: string) => placed.find((p) => p.command.type === type)?.indent;
+
+    expect(at('battle_processing')).toBe(0);
+    expect(at('if_win')).toBe(0);
+    expect(at('end_battle')).toBe(0);
+    expect(at('show_text')).toBe(1);
+  });
+
+  it('leaves a bare battle_processing alone — 2 of the 13 in the corpus have no arms', () => {
+    const placed = assignIndents([
+      battle({ canLose: false }),
+      { type: 'show_text', text: 'after' },
+    ]);
+
+    expect(placed.map((p) => p.indent)).toEqual([0, 0]);
+  });
+
+  it('runs the commands after an armless battle unconditionally', () => {
+    const flat = build([battle({ canLose: false }), { type: 'show_text', text: 'after' }]);
+
+    expect(spoken(flat, { battles: [0] })).toEqual(['after']);
+    expect(spoken(flat, { battles: [2] })).toEqual(['after']);
+  });
+});
+
+describe('battle refusals', () => {
+  const battle = (extra: Record<string, unknown> = {}) => ({
+    type: 'battle_processing',
+    troopId: 3,
+    canLose: true,
+    ...extra,
+  });
+
+  it('refuses an if_lose arm the engine can never reach', () => {
+    // updateBattleEnd sends a party wipe to Scene_Gameover unless canLose, so
+    // the interpreter never resumes to run the arm.
+    expect(() =>
+      assignIndents([
+        battle({ canLose: false }),
+        { type: 'if_lose' },
+        { type: 'show_text', text: 'lost' },
+        { type: 'end_battle' },
+      ])
+    ).toThrow(/Scene_Gameover/);
+  });
+
+  it('accepts an escape arm on a no-escape battle, which is unusual but reachable', () => {
+    // Result 1 also comes from Abort Battle (command340) on a troop page, which
+    // does not consult canEscape.
+    expect(() =>
+      assignIndents([
+        battle({ canEscape: false }),
+        { type: 'if_escape' },
+        { type: 'show_text', text: 'aborted' },
+        { type: 'end_battle' },
+      ])
+    ).not.toThrow();
+  });
+
+  it('refuses arms out of order', () => {
+    expect(() =>
+      assignIndents([
+        battle(),
+        { type: 'if_lose' },
+        { type: 'if_win' },
+        { type: 'end_battle' },
+      ])
+    ).toThrow(/puts if_win after if_lose/);
+  });
+
+  it('refuses a repeated arm', () => {
+    expect(() =>
+      assignIndents([
+        battle(),
+        { type: 'if_win' },
+        { type: 'if_win' },
+        { type: 'end_battle' },
+      ])
+    ).toThrow(/second if_win/);
+  });
+
+  it('refuses a command between the battle and its first arm', () => {
+    expect(() =>
+      assignIndents([
+        battle(),
+        { type: 'show_text', text: 'too early' },
+        { type: 'if_win' },
+        { type: 'end_battle' },
+      ])
+    ).toThrow(/before the battle result is known/);
+  });
+
+  it('refuses an unclosed battle block', () => {
+    expect(() =>
+      assignIndents([battle(), { type: 'if_win' }, { type: 'show_text', text: 'won' }])
+    ).toThrow(/battle_processing at command 1 is never closed/);
+  });
+
+  it('refuses an if_win with no battle open', () => {
+    expect(() => assignIndents([{ type: 'if_win' }])).toThrow(/nothing open for it to divide/);
+  });
+});

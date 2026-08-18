@@ -19,11 +19,22 @@
  * advances zero commands and the body runs whether the condition held or not.
  * A `conditional_branch` built through the tool was decoration.
  *
- * The same is true of the other two block constructs, which are the same
- * machinery: `command411` (Else) skips when the branch was *taken*,
- * `command402` (When) skips when a different choice was picked, and
- * `command413` (Repeat Above) walks `_index` backwards until it finds a command
- * at its own indent. All of them are indent arithmetic.
+ * The same is true of the other block constructs, which are the same machinery:
+ * `command411` (Else) skips when the branch was *taken*, `command402` (When)
+ * skips when a different choice was picked, `command601`/`602`/`603` (If Win /
+ * If Escape / If Lose) each skip unless `_branch[_indent]` matches the result
+ * `BattleManager.endBattle` handed back, and `command413` (Repeat Above) walks
+ * `_index` backwards until it finds a command at its own indent. All of them
+ * are indent arithmetic.
+ *
+ * Battles were measured separately, because `battle_processing` is the one
+ * opener that is also a complete command on its own. Of the **13** in the
+ * corpus, **11 are immediately followed by a 601 at the same indent** and 2
+ * carry no arms at all. Among the 11, the arm order is **Win → [Escape] → Lose
+ * → End without exception** — 9 are `601 > 603 > 604` and 2 are
+ * `601 > 602 > 603 > 604` — and an escape arm appears in exactly the 2 whose
+ * `canEscape` is true. All 11 set `canLose: true`; both armless battles set it
+ * false.
  *
  * **Measured over the corpus** — 3014 command lists across the 293 sample maps,
  * the `newdata` reference project and the three projects under
@@ -64,7 +75,7 @@ export interface NestedCommand {
   [key: string]: unknown;
 }
 
-export type BlockKind = 'branch' | 'loop' | 'choice';
+export type BlockKind = 'branch' | 'loop' | 'choice' | 'battle';
 
 interface BlockSpec {
   kind: BlockKind;
@@ -79,6 +90,19 @@ interface BlockSpec {
    * the same indent rather than by body content.
    */
   bodyFollowsOpener: boolean;
+  /**
+   * True when the opener is only an opener if a divider follows it.
+   * `battle_processing` on its own is a complete command — 2 of the 13 in the
+   * corpus have no arms at all — so it opens a block only when one is written.
+   */
+  opensOnlyBeforeDividers?: boolean;
+  /**
+   * True when the dividers must appear in the order they are declared, each at
+   * most once. Measured for battles: all 11 armed battles in the corpus run
+   * Win → [Escape] → Lose, with no other order and no repeats. Choices are the
+   * opposite — `when_choice` repeats, once per option.
+   */
+  orderedDividers?: boolean;
 }
 
 const BLOCKS: BlockSpec[] = [
@@ -102,6 +126,15 @@ const BLOCKS: BlockSpec[] = [
     dividers: ['when_choice', 'when_cancel'],
     closer: 'end_choices',
     bodyFollowsOpener: false,
+  },
+  {
+    kind: 'battle',
+    opener: 'battle_processing',
+    dividers: ['if_win', 'if_escape', 'if_lose'],
+    closer: 'end_battle',
+    bodyFollowsOpener: false,
+    opensOnlyBeforeDividers: true,
+    orderedDividers: true,
   },
 ];
 
@@ -143,6 +176,65 @@ const withArticle = (type: string) => `${/^[aeiou]/.test(type) ? 'an' : 'a'} ${t
 
 function describeOpen(block: OpenBlock): string {
   return `the ${block.spec.opener} at ${ordinal(block.at)}`;
+}
+
+/**
+ * Whether an optional opener is being used as a block here.
+ *
+ * Looks past plain commands to the first structural one: if that belongs to
+ * this block, the caller meant to open one — even if they put a command in the
+ * wrong place first, which is then refused as the misplacement it is.
+ */
+function opensBlockAt(commands: NestedCommand[], from: number, spec: BlockSpec): boolean {
+  for (let j = from; j < commands.length; j++) {
+    const next = commands[j]?.type ?? '';
+    if (!isStructuralType(next)) continue;
+    return spec.dividers.includes(next) || next === spec.closer;
+  }
+  return false;
+}
+
+/**
+ * An `if_lose` arm on a battle the party is not allowed to lose can never run.
+ *
+ * `BattleManager.updateBattleEnd` is explicit about it:
+ *
+ * ```js
+ * } else if (!this._escaped && $gameParty.isAllDead()) {
+ *     if (this._canLose) {
+ *         $gameParty.reviveBattleMembers();
+ *         SceneManager.pop();
+ *     } else {
+ *         SceneManager.goto(Scene_Gameover);
+ *     }
+ * }
+ * ```
+ *
+ * `endBattle(2)` does fire the callback, so `_branch[_indent]` really is set to
+ * 2 — but the scene goes to Game Over instead of back to the map, so the
+ * interpreter never resumes and the arm is dead code.
+ *
+ * The escape arm is deliberately *not* treated the same way, even though the
+ * corpus correlation is just as tight (all 11 armed battles carry an escape arm
+ * exactly when `canEscape` is true). Result 1 has three routes —
+ * `onEscapeSuccess`, `processPartyEscape`, and `checkAbort` after the Abort
+ * Battle command (340) from a troop page — and only the first needs
+ * `canEscape`. An escape arm on a no-escape battle is unusual, not unreachable.
+ */
+function rejectUnreachableLoseArm(
+  opener: NestedCommand | undefined,
+  index: number,
+  block: OpenBlock
+): void {
+  // Matches convertCommand's default for battle_processing.
+  const canLose = (opener?.canLose as boolean | undefined) ?? false;
+  if (canLose) return;
+  throw new NestingError(
+    `${ordinal(index)} is an if_lose arm, but ${describeOpen(block)} does not set ` +
+      'canLose: true. BattleManager.updateBattleEnd sends a party wipe straight to ' +
+      'Scene_Gameover unless canLose is set, so the interpreter never comes back and this arm ' +
+      'can never run. Set canLose: true to handle the defeat, or drop the arm.'
+  );
 }
 
 /**
@@ -222,6 +314,27 @@ export function assignIndents(commands: NestedCommand[]): PlacedCommand[] {
             'result, so both else arms would test it the same way and run together.'
         );
       }
+      if (block.spec.orderedDividers) {
+        if (block.dividersSeen.includes(type)) {
+          throw new NestingError(
+            `${ordinal(i)} is a second ${type} on ${describeOpen(block)}. A battle ends one ` +
+              'way, so the second arm could never run.'
+          );
+        }
+        const seenLater = block.dividersSeen.find(
+          (seen) => block.spec.dividers.indexOf(seen) > block.spec.dividers.indexOf(type)
+        );
+        if (seenLater !== undefined) {
+          throw new NestingError(
+            `${ordinal(i)} puts ${type} after ${seenLater} on ${describeOpen(block)}. The arms ` +
+              `run in the order ${block.spec.dividers.join(', ')} — all 11 armed battles in the ` +
+              'sample maps and projects are written that way, and the editor writes no other.'
+          );
+        }
+      }
+      if (type === 'if_lose') {
+        rejectUnreachableLoseArm(commands[block.at], i, block);
+      }
       block.dividersSeen.push(type);
       indent = block.indent;
       if (block.bodyOpen) {
@@ -234,26 +347,39 @@ export function assignIndents(commands: NestedCommand[]): PlacedCommand[] {
     }
 
     if (opener !== undefined) {
+      // `battle_processing` is a complete command on its own — 2 of the 13 in
+      // the corpus have no arms — so it only opens a block when one follows.
+      // The lookahead steps over plain commands to the first structural one,
+      // so `battle, show_text, if_win` is read as an armed battle with a
+      // command in the wrong place, and refused as that rather than as a
+      // stray if_win.
+      const opensHere =
+        !opener.opensOnlyBeforeDividers || opensBlockAt(commands, i + 1, opener);
+
       out.push({ command, indent });
-      stack.push({
-        spec: opener,
-        indent,
-        at: i,
-        dividersSeen: [],
-        bodyOpen: opener.bodyFollowsOpener,
-      });
-      indent += 1;
+      if (opensHere) {
+        stack.push({
+          spec: opener,
+          indent,
+          at: i,
+          dividersSeen: [],
+          bodyOpen: opener.bodyFollowsOpener,
+        });
+        indent += 1;
+      }
       continue;
     }
 
-    // A plain command. Inside a choice block it has to be inside a `when`, or
-    // the engine runs it before any choice has been made.
+    // A plain command. Inside a choice or battle block it has to be inside an
+    // arm, or the engine runs it before the result that selects one exists.
     const block = innermost();
     if (block !== null && !block.bodyOpen) {
+      const first = block.spec.dividers[0];
       throw new NestingError(
         `${ordinal(i)} (${type}) sits between ${describeOpen(block)} and its first ` +
-          'when_choice. The engine runs those commands before the player has chosen ' +
-          'anything — put them before the show_choices, or inside a when_choice.'
+          `${first}. The engine runs those commands before the ` +
+          `${block.spec.kind === 'battle' ? 'battle result is known' : 'player has chosen anything'}` +
+          ` — put them before the ${block.spec.opener}, or inside ${withArticle(first)}.`
       );
     }
     if (type === 'break_loop' && !stack.some((b) => b.spec.kind === 'loop')) {
@@ -303,6 +429,13 @@ export interface WalkDecisions {
   branches?: boolean[];
   /** Chosen index for the nth show_choices (code 102) reached; -1 for cancel. */
   choices?: number[];
+  /**
+   * Outcome of the nth battle (code 301) reached: 0 win, 1 escape, 2 lose —
+   * the values `BattleManager.endBattle` passes to its event callback. `null`
+   * stands for the troop id not existing, where `command301` never installs the
+   * callback at all and every arm is therefore skipped.
+   */
+  battles?: (number | null)[];
   /** Cap on iterations, since a loop with no break never finishes. */
   maxSteps?: number;
 }
@@ -322,12 +455,14 @@ export function walkCommands(list: WalkCommand[], decisions: WalkDecisions = {})
   const executed: number[] = [];
   const branchResults = decisions.branches ?? [];
   const choiceResults = decisions.choices ?? [];
+  const battleResults = decisions.battles ?? [];
   const maxSteps = decisions.maxSteps ?? 10000;
 
   // Game_Interpreter._branch, keyed by indent.
   const branch = new Map<number, boolean | number>();
   let branchesSeen = 0;
   let choicesSeen = 0;
+  let battlesSeen = 0;
   let index = 0;
   let indent = 0;
   let steps = 0;
@@ -363,6 +498,26 @@ export function walkCommands(list: WalkCommand[], decisions: WalkDecisions = {})
         branch.set(indent, choiceResults[choicesSeen++] ?? 0);
         break;
       }
+      case 301: {
+        // command301 only installs the callback when $dataTroops[troopId]
+        // exists, so a missing troop leaves _branch[_indent] untouched. `null`
+        // is checked before defaulting: `?? 0` would treat it as "not given".
+        const outcome =
+          battlesSeen < battleResults.length ? battleResults[battlesSeen] : 0;
+        battlesSeen++;
+        if (outcome === null) branch.delete(indent);
+        else branch.set(indent, outcome);
+        break;
+      }
+      case 601:
+        if (branch.get(indent) !== 0) skipBranch();
+        break;
+      case 602:
+        if (branch.get(indent) !== 1) skipBranch();
+        break;
+      case 603:
+        if (branch.get(indent) !== 2) skipBranch();
+        break;
       case 402:
         if (branch.get(indent) !== command.parameters[0]) skipBranch();
         break;

@@ -97,6 +97,10 @@ export const COMMAND_CODES: Record<string, number> = {
   repeat_above: 413,
   break_loop: 113,
   end_choices: 404,
+  if_win: 601,
+  if_escape: 602,
+  if_lose: 603,
+  end_battle: 604,
   exit_event: 115,
   common_event: 117,
   label: 118,
@@ -474,6 +478,21 @@ export function convertCommand(cmd: {
 
     case 'when_cancel':
       return [{ code: 403, indent: 0, parameters: [] }];
+
+    // Battle result arms. BattleManager.endBattle passes 0 win, 1 escape,
+    // 2 lose to the callback command301 installed, and command601/602/603 each
+    // skipBranch unless _branch[_indent] matches. 604 has no method at all.
+    case 'if_win':
+      return [{ code: 601, indent: 0, parameters: [] }];
+
+    case 'if_escape':
+      return [{ code: 602, indent: 0, parameters: [] }];
+
+    case 'if_lose':
+      return [{ code: 603, indent: 0, parameters: [] }];
+
+    case 'end_battle':
+      return [{ code: 604, indent: 0, parameters: [] }];
 
     /** The blank line the editor leaves at the end of every block body. */
     case 'blank':

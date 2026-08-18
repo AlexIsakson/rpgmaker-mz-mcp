@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 5 / 32**
+**Progress: 6 / 33**
 
 ---
 
@@ -77,7 +77,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   the real server wrote. See [Indent is the gate](ROADMAP.md#indent-is-the-gate). Turned up
   P5-32.
 
-- [ ] **P5-32 — Branch on how a battle ended**
+- [x] **P5-32 — Branch on how a battle ended**
   *(turned up by P5-28.)* `battle_processing` emits a bare 301 with nothing after it, so a
   generated battle cannot lead anywhere — you cannot reward a win or handle a loss. The engine
   has the same indent machinery for it: `command601` (If Win), `command602` (If Escape) and
@@ -88,6 +88,25 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   multiple dividers.
   *Done when:* a battle can be followed by win/escape/lose arms, asserted with `walkCommands`.
   P5-18 ("a switch set by winning a battle") depends on this.
+  *Done:* a fourth `BlockSpec` with two properties the others did not need — it opens a block
+  only when an arm follows (2 of 13 have none), and its arms are ordered. **All 11 armed battles
+  run Win → [Escape] → Lose → End with no exception**, so the order is enforced. `canLose: false`
+  with an `if_lose` arm is **refused** — `updateBattleEnd` sends a party wipe to `Scene_Gameover`,
+  so the interpreter never resumes — while `canEscape: false` with an `if_escape` arm is
+  **allowed** despite an equally tight 11/11 correlation, because Abort Battle (command 340) from
+  a troop page reaches result 1 without consulting `canEscape`. Verified by walking JSON the real
+  server wrote. See [Battles lead somewhere](ROADMAP.md#battles-lead-somewhere). Turned up P5-33.
+
+- [ ] **P5-33 — Check that a troop exists before writing a battle**
+  *(turned up by P5-32.)* `command301` only sets up the battle inside
+  `if ($dataTroops[troopId])`, and the event callback is installed in the same block. So
+  `battle_processing` with a troop id that is not in Troops.json is silent in **every** direction:
+  no battle starts, `_branch[_indent]` is never set, and every win/escape/lose arm is skipped —
+  the player walks through an ambush that does not happen and nothing reports a thing. Confirmed
+  with `walkCommands`. Nothing in the server validates `troopId`; a new project ships **5**
+  troops (`Wicked Heart` has 100), so an id picked without looking is easily past the end.
+  *Done when:* a `battle_processing` naming a troop that does not exist is refused, saying how
+  many the project has — and ideally troops can be named the way switches are (see P5-03).
 
 - [ ] **P5-29 — Write page conditions**
   *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic

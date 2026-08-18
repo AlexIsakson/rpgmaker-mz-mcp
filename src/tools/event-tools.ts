@@ -257,6 +257,10 @@ indent alone, so it is never passed by hand. Close every block you open:
 - conditional_branch ... [else] ... end_branch
 - loop ... repeat_above   (break_loop jumps out)
 - show_choices ... when_choice / when_cancel ... end_choices
+- battle_processing ... if_win / if_escape / if_lose ... end_battle
+  (arms run in that order; a bare battle_processing with no arms is fine.
+   if_lose needs canLose: true, or a party wipe goes to Game Over and the
+   arm can never run)
 
   { type: "conditional_branch", conditionType: 0, switchName: "Gate open", param2: 0 },
   { type: "show_text", text: "It swings open." },

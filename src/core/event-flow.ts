@@ -296,8 +296,22 @@ export function describeCommands(list: EventCommand[]): string[] {
         // choice reads as though it were inside the last When.
         lines.push(`${pad}End Choices`);
         continue;
-      case 409: case 604:
-        continue; // structural end markers, no useful text
+      // Battle result arms — which one runs is decided by the result
+      // BattleManager handed back, so they are as load-bearing as an Else.
+      case 601:
+        lines.push(`${pad}If Win`);
+        continue;
+      case 602:
+        lines.push(`${pad}If Escape`);
+        continue;
+      case 603:
+        lines.push(`${pad}If Lose`);
+        continue;
+      case 604:
+        lines.push(`${pad}End Battle`);
+        continue;
+      case 409:
+        continue; // structural end marker, no useful text
 
       case 101: case 105: case 108: case 355: {
         // Fold the body lines that follow into a single quoted block.
