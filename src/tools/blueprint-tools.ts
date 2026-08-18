@@ -19,6 +19,8 @@ import {
 } from '../core/blueprint.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
+import { MapRefError } from '../core/map-refs.js';
+import { requireProjectSheets } from './map-ref-loaders.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
 
@@ -109,6 +111,7 @@ export function registerBlueprintTools(server: McpServer): void {
         } = args;
 
         const project = requireProject();
+        await requireProjectSheets(project.path, [[doorSprite, 'doorSprite']]);
         const mapPath = path.join(project.dataPath, mapFilename(mapId));
         if (!(await FileHandler.exists(mapPath))) {
           return errorResult(`Map ID ${mapId} not found.`);
@@ -191,6 +194,7 @@ export function registerBlueprintTools(server: McpServer): void {
 
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
+        if (error instanceof MapRefError) return errorResult(error.message);
         return errorResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

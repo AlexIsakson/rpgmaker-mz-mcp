@@ -25,6 +25,8 @@ import {
 import { allocateFlag, findFlag, SwitchError } from '../core/switches.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
+import { MapRefError } from '../core/map-refs.js';
+import { requireProjectSheets } from './map-ref-loaders.js';
 import type { MapData } from '../schemas/map.js';
 import type { Item } from '../schemas/database.js';
 import type { Event } from '../schemas/event.js';
@@ -159,6 +161,10 @@ export function registerFloorLockTools(server: McpServer): void {
     async (args) => {
       try {
         const project = requireProject();
+        await requireProjectSheets(project.path, [
+          [args.doorSprite, 'doorSprite'],
+          [args.leverSprite, 'leverSprite'],
+        ]);
         const dataPath = project.dataPath;
 
         const mapPath = path.join(dataPath, mapFilename(args.mapId));
@@ -571,6 +577,7 @@ export function registerFloorLockTools(server: McpServer): void {
 
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
+        if (error instanceof MapRefError) return errorResult(error.message);
         return errorResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

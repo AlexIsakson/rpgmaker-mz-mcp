@@ -21,6 +21,8 @@ import {
 } from '../core/switches.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
+import { MapRefError } from '../core/map-refs.js';
+import { requireProjectSheets } from './map-ref-loaders.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
 
@@ -111,6 +113,7 @@ export function registerLockedDoorTools(server: McpServer): void {
       try {
         const { mapId, x, y, lockKind } = args;
         const project = requireProject();
+        await requireProjectSheets(project.path, [[args.characterName, 'characterName']]);
 
         const mapPath = path.join(project.dataPath, mapFilename(mapId));
         if (!(await FileHandler.exists(mapPath))) {
@@ -315,6 +318,7 @@ export function registerLockedDoorTools(server: McpServer): void {
 
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
+        if (error instanceof MapRefError) return errorResult(error.message);
         return errorResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

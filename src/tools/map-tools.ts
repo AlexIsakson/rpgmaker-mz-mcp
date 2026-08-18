@@ -5,7 +5,16 @@ import { FileHandler } from '../core/file-handler.js';
 import { requireProject } from './project-tools.js';
 import { defaultMap, defaultAudio } from '../templates/defaults.js';
 import type { MapInfo, MapData } from '../schemas/map.js';
+import { MapRefError, requireTileset } from '../core/map-refs.js';
+import { loadTilesets } from './map-ref-loaders.js';
 import { logger } from '../logger.js';
+
+function refusal(error: unknown) {
+  return {
+    content: [{ type: 'text' as const, text: (error as Error).message }],
+    isError: true,
+  };
+}
 
 async function readMapInfos(dataPath: string): Promise<(MapInfo | null)[]> {
   return (await FileHandler.readJsonRaw(path.join(dataPath, 'MapInfos.json'))) as (MapInfo | null)[];
@@ -39,6 +48,12 @@ export async function createMapFile(
   dataPath: string,
   options: NewMapOptions
 ): Promise<number> {
+  // A tilesetId past the end of Tilesets.json is the one reference on a map
+  // that fails silently: no bitmaps are loaded and every tile reads as
+  // passable, so the map looks empty and works. Checked before the file is
+  // written, not after.
+  requireTileset(options.tilesetId, await loadTilesets(dataPath), `The new map's tilesetId`);
+
   const infos = await readMapInfos(dataPath);
   const newId = infos.length;
 
@@ -95,6 +110,7 @@ export function registerMapTools(server: McpServer): void {
           }],
         };
       } catch (error) {
+        if (error instanceof MapRefError) return refusal(error);
         return {
           content: [{
             type: 'text' as const,
@@ -114,46 +130,23 @@ export function registerMapTools(server: McpServer): void {
       name: z.string().describe('Map name'),
       width: z.number().int().min(1).max(256).default(17).describe('Map width in tiles'),
       height: z.number().int().min(1).max(256).default(13).describe('Map height in tiles'),
-      tilesetId: z.number().int().min(1).default(1).describe('Tileset ID to use'),
+      tilesetId: z.number().int().min(1).default(1).describe(
+        'Tileset ID to use. Must be a row of Tilesets.json: a map pointing past the end draws ' +
+        'nothing and reads as passable everywhere, silently.'
+      ),
       parentId: z.number().int().min(0).default(0).describe('Parent map ID (0 for root)'),
       bgmName: z.string().optional().describe('Background music name'),
     },
     async ({ name, width, height, tilesetId, parentId, bgmName }) => {
       try {
         const project = requireProject();
-        const infos = await readMapInfos(project.dataPath);
 
-        // Find next available ID
-        const newId = infos.length;
-        const order = infos.filter((m) => m !== null).length + 1;
+        // Through createMapFile rather than inline, so the tilesetId check and
+        // the MapInfos entry are the same ones the interior generator gets.
+        const newId = await createMapFile(project.dataPath, {
+          name, width, height, tilesetId, parentId, bgmName,
+        });
 
-        // Create map data
-        const mapData = defaultMap(width, height, tilesetId);
-        if (bgmName) {
-          mapData.autoplayBgm = true;
-          mapData.bgm = { ...defaultAudio(), name: bgmName };
-        }
-
-        // Create map info
-        const mapInfo: MapInfo = {
-          id: newId,
-          expanded: false,
-          name,
-          order,
-          parentId,
-          scrollX: 0,
-          scrollY: 0,
-        };
-
-        // Write map file
-        const mapPath = path.join(project.dataPath, mapFilename(newId));
-        await FileHandler.writeJson(mapPath, mapData);
-
-        // Update MapInfos
-        infos.push(mapInfo);
-        await writeMapInfos(project.dataPath, infos);
-
-        // Bump versionId
         await project.getVersionSync().bump();
 
         logger.info(`Map created: [${newId}] ${name}`);
@@ -165,6 +158,7 @@ export function registerMapTools(server: McpServer): void {
           }],
         };
       } catch (error) {
+        if (error instanceof MapRefError) return refusal(error);
         return {
           content: [{
             type: 'text' as const,
@@ -219,6 +213,7 @@ export function registerMapTools(server: McpServer): void {
 
         return { content: [{ type: 'text' as const, text: text.join('\n') }] };
       } catch (error) {
+        if (error instanceof MapRefError) return refusal(error);
         return {
           content: [{
             type: 'text' as const,
@@ -238,7 +233,9 @@ export function registerMapTools(server: McpServer): void {
       mapId: z.number().int().positive().describe('Map ID'),
       name: z.string().optional().describe('New map name (in MapInfos)'),
       displayName: z.string().optional().describe('Display name shown in-game'),
-      tilesetId: z.number().int().optional().describe('New tileset ID'),
+      tilesetId: z.number().int().optional().describe(
+        'New tileset ID. Must be a row of Tilesets.json — see the create_map note.'
+      ),
       bgmName: z.string().optional().describe('BGM name (empty string to disable)'),
       bgsName: z.string().optional().describe('BGS name (empty string to disable)'),
       note: z.string().optional().describe('Map note'),
@@ -251,6 +248,10 @@ export function registerMapTools(server: McpServer): void {
         const mapData = (await FileHandler.readJsonRaw(mapPath)) as MapData;
 
         // Update map data properties
+        if (tilesetId !== undefined) {
+          requireTileset(tilesetId, await loadTilesets(project.dataPath), `Map ${mapId}'s tilesetId`);
+        }
+
         if (displayName !== undefined) mapData.displayName = displayName;
         if (tilesetId !== undefined) mapData.tilesetId = tilesetId;
         if (note !== undefined) mapData.note = note;
@@ -294,6 +295,7 @@ export function registerMapTools(server: McpServer): void {
           }],
         };
       } catch (error) {
+        if (error instanceof MapRefError) return refusal(error);
         return {
           content: [{
             type: 'text' as const,
@@ -354,6 +356,7 @@ export function registerMapTools(server: McpServer): void {
           }],
         };
       } catch (error) {
+        if (error instanceof MapRefError) return refusal(error);
         return {
           content: [{
             type: 'text' as const,

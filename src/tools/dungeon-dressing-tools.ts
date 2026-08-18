@@ -19,6 +19,8 @@ import { buildLootTable, dealLoot, LootError, type LootEntry } from '../core/loo
 import { stockCandidates } from '../core/shop.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
+import { MapRefError } from '../core/map-refs.js';
+import { requireProjectSheets } from './map-ref-loaders.js';
 import type { MapData } from '../schemas/map.js';
 import type { Event } from '../schemas/event.js';
 import { logger } from '../logger.js';
@@ -130,6 +132,10 @@ export function registerDungeonDressingTools(server: McpServer): void {
         const { mapId, seed, propLayer } = args;
 
         const project = requireProject();
+        await requireProjectSheets(project.path, [
+          [args.torchCount > 0 ? args.torchSprite : '', 'torchSprite'],
+          [args.treasureCount > 0 ? args.treasureSprite : '', 'treasureSprite'],
+        ]);
         const mapPath = path.join(project.dataPath, mapFilename(mapId));
         if (!(await FileHandler.exists(mapPath))) {
           return errorResult(`Map ID ${mapId} not found.`);
@@ -399,6 +405,7 @@ Note: ${n}`));
 
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
+        if (error instanceof MapRefError) return errorResult(error.message);
         return errorResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

@@ -15,6 +15,8 @@ import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
 import { collectProps, findProps, propCells, propPart, PropError, type Prop } from '../core/props.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
+import { MapRefError } from '../core/map-refs.js';
+import { requireProjectSheets } from './map-ref-loaders.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
 
@@ -28,6 +30,9 @@ const A2_KIND_MAX = getAutotileKind(TILE_ID_A3) - 1;
  */
 const DEFAULT_DECOR = ['Barrel', 'Crate A', 'Pot', 'Firewood', 'Flowers A', 'Flowers B', 'Bush', 'Stump'];
 const DEFAULT_FRAME = 'Tree';
+
+/** The door sheet every generated building uses. RTP, and in every project on hand. */
+const TOWN_DOOR_SPRITE = '!Door1';
 
 function errorResult(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
@@ -136,6 +141,9 @@ export function registerTowngenTools(server: McpServer): void {
         const { mapId, seed, groundKind, roadKind, roofSets, roofKinds, wallKind, roofLayer, propLayer } = args;
 
         const project = requireProject();
+        // generate_town hardcodes the RTP door sheet, so a project without it
+        // would get a town whose every doorway crashes the map on arrival.
+        await requireProjectSheets(project.path, [[TOWN_DOOR_SPRITE, 'the door sprite']]);
         const mapPath = path.join(project.dataPath, mapFilename(mapId));
         if (!(await FileHandler.exists(mapPath))) {
           return errorResult(`Map ID ${mapId} not found.`);
@@ -264,7 +272,7 @@ export function registerTowngenTools(server: McpServer): void {
                 roofLayer,
                 door: true,
                 doorOffsetX: building.doorOffsetX,
-                doorSprite: '!Door1',
+                doorSprite: TOWN_DOOR_SPRITE,
                 doorSpriteIndex: 0,
                 allowRoofOverEmptyGround: false,
               },
@@ -391,6 +399,7 @@ export function registerTowngenTools(server: McpServer): void {
 
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
+        if (error instanceof MapRefError) return errorResult(error.message);
         return errorResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

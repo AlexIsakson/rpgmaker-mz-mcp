@@ -13,6 +13,8 @@ import { treasureEvent, rejectSealingSlots } from '../core/dungeon-dressing.js';
 import { keyItemFields, checkOpenerPlacement, QuestError } from '../core/quest.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
+import { MapRefError } from '../core/map-refs.js';
+import { requireProjectSheets } from './map-ref-loaders.js';
 import type { MapData, MapInfo } from '../schemas/map.js';
 import type { Item } from '../schemas/database.js';
 import type { Event } from '../schemas/event.js';
@@ -137,6 +139,7 @@ export function registerQuestTools(server: McpServer): void {
           }],
         };
       } catch (error) {
+        if (error instanceof MapRefError) return errorResult(error.message);
         return errorResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
@@ -168,6 +171,7 @@ export function registerQuestTools(server: McpServer): void {
     async (args) => {
       try {
         const project = requireProject();
+        await requireProjectSheets(project.path, [[args.characterName, 'characterName']]);
         const dataPath = project.dataPath;
 
         // --- the door, and what it asks for ---
@@ -330,6 +334,7 @@ export function registerQuestTools(server: McpServer): void {
 
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
+        if (error instanceof MapRefError) return errorResult(error.message);
         return errorResult(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }

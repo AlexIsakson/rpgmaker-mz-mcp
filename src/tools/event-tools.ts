@@ -24,6 +24,14 @@ import {
   type DatabaseName,
   type DatabaseTables,
 } from '../core/database-refs.js';
+import {
+  checkMapRefs,
+  referencesMap,
+  requireCharacterSheet,
+  transferTargets,
+  MapRefError,
+} from '../core/map-refs.js';
+import { loadCharacterSheets, loadTransferInventory } from './map-ref-loaders.js';
 import { defaultEventPage, endCommand } from '../templates/defaults.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
@@ -138,7 +146,10 @@ export function registerEventTools(server: McpServer): void {
       x: z.number().int().min(0).describe('X position on map'),
       y: z.number().int().min(0).describe('Y position on map'),
       note: z.string().default('').describe('Event note'),
-      characterName: z.string().optional().describe('Character sprite name'),
+      characterName: z.string().optional().describe(
+        'Character sprite name, without .png. Must be in img/characters — a missing sheet ' +
+        'makes the whole map throw a LoadError on arrival. See list_character_sheets.'
+      ),
       characterIndex: z.number().int().optional().describe('Character sprite index'),
       trigger: z.number().int().min(0).max(4).default(0)
         .describe('Trigger: 0=Action Button, 1=Player Touch, 2=Event Touch, 3=Autorun, 4=Parallel'),
@@ -147,6 +158,14 @@ export function registerEventTools(server: McpServer): void {
       try {
         const project = requireProject();
         const mapData = await readMap(project.dataPath, mapId);
+
+        if (characterName) {
+          requireCharacterSheet(
+            characterName,
+            await loadCharacterSheets(project.path),
+            'characterName'
+          );
+        }
 
         // Find next event ID
         let newId = 1;
@@ -204,6 +223,9 @@ export function registerEventTools(server: McpServer): void {
           }],
         };
       } catch (error) {
+        if (error instanceof MapRefError) {
+          return { content: [{ type: 'text' as const, text: error.message }], isError: true };
+        }
         return {
           content: [{
             type: 'text' as const,
@@ -226,7 +248,10 @@ export function registerEventTools(server: McpServer): void {
       x: z.number().int().optional().describe('New X position'),
       y: z.number().int().optional().describe('New Y position'),
       note: z.string().optional().describe('New event note'),
-      characterName: z.string().optional().describe('Character sprite name (applies to page 1)'),
+      characterName: z.string().optional().describe(
+        'Character sprite name (applies to page 1). Must be in img/characters — see ' +
+        'list_character_sheets.'
+      ),
       characterIndex: z.number().int().optional().describe('Character sprite index (applies to page 1)'),
     },
     async ({ mapId, eventId, name, x, y, note, characterName, characterIndex }) => {
@@ -248,6 +273,11 @@ export function registerEventTools(server: McpServer): void {
         if (note !== undefined) event.note = note;
 
         if (characterName !== undefined && event.pages.length > 0) {
+          requireCharacterSheet(
+            characterName,
+            await loadCharacterSheets(project.path),
+            'characterName'
+          );
           event.pages[0].image.characterName = characterName;
           if (characterIndex !== undefined) {
             event.pages[0].image.characterIndex = characterIndex;
@@ -264,6 +294,9 @@ export function registerEventTools(server: McpServer): void {
           }],
         };
       } catch (error) {
+        if (error instanceof MapRefError) {
+          return { content: [{ type: 'text' as const, text: error.message }], isError: true };
+        }
         return {
           content: [{
             type: 'text' as const,
@@ -283,7 +316,7 @@ export function registerEventTools(server: McpServer): void {
 Supported command types:
 - show_text: { type: "show_text", face: "Actor1", faceIndex: 0, text: "Hello!" }
 - show_choices: { type: "show_choices", choices: ["Yes", "No"] }
-- transfer_player: { type: "transfer_player", mapId: 1, x: 5, y: 5 }
+- transfer_player: { type: "transfer_player", mapId: 1, x: 5, y: 5 }  (the map must exist and the landing square must be inside it, or the transfer throws a LoadError or freezes the player)
 - control_switches: { type: "control_switches", startId: 1, value: 0 }  (0=ON, 1=OFF)
 - control_variables: { type: "control_variables", startId: 1, operationType: 0, operand: 0, value: 100 }
 - control_self_switch: { type: "control_self_switch", key: "A", value: 0 }
@@ -445,6 +478,28 @@ An unbalanced list is refused, naming which block was left open and where.
             }
           } catch (error) {
             if (error instanceof DatabaseRefError) {
+              return {
+                content: [{ type: 'text' as const, text: error.message }],
+                isError: true,
+              };
+            }
+            throw error;
+          }
+        }
+
+        // Then the references the map itself carries. A transfer to a map with
+        // no file does not fail quietly the way a database row does — the load
+        // 404s and the next isMapLoaded() throws a LoadError, so the player
+        // gets the engine error screen part-way through the transfer.
+        if (resolved.some((cmd) => referencesMap(cmd.type as string))) {
+          try {
+            const inventory = await loadTransferInventory(
+              project.dataPath,
+              transferTargets(resolved)
+            );
+            notes.push(...checkMapRefs(resolved, inventory).notes);
+          } catch (error) {
+            if (error instanceof MapRefError) {
               return {
                 content: [{ type: 'text' as const, text: error.message }],
                 isError: true,

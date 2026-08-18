@@ -2057,6 +2057,101 @@ this touches what a material *looks* like, not what the passage flags say.
 it deliberately — floor and surround are different materials, so the boundary reads by colour
 whether or not either is seamless, and the note would fire on nearly every valid call.
 
+### What the map points at
+
+`database-refs.ts` covered the ten tables a command list can name. Three references live
+*outside* it and were unchecked: the map a `transfer_player` names, the character sheet a page
+image names, and a map's own `tilesetId`. P5-34 checks all three — and the interesting part is
+that they do **not** all fail the way the database lookups do.
+
+**Two of them crash the game outright.** Both reach the same throw:
+
+```js
+DataManager.checkError = function() { if (this._errors.length > 0) { ... throw ["LoadError", url, retry]; } }
+ImageManager.isReady   = function() { ... if (bitmap.isError()) { this.throwLoadError(bitmap); } ... }
+```
+
+A `transfer_player` to a map with no file reserves the transfer, `DataManager.loadMapData`
+requests `Map%03d.json`, the 404 lands in `DataManager._errors`, and the next `isMapLoaded()`
+throws — the player gets the engine's error screen mid-transfer, on a black scene. A page image
+naming a sheet that is not in `img/characters` is worse in reach if not in kind: `Bitmap._onError`
+puts it in the `"error"` state and `Scene_Map` throws the moment it tests `isReady()`, so it is
+not the event that breaks, it is **the whole map, on arrival, for every player**.
+
+**One of them is silent**, and it is the guard-then-do-nothing shape again. A `tilesetId` past
+the end of Tilesets.json makes `Game_Map.tileset()` undefined, and then:
+
+```js
+Game_Map.tilesetFlags     = function() { const t = this.tileset(); if (t) {...} else { return []; } }
+Spriteset_Map.loadTileset = function() { this._tileset = $gameMap.tileset(); if (this._tileset) {...} }
+```
+
+`setBitmaps` is never called, so nothing is drawn; and `checkPassage` reads `flags[tile]` as
+`undefined`, where `(undefined & bit) === 0` is true — the "[o] Passable" branch. **Every tile
+becomes passable and invisible.** The map still "works". That asymmetry is asserted rather than
+described: `tests/core/map-refs.test.ts` ports `checkPassage` and checks that an empty flag table
+answers *passable* for all four direction bits, while the same tile with a real flag answers
+*impassable*.
+
+**Measured** with the new `scripts/measure-map-refs.mjs`:
+
+| | 201s | designation 0 | targets that resolve |
+|---|---|---|---|
+| samplemaps (293 maps) | 658 | 658 | 658 |
+| `Wicked Heart` (64 maps) | 108 | 108 | 108 |
+
+| | pages with a sheet | distinct sheets | resolve on disk |
+|---|---|---|---|
+| samplemaps | 1716 | 14 | 14 of 14, against the RTP's 45 |
+| `Wicked Heart` | 162 | 31 | 31 of 31, of its 88 |
+
+Every `tilesetId` in all five projects on hand is a real row. So **a dangling reference of any of
+these three kinds appears nowhere in 357 hand-made maps** — it is a shape only a generator
+produces, which is why each is a refusal rather than a note.
+
+The samplemaps transfer figure is the weaker of the two and is recorded as such: that folder is
+several sample projects' maps merged into one numbering, so its targets land inside 1-293 partly
+by construction. `Wicked Heart` is one real project and its 108 of 108 is the measurement that
+carries the claim.
+
+**A fourth check came free.** Once the target map is known to exist, its size is two numbers
+away, and `Game_Player.performTransfer` calls `locate()` with no bounds check at all. Landing
+outside the map leaves `Game_CharacterBase.canPass` returning false for every direction whose
+neighbour fails `Game_Map.isValid` — off the map on more than one side, the player cannot move,
+and nothing says why. That is refused too.
+
+**One place decides, again.** A character sheet can be named by `create_event`, `update_event`,
+`place_lever`, `place_locked_door`, `lock_dungeon_floor`, `place_building`, `decorate_dungeon`,
+`place_shop`, `place_key_for_door` and `generate_town` — ten tools, of which only `create_npc`
+and `populate_map` checked. `src/tools/map-ref-loaders.ts` is now the single loader they all go
+through, the same move P5-26 made for ground materials. `generate_town`'s hardcoded `!Door1` is
+checked as well, since a project without the RTP art would otherwise get a town whose every
+doorway crashes the map. On the tileset side, `create_map` was rewritten to go through
+`createMapFile` rather than duplicating it inline — without that it kept writing unchecked maps
+after the check was added, which the stdio run caught.
+
+**Out of reach, recorded rather than checked:** `battle_processing` designation. `command301`
+reads `params[0]` as 0 direct, 1 troop from a variable, 2 same as random encounters, and
+`convertCommand` hardcodes 0. That matches all 13 corpus 301s (11 on maps, 2 in common events,
+none of either other kind), so nothing is broken today — designation 2 is what an
+encounter-driven battle needs and belongs with the encounter work (P5-17), not here.
+`transfer_player` designation 1 is the same story: 0 of 766 corpus transfers use it. Both are
+now P5-35.
+
+**What it will not do:** claim anything it could not read. An unlistable `img/characters`, an
+unreadable `Tilesets.json`, a `data/` that will not enumerate — each degrades to *unchecked*, not
+to *empty*, the same rule `loadDatabaseTables` follows. Only the maps a command list actually
+transfers to are read for their size.
+
+**Verified** by driving the real server over stdio against a scratch copy of `Learn`: a transfer
+to map 42 refused naming `Map042.json` and listing the one map that exists; a transfer landing at
+(300, 300) on a 17x13 map refused with the `isValid` reasoning; a transfer to (4, 4) on map 1
+accepted; `create_event characterName: "NoSuchSheet"` refused; `characterName: "people1"` refused
+*with the case hint*, since the name is a URL; `place_lever characterName: "!Switch9"` refused;
+`create_map tilesetId: 99` and `update_map tilesetId: 0` both refused against a 6-tileset
+project; `create_map tilesetId: 5` accepted. `generate_town` on the same copy still writes its 10
+buildings with 10 door events, so the sheet check costs a working call nothing.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 7 / 34**
+**Progress: 8 / 36**
 
 ---
 
@@ -120,7 +120,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   [The engine guards, then does nothing](ROADMAP.md#the-engine-guards-then-does-nothing).
   Turned up P5-34.
 
-- [ ] **P5-34 — Check the references the map itself carries**
+- [x] **P5-34 — Check the references the map itself carries**
   *(turned up by P5-33.)* P5-33 covers the ten databases reachable from `add_event_commands`.
   The same guard-then-do-nothing shape sits outside it and is unchecked: a `transfer_player` to
   a map id with no `MapXXX.json`, a page image naming a character sheet that is not in
@@ -130,6 +130,42 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   designation 2 is what an encounter-driven battle needs and belongs with P5-17.
   *Done when:* a transfer to a map that does not exist is refused, and the other three are
   either checked or explicitly recorded as out of reach.
+  *Done:* `src/core/map-refs.ts` checks all three, and the premise turned out to be half right —
+  only the tileset fails the guard-then-do-nothing way. The other two **throw**: a missing map
+  file 404s into `DataManager._errors` and the next `isMapLoaded()` throws a LoadError, and a
+  missing character sheet makes `ImageManager.isReady` throw, which fails the *whole map* on
+  arrival rather than one event. The tileset is the silent one — `tilesetFlags()` returns `[]`
+  and `checkPassage` then takes its "[o] Passable" branch on every tile, so the map is invisible
+  and walkable everywhere; asserted with a port of `checkPassage`, not described. Measured with
+  the new `scripts/measure-map-refs.mjs`: **all 108 of `Wicked Heart`'s transfers resolve, all
+  658 of samplemaps' do, and all 45 distinct sheet names across 1878 image-bearing pages are on
+  disk** — a dangling reference appears nowhere in 357 hand-made maps. Two things came out of the
+  work: the target map's size is two numbers away once it is known to exist, so a transfer
+  landing off the edge (where `locate()` has no bounds check and `canPass` then freezes the
+  player) is refused too; and `create_map` was duplicating `createMapFile` inline, so it kept
+  writing unchecked maps until it was routed through it. Sheet checking is one loader shared by
+  ten tools. Designation 1/2 recorded as out of reach — see P5-35. See
+  [What the map points at](ROADMAP.md#what-the-map-points-at). Turned up P5-35 and P5-36.
+
+- [ ] **P5-35 — Emit the battle and transfer designations**
+  *(turned up by P5-34.)* `convertCommand` hardcodes `params[0] = 0` on both `301` and `201`, so
+  the two variable-driven forms cannot be written at all. `command301` designation 1 reads the
+  troop id from a variable and 2 calls `$gamePlayer.makeEncounterTroopId()`; `command201`
+  designation 1 reads map, x and y from three variables. The corpus never uses either — 0 of 13
+  battles and 0 of 766 transfers — so nothing is broken today, but **designation 2 is what an
+  encounter-driven battle needs**, which makes this a dependency of P5-17 rather than a papercut.
+  *Done when:* a battle can be "same as random encounters" and a transfer can take its
+  destination from variables, with the variable ids resolvable by name the way P5-03 does it.
+
+- [ ] **P5-36 — Refuse a transfer that lands somewhere the player cannot stand**
+  *(turned up by P5-34.)* P5-34 checks the landing square is *inside* the target map, which is
+  the half that needs only its width and height. The other half is passability: `locate()` will
+  put the player inside a wall, and if that tile is impassable in all four directions
+  `Game_CharacterBase.canPass` is false every way and they are frozen exactly as if they had
+  landed off the map. `check_map_walkability` already ports the rule, so this is reuse rather
+  than new reasoning — it needs the target's tileset flags, which the current check deliberately
+  does not read.
+  *Done when:* a transfer onto an unstandable tile is refused or warned about, saying which.
 
 - [ ] **P5-29 — Write page conditions**
   *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic
