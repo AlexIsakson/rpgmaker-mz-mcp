@@ -1746,6 +1746,120 @@ and no tool writes one at all, outside the generators that build their own pages
 still takes an id rather than a name; the corpus shows 0 uses of either, so nothing argues for it
 yet.
 
+### Indent is the gate
+
+`add_event_commands` emitted every command at `indent: 0`. That looked cosmetic and was not:
+**indent is the only thing the engine uses to find the end of a block.**
+
+```js
+Game_Interpreter.prototype.skipBranch = function() {
+    while (this._list[this._index + 1].indent > this._indent) {
+        this._index++;
+    }
+};
+```
+
+`executeCommand` sets `this._indent` from the command it is about to run, and `command111`
+calls `skipBranch()` when the condition is false. On a flat list nothing is ever deeper than the
+branch, so `skipBranch` advances **zero** commands and the body runs either way. Every
+`conditional_branch` this server had ever written was decoration. The same applies to
+`command411` (Else, skips when the branch *was* taken), `command402` (When) and `command413`
+(Repeat Above, which walks `_index` backwards to a command at its own indent) — all of it is
+indent arithmetic.
+
+**Measured over the corpus** — 3014 command lists across the 293 sample maps, the `newdata`
+reference project and the three projects under `M:/Projects/RPGMZ`; 11172 commands. Only **37
+lists contain a branch, loop or choice at all**, so structure is a thin sample and the code says
+so — but inside those 37 the rules hold with no exceptions at all, which is what makes them safe
+to encode:
+
+| claim | count | exceptions |
+|---|---|---|
+| lists ending `{code: 0, indent: 0}` | 3014 / 3014 | 0 |
+| block markers at their opener's indent | 82 / 82 | 0 |
+| conditional branches closed by a 412 | 34 / 34 | 0 |
+| branches and loops followed by a deeper command | 37 / 37 | 0 |
+| `show_choices` followed by a 402 at the *same* indent | 9 / 9 | 0 |
+| mid-list `{code: 0}` immediately before a shallower marker | 95 / 95 | 0 |
+
+Three of those settled a design question rather than merely confirming one:
+
+- **The terminator is load-bearing.** `skipBranch` reads `this._list[this._index + 1]`
+  *unguarded*, so a list ending in a branch with nothing after it throws. All 3014 lists carry
+  the `{code: 0, indent: 0}` terminator, which is why nobody has ever seen that crash. A test
+  asserts the port throws on an unterminated list, so the reason the tool always appends one is
+  recorded rather than folklore.
+- **A choice block is the one construct whose body does not start at the opener.** All 34
+  branches and all 3 loops are followed by a deeper command; all 9 `show_choices` are followed by
+  a `402` at the *same* indent. So commands written between `show_choices` and its first
+  `when_choice` run before the player has chosen anything — which is now a refusal.
+- **The editor leaves a blank line at the end of every block body.** All 95 mid-list `code: 0`
+  commands sit immediately before a marker at a shallower indent — 34 before an `End If`, 27
+  before a `When` or `End Choices`, 9 before an `Else`, 3 before a `Repeat Above`, the rest
+  before battle-result markers. It costs nothing at runtime (there is no `command0` method) and
+  it makes the output a file the editor would have written, so `assignIndents` emits it.
+
+Deepest indent anywhere is **3** (10225 commands at 0, 829 at 1, 113 at 2, 5 at 3). That is a
+fact about hand-made events, not a limit — nothing in the engine caps nesting and neither does
+this.
+
+`src/core/command-nesting.ts` holds the model. Indent is **computed, never passed**: a caller
+who could set it by hand could write a list the engine walks differently from the way it reads,
+which is the entire bug. Three block kinds, one mechanism:
+
+```
+conditional_branch … [else] … end_branch
+loop … repeat_above                        (break_loop jumps out)
+show_choices … when_choice / when_cancel … end_choices
+```
+
+`end_branch` (412), `repeat_above` (413), `end_choices` (404), `when_choice` (402), `when_cancel`
+(403) and `else` (411) are new command types. Neither `command412` nor `command404` exists in the
+interpreter at all — they are pure structure, and what actually ends a block is the indent of
+what follows.
+
+**What it refuses**, each naming the block and where it opened:
+
+- a block never closed — *"the conditional_branch at command 2 is never closed. Add end_branch —
+  without it the block runs to the end of the list, and every command after it becomes part of
+  the branch."*;
+- a closer with nothing open, and blocks that cross (`if … loop … end_branch … repeat_above`);
+- a divider in the wrong block — an `else` inside a `loop`;
+- a second `else` on one branch: `command411` tests the single result stored in
+  `_branch[_indent]`, so both arms would test it the same way and run together;
+- a `break_loop` with no loop around it. `command113` scans forward for the matching 413 and,
+  finding none, runs to the end of the list — silently skipping everything after it;
+- a command between `show_choices` and its first `when_choice`, per the 9/9 measurement above;
+- an `indent` supplied by the caller.
+
+A source command that expands to several — a message is a `101` plus its `401` body lines —
+gets its indent applied to **all** of them. A body line left at indent 0 would fall out of its
+own branch and be spoken unconditionally, which is the original bug wearing a different hat.
+
+**Verified against the engine's own walk, not against the emitter.** `walkCommands` ports
+`executeCommand`, `skipBranch`, `command111`, `command411`, `command402`, `command403`,
+`command413` and `command113` — index arithmetic only, no game state — and reports which
+commands ran. Testing `assignIndents` against a restatement of its own rules would prove
+nothing, because the bug was that a *self-consistent* flat list is walked by the engine in a way
+nobody intended. One test builds that old flat list explicitly and asserts the body runs on a
+false condition, so the bug stays pinned.
+
+Then the same walk was run over JSON the **real server** wrote, driven over stdio MCP: a
+gatekeeper with a nested branch inside an `else`, three switches allocated by name. The three
+paths come back as *"The gate stands open. / Go on through. / And your toll is settled."*,
+*"The gate stands open. / Go on through."*, and *"The gate is barred."* — with *"Safe travels."*
+on all three.
+
+**One read-back fixed on the way.** `describeCommands` rendered `End If` but silently dropped
+`End Choices`, so the command after a choice block read as though it were inside the last `When`.
+Now that the tool emits 404, that asymmetry was actively misleading.
+
+**Still open here:** nothing generates a branch. `place_locked_door`, `lever.ts` and `vault.ts`
+build their own pages and gate with *page conditions* rather than in-list branches — which is
+what the corpus does too (62 switch page conditions against 23 branches), and P5-29 is the tool
+for that half. Battle-result branches (601-604) and the `if…else` shape inside Shop Processing
+are not modelled; nothing emits them yet.
+
 ### One place decides whether a material can go on the ground
 
 Visual review finding 1 said an A2 material whose edge pieces are transparent is an *overlay*:

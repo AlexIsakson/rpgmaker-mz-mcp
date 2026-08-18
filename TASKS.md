@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 4 / 31**
+**Progress: 5 / 32**
 
 ---
 
@@ -55,7 +55,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   [Naming a flag in a command list](ROADMAP.md#naming-a-flag-in-a-command-list). Turned up P5-28,
   P5-29 and P5-30.
 
-- [ ] **P5-28 — Make a conditional branch actually gate**
+- [x] **P5-28 — Make a conditional branch actually gate**
   *(turned up by P5-03.)* `convertCommand` emits every command at `indent: 0`, and
   `Game_Interpreter.skipBranch` advances only `while (list[index + 1].indent > this._indent)` —
   so a false branch skips nothing and the commands after it run either way. Every
@@ -64,6 +64,30 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   `else` (411) and the branch/loop end markers (412, 413) as command types.
   *Done when:* a branch whose condition is false skips its body, asserted against a port of
   `skipBranch` rather than against itself.
+  *Done:* `src/core/command-nesting.ts` computes indent from block structure — indent is never
+  passed by hand, since a caller who could set it could write a list the engine walks differently
+  from the way it reads. Three block kinds on one mechanism: branch (`else` / `end_branch`), loop
+  (`repeat_above`) and choice (`when_choice` / `when_cancel` / `end_choices`). Measured over 3014
+  corpus command lists: **all 3014 end with the `{code:0, indent:0}` terminator** that
+  `skipBranch`'s unguarded lookahead depends on, **all 82 block markers sit at their opener's
+  indent**, **all 34 branches are closed by a 412**, and **all 9 `show_choices` are followed by a
+  402 at the same indent** while all 37 branches and loops are followed by a deeper command — the
+  one place the constructs differ, and now a refusal. Asserted with `walkCommands`, a port of
+  `executeCommand`/`skipBranch`/`command111`/`411`/`402`/`403`/`413`/`113`, and re-run over JSON
+  the real server wrote. See [Indent is the gate](ROADMAP.md#indent-is-the-gate). Turned up
+  P5-32.
+
+- [ ] **P5-32 — Branch on how a battle ended**
+  *(turned up by P5-28.)* `battle_processing` emits a bare 301 with nothing after it, so a
+  generated battle cannot lead anywhere — you cannot reward a win or handle a loss. The engine
+  has the same indent machinery for it: `command601` (If Win), `command602` (If Escape) and
+  `command603` (If Lose) each `skipBranch()` unless `_branch[_indent]` matches, with 604 closing.
+  Measured: of 13 `battle_processing` commands in the corpus, **11 are immediately followed by a
+  601 at the same indent**, so a bare 301 is the exception rather than the norm. Add the four as
+  a fourth block kind in `command-nesting.ts` — the model already takes a new `BlockSpec` with
+  multiple dividers.
+  *Done when:* a battle can be followed by win/escape/lose arms, asserted with `walkCommands`.
+  P5-18 ("a switch set by winning a battle") depends on this.
 
 - [ ] **P5-29 — Write page conditions**
   *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic

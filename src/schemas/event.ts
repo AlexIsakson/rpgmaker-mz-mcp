@@ -92,8 +92,11 @@ export const COMMAND_CODES: Record<string, number> = {
   // Flow Control
   conditional_branch: 111,
   else: 411,
+  end_branch: 412,
   loop: 112,
+  repeat_above: 413,
   break_loop: 113,
+  end_choices: 404,
   exit_event: 115,
   common_event: 117,
   label: 118,
@@ -441,6 +444,40 @@ export function convertCommand(cmd: {
 
     case 'break_loop':
       return [{ code: 113, indent: 0, parameters: [] }];
+
+    // Block markers. The engine has no command412 or command404 method at all,
+    // so both are pure structure: what ends a block is the indent of the
+    // commands after it, and these are what the editor draws that boundary as.
+    case 'else':
+      return [{ code: 411, indent: 0, parameters: [] }];
+
+    case 'end_branch':
+      return [{ code: 412, indent: 0, parameters: [] }];
+
+    case 'repeat_above':
+      return [{ code: 413, indent: 0, parameters: [] }];
+
+    case 'end_choices':
+      return [{ code: 404, indent: 0, parameters: [] }];
+
+    case 'when_choice': {
+      // command402 compares params[0] against the stored choice index; the
+      // editor keeps the label alongside it, which describeCommands reads back.
+      const index = (cmd.index as number) ?? 0;
+      const label = cmd.label as string | undefined;
+      return [{
+        code: 402,
+        indent: 0,
+        parameters: label === undefined ? [index] : [index, label],
+      }];
+    }
+
+    case 'when_cancel':
+      return [{ code: 403, indent: 0, parameters: [] }];
+
+    /** The blank line the editor leaves at the end of every block body. */
+    case 'blank':
+      return [{ code: 0, indent: 0, parameters: [] }];
 
     case 'exit_event':
       return [{ code: 115, indent: 0, parameters: [] }];

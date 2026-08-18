@@ -10,6 +10,12 @@ import {
   resolveCommandFlags,
   unusableFlagIds,
 } from '../core/command-flags.js';
+import {
+  assignIndents,
+  maxIndent,
+  NestingError,
+  type NestedCommand,
+} from '../core/command-nesting.js';
 import { defaultEventPage, endCommand } from '../templates/defaults.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
@@ -246,9 +252,19 @@ the result says which id it got:
 - { type: "conditional_branch", conditionType: 0, switchName: "Village gate open", param2: 0 }
 A name on a command with no flag in it is refused rather than ignored.
 
-Known limitation: every command is emitted at indent 0, so a conditional_branch
-does not yet gate the commands after it — Game_Interpreter.skipBranch only skips
-commands indented deeper than the branch, and there are none.
+Blocks nest. Indent is computed for you — the engine finds the end of a block by
+indent alone, so it is never passed by hand. Close every block you open:
+- conditional_branch ... [else] ... end_branch
+- loop ... repeat_above   (break_loop jumps out)
+- show_choices ... when_choice / when_cancel ... end_choices
+
+  { type: "conditional_branch", conditionType: 0, switchName: "Gate open", param2: 0 },
+  { type: "show_text", text: "It swings open." },
+  { type: "else" },
+  { type: "show_text", text: "It will not budge." },
+  { type: "end_branch" }
+
+An unbalanced list is refused, naming which block was left open and where.
 - common_event: { type: "common_event", eventId: 1 }
 - change_gold: { type: "change_gold", operation: 0, value: 100 }
 - change_items: { type: "change_items", itemId: 1, operation: 0, value: 1 }
@@ -354,22 +370,37 @@ commands indented deeper than the branch, and there are none.
           }
         }
 
-        // Convert human-readable commands to RPG Maker MZ format
-        const convertedCommands: EventCommand[] = [];
-        for (const cmd of resolved) {
-          const converted = convertCommand(cmd as { type: string; [key: string]: unknown });
-          convertedCommands.push(...converted);
+        // Work out the block structure before converting. Indent is the only
+        // thing the engine uses to find the end of a branch, so this is what
+        // decides whether a conditional_branch gates anything at all.
+        let placed;
+        try {
+          placed = assignIndents(resolved as NestedCommand[]);
+        } catch (error) {
+          if (error instanceof NestingError) {
+            return {
+              content: [{ type: 'text' as const, text: error.message }],
+              isError: true,
+            };
+          }
+          throw error;
         }
 
-        // Every command lands at indent 0, so skipBranch has nothing deeper to
-        // skip and a false branch runs its body anyway. Surface it rather than
-        // let a caller believe the gate holds.
-        if (convertedCommands.some((c) => c.code === 111)) {
+        // Convert human-readable commands to RPG Maker MZ format. A source
+        // command can expand to several (a message is a 101 and its 401 body
+        // lines); all of them belong at the indent the source command got, or
+        // the body would fall out of its own block.
+        const convertedCommands: EventCommand[] = [];
+        for (const { command, indent } of placed) {
+          const converted = convertCommand(command as { type: string; [key: string]: unknown });
+          for (const c of converted) convertedCommands.push({ ...c, indent });
+        }
+
+        const deepest = maxIndent(placed);
+        if (deepest > 0) {
           notes.push(
-            'Warning: a conditional_branch was added, but every command is emitted at indent 0. ' +
-            'Game_Interpreter.skipBranch advances only while the next command is indented ' +
-            'deeper than the branch, so nothing is skipped and the commands after it run ' +
-            'whether the condition holds or not.'
+            `Nesting: ${deepest} level(s) deep. The engine finds the end of a block by indent ` +
+            '(Game_Interpreter.skipBranch), so this is what makes the branch gate.'
           );
         }
 

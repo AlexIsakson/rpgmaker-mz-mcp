@@ -290,7 +290,13 @@ export function describeCommands(list: EventCommand[]): string[] {
       case 413:
         lines.push(`${pad}Repeat Above`);
         continue;
-      case 404: case 409: case 604:
+      case 404:
+        // Shown for the same reason End If is: without it there is nothing in
+        // the read-back to say where the block stopped, so the command after a
+        // choice reads as though it were inside the last When.
+        lines.push(`${pad}End Choices`);
+        continue;
+      case 409: case 604:
         continue; // structural end markers, no useful text
 
       case 101: case 105: case 108: case 355: {

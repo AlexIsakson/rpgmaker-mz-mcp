@@ -142,6 +142,9 @@ describe('describeCommands', () => {
       '  Set switch 1 = ON',
       'When "No"',
       '  Exit Event Processing',
+      // Shown for the same reason End If is: without it, the command after the
+      // block reads as though it were inside the last When.
+      'End Choices',
     ]);
   });
 
