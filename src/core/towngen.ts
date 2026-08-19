@@ -504,3 +504,80 @@ export function planTownPeople(plan: TownPlan): TownPeoplePlan {
 
   return { candidates, blocked };
 }
+
+/**
+ * Which building is the shop, and where its keeper stands.
+ *
+ * `place_shop` needs a coordinate and `generate_town` builds the buildings;
+ * neither knew about the other, so a generated town had no merchant unless one
+ * was placed by hand on a tile the caller had to work out.
+ *
+ * **The corpus cannot settle where a shopkeeper stands, and this says so
+ * rather than dressing a guess as a measurement.** Every shop page on this
+ * machine — 4 of them — belongs to *one event* on *one map*: `EV003` on
+ * `Wicked Heart`'s Map013, "Inn", a 19x15 **interior**. That event carries no
+ * sprite at all on any of its 5 pages; the visible character is a separate
+ * `Barkeeper` event one tile above it. So the single data point is "an
+ * invisible trigger on a counter tile inside a building", which says nothing
+ * about a merchant on a town street. The 293 sample maps have no shop at all.
+ *
+ * What the sample *does* confirm is the part that is the engine's anyway: the
+ * page is Action Button, priority "same as characters", fixed movement, and 2
+ * of the 4 pages are exactly `101, 401, 302, 605` — a greeting then the shop,
+ * which is the shape `shopCommands` emits.
+ *
+ * So the two rules below are **stated judgements**, marked as such:
+ *
+ *  - **Which building.** The one whose door is nearest the middle of the map.
+ *    A town's trade sits on its central street rather than at its edge. Ties go
+ *    to the larger footprint, then to position, so the choice is reproducible
+ *    without a seed — a shop is a fixed part of a map, the same reasoning
+ *    `selectStock` uses for not randomising the shelf.
+ *  - **Where the keeper stands.** Beside the door's approach tile, never on it.
+ *    On it, the keeper would block the door: an NPC has priority "same as
+ *    characters", so it occupies its tile, and the player could never open the
+ *    shop's own building. Standing to one side reads as a merchant at their
+ *    door and leaves the doorway clear.
+ *
+ * The keeper's tile is *offered*, not chosen: the candidates come back in
+ * preference order and the caller runs them through `planNpcPlacement`, so the
+ * shop inherits the same connectivity guarantee as every other townsperson.
+ */
+export interface TownShopPlan {
+  /** The building the shop belongs to. */
+  building: TownBuilding;
+  /** Tiles the keeper could stand on, best first. Empty if none is free. */
+  candidates: Slot[];
+}
+
+export function planTownShop(plan: TownPlan, people: TownPeoplePlan): TownShopPlan | null {
+  if (plan.buildings.length === 0) return null;
+
+  const cx = (plan.width - 1) / 2;
+  const cy = (plan.height - 1) / 2;
+  const area = (b: TownBuilding) => b.rect.width * b.rect.height;
+
+  const building = [...plan.buildings].sort((a, b) => {
+    const da = Math.abs(a.door.x - cx) + Math.abs(a.door.y - cy);
+    const db = Math.abs(b.door.x - cx) + Math.abs(b.door.y - cy);
+    if (da !== db) return da - db;
+    if (area(a) !== area(b)) return area(b) - area(a);
+    return a.rect.x - b.rect.x || a.rect.y - b.rect.y;
+  })[0];
+
+  const open = new Set(people.candidates.map((s) => `${s.x},${s.y}`));
+  const { x: ax, y: ay } = building.door.approach;
+
+  // Beside the approach first, then a step further along the same row, then
+  // straight out into the street. Left before right only to be deterministic.
+  const wanted: Slot[] = [
+    { x: ax - 1, y: ay }, { x: ax + 1, y: ay },
+    { x: ax - 2, y: ay }, { x: ax + 2, y: ay },
+    { x: ax, y: ay + 1 },
+  ];
+
+  return {
+    building,
+    candidates: wanted.filter((s) => open.has(`${s.x},${s.y}`)),
+  };
+}

@@ -3,6 +3,7 @@ import {
   planTown,
   assessTownBuild,
   planTownPeople,
+  planTownShop,
   renderTownAscii,
   TownError,
   TOWN_DEFAULTS,
@@ -469,5 +470,71 @@ describe('planTownPeople', () => {
         expect(has(q.candidates, b.door.x, b.door.y)).toBe(false);
       }
     }
+  });
+});
+
+describe('planTownShop', () => {
+  /**
+   * Two stated judgements under test — which building, and where the keeper
+   * stands. Neither is measured, because the only shop on this machine is an
+   * invisible trigger inside an inn (see the module comment); what *is*
+   * enforced is that the keeper never takes the door approach, since that would
+   * block the very shop it belongs to.
+   */
+  const plan = planTown(options());
+  const people = planTownPeople(plan);
+  const shop = planTownShop(plan, people)!;
+
+  it('picks the building whose door is nearest the middle of the map', () => {
+    const cx = (plan.width - 1) / 2;
+    const cy = (plan.height - 1) / 2;
+    const dist = (b: typeof shop.building) =>
+      Math.abs(b.door.x - cx) + Math.abs(b.door.y - cy);
+    for (const other of plan.buildings) {
+      expect(dist(shop.building)).toBeLessThanOrEqual(dist(other));
+    }
+  });
+
+  it('never offers the door approach tile, which would block the shop', () => {
+    const a = shop.building.door.approach;
+    expect(shop.candidates.some((s) => s.x === a.x && s.y === a.y)).toBe(false);
+  });
+
+  it('offers only tiles a townsperson could also stand on', () => {
+    const open = new Set(people.candidates.map((s) => `${s.x},${s.y}`));
+    for (const slot of shop.candidates) {
+      expect(open.has(`${slot.x},${slot.y}`)).toBe(true);
+    }
+  });
+
+  it('keeps the keeper next to the door rather than anywhere in town', () => {
+    const a = shop.building.door.approach;
+    for (const slot of shop.candidates) {
+      expect(Math.abs(slot.x - a.x)).toBeLessThanOrEqual(2);
+      expect(Math.abs(slot.y - a.y)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('is reproducible without a seed — a shop is a fixed part of a map', () => {
+    const again = planTownShop(planTown(options()), planTownPeople(planTown(options())))!;
+    expect(again.building.rect).toEqual(shop.building.rect);
+    expect(again.candidates).toEqual(shop.candidates);
+  });
+
+  it('finds a building and somewhere to stand across seeds', () => {
+    for (let seed = 1; seed <= 8; seed++) {
+      const p = planTown(options({ seed }));
+      const q = planTownPeople(p);
+      const s = planTownShop(p, q);
+      expect(s).not.toBeNull();
+      expect(s!.candidates.length).toBeGreaterThan(0);
+      expect(p.buildings).toContain(s!.building);
+    }
+  });
+
+  it('returns null when the town has no buildings to make a shop of', () => {
+    const empty = planTown(options({ width: 22, height: 30 }));
+    expect(empty.buildings).toHaveLength(0);
+    expect(planTownShop(empty, planTownPeople(empty))).toBeNull();
   });
 });

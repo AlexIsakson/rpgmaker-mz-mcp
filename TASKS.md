@@ -8,11 +8,11 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 4 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 5 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 15 / 16.** Defects turned up while doing the above, listed at the end.
 
-Two numbers, not one: 19 commits in, most of them went on defects rather than on the plan,
+Two numbers, not one: most commits so far went on defects rather than on the plan,
 and a single combined figure hid that. The discovered list is a byproduct of the verification
 CLAUDE.md demands — rendering the map and driving the real server — so it grows when the method
 is working, and it should not be read as the plan slipping.
@@ -450,12 +450,26 @@ architectural model into an inhabited place.
   [What the last generation left behind](ROADMAP.md#what-the-last-generation-left-behind).
   Turned up P5-42.
 
-- [ ] **P5-05 — `generate_town` places a shop**
+- [x] **P5-05 — `generate_town` places a shop**
   `place_shop` needs a coordinate and `generate_town` builds the buildings; neither knows about
   the other, so a generated town has no merchant unless one is placed by hand. Pick a building,
   mark it as the shop, put the shopkeeper inside it (needs its interior — see P5-13) or at its
   door, and stock it from the project database the way `place_shop` already does.
   *Done when:* a generated town has a working shop reachable from the street.
+  *Done:* `planTownShop` in `src/core/towngen.ts`, feeding `planNpcPlacement` with `count: 1` so
+  the keeper inherits the same connectivity guarantee as every villager, and placed *before* the
+  townsfolk so none of them can take its tile. Stock comes from `loadPresetStock`, now shared
+  with `place_shop` so both phrase an empty database the same way. **The corpus turned out to
+  settle even less than the shop module already warned:** the "4 shop pages" are 4 pages of *one
+  event*, on an **interior** map, carrying **no sprite at all** — the visible character is a
+  separate Barkeeper event above it, and the 293 sample maps have no shop. So both placement
+  rules are marked as stated judgements: the building nearest the map centre, and beside the door
+  approach rather than on it — on it, the keeper would block the door of its own shop. Verified
+  over MCP: keeper at (18, 19) beside the 7x4 building at (18, 15), 6 rows of real stock, page
+  written as `101,401,302,605×5` with the 302 carrying the first goods row `[0,13,0,0,false]` as
+  `command302` reads it, the door's approach tile **(19, 19) left free**, 3 standable neighbours
+  to talk from, 1133 standable in one connected area. See
+  [Somewhere to spend the money](ROADMAP.md#somewhere-to-spend-the-money).
 
 - [ ] **P5-06 — Doors on a building's top edge**
   A door sits on the bottom wall row and is entered from the tile below

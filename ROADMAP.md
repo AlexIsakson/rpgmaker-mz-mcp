@@ -2335,6 +2335,60 @@ exactly what separates it from the `generate_town` case above. It is recorded he
 whoever does decide to change it starts from the measurement instead of rediscovering it. The
 same question applies to `populate_map` and `place_dungeon_stairs`, which were not measured.
 
+### Somewhere to spend the money
+
+`place_shop` needed a coordinate; `generate_town` built the buildings. Neither knew about the
+other, so a generated town had no merchant unless someone worked out a tile by hand and called
+the second tool against it. `planTownShop` closes that the same way `planTownPeople` did: the
+planner already knows which building is which and, in `door.approach`, exactly which tile each
+door is used from.
+
+**The corpus cannot settle where a shopkeeper stands, and this is the clearest case yet of
+saying so rather than dressing a guess as a measurement.** Every shop page on this machine — the
+"4 shop pages" the shop module already flagged as a thin sample — turns out to be thinner still:
+they are **4 pages of one event**, `EV003` on `Wicked Heart`'s Map013, and that map is an
+**interior** called "Inn", 19x15 on the `Inside` tileset. The event carries **no sprite on any of
+its 5 pages**; the visible character is a separate `Barkeeper` event one tile above it. So the
+single data point is "an invisible trigger on a counter tile inside a building". The 293 sample
+maps have no shop at all. Nothing there describes a merchant on a town street.
+
+What the sample *does* confirm is the part that was the engine's anyway, and it agrees with what
+`shopCommands` already emitted: Action Button, priority "same as characters", fixed movement, and
+2 of the 4 pages are exactly `101, 401, 302, 605`.
+
+So the two placement rules are **stated judgements**, labelled as such in the code:
+
+- **Which building** — the one whose door is nearest the middle of the map, ties to the larger
+  footprint then to position. A town's trade sits on its central street. It is deliberately not
+  seeded: a shop is a fixed part of a map, the same reasoning `selectStock` gives for not
+  randomising the shelf.
+- **Where the keeper stands** — beside the door's approach tile, never on it. An NPC has priority
+  "same as characters" and so occupies its tile; a keeper on the approach would block the door of
+  the very shop it belongs to, and nothing would say why.
+
+The keeper's tile is *offered*, not chosen. `planTownShop` returns candidates in preference order
+and the tool runs them through `planNpcPlacement` with `count: 1`, so the shop inherits the same
+connectivity guarantee as every villager — a keeper who would seal off an alley is refused, and
+the tool says so. The shop is placed **before** the townsfolk, so its tile is already an event by
+the time they are placed and none of them can take it.
+
+**Verified over MCP.** One `generate_town` call on a 44x34 map, seed 5: keeper at (18, 19) beside
+the door of the 7x4 building at (18, 15), stocked with 6 rows of real items from the project
+database (Antidote, Potion, Encounter Decreaser, Dispel Herb, Super Potion, Magic Water — the
+cheap half of `Items.json`, which is the default band). The written page is
+`101, 401, 302, 605, 605, 605, 605, 605, 0` with the 302's own parameters carrying the first
+goods row `[0, 13, 0, 0, false]` — kind 0 items, id 13, price type 0 meaning "whatever the
+database says" — which is exactly how `Game_Interpreter.command302` and
+`Window_ShopBuy.makeItemList` read it. The nearest door is at (19, 18) and **its approach tile
+(19, 19) came back free of events**, so the shop's own door still opens. The keeper has 3
+standable neighbours to be talked to from, and the map is 1133 standable in a single connected
+area.
+
+**Still open here:** the shop is at the door because there is no interior to put it in —
+`generate_town` does not build interiors, which is P5-13. When it does, the honest thing is to
+follow the one measured example and move the keeper inside, with the trigger on a counter tile.
+The greeting is also still a canned line per preset; P5-12 covers dialogue worth reading.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live

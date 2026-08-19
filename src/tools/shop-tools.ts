@@ -48,6 +48,47 @@ const PRESET_KINDS: Record<string, GoodsKind[]> = {
   armor: ['armor'],
 };
 
+/**
+ * Load a preset shop's stock from the project database.
+ *
+ * Shared with generate_town, which places a shop as part of the town rather
+ * than leaving a caller to run place_shop against a coordinate it would have
+ * to work out. Returns the refusal text instead of goods when the database has
+ * nothing tradeable in it, so both callers phrase that failure the same way.
+ */
+export async function loadPresetStock(
+  dataPath: string,
+  preset: string,
+  count: number,
+  priceBand?: [number, number]
+): Promise<{ goods: Goods[]; names: Map<string, string>; refusal: null } | { refusal: string }> {
+  const names = new Map<string, string>();
+  const kinds = PRESET_KINDS[preset] ?? PRESET_KINDS.general;
+  const goods: Goods[] = [];
+
+  for (const kind of kinds) {
+    const file = path.join(dataPath, DATABASE_FILE[kind]);
+    if (!(await FileHandler.exists(file))) continue;
+    const raw = await FileHandler.readJsonRaw(file);
+    const pool = Array.isArray(raw) ? stockCandidates(raw) : [];
+    for (const e of pool) names.set(`${kind}:${e.id}`, e.name);
+    goods.push(...selectStock(pool, kind, { count, priceBand }));
+  }
+
+  if (goods.length === 0) {
+    return {
+      refusal:
+        `Nothing in ${kinds.map((k) => DATABASE_FILE[k]).join(' / ')} is tradeable: an entry ` +
+        'needs a name and a price above zero. Window_ShopSell.isEnabled is ' +
+        '`item && item.price > 0`, so a price of 0 already means "not tradeable" to the engine.',
+    };
+  }
+
+  return { goods, names, refusal: null };
+}
+
+export const SHOP_GREETINGS = DEFAULT_GREETING;
+
 export function registerShopTools(server: McpServer): void {
   server.tool(
     'place_shop',

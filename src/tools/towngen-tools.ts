@@ -16,6 +16,7 @@ import {
   renderTownAscii,
   assessTownBuild,
   planTownPeople,
+  planTownShop,
   TownError,
   TOWN_DEFAULTS,
 } from '../core/towngen.js';
@@ -31,6 +32,8 @@ import {
 import { standableGrid, canPass, type Direction } from '../core/walkability.js';
 import { censusMap, clearMap, describeKeptContent } from '../core/map-reset.js';
 import { listCharacterSheets } from './npc-tools.js';
+import { loadPresetStock, SHOP_GREETINGS } from './shop-tools.js';
+import { shopCommands, describeGoods } from '../core/shop.js';
 import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
 import { collectProps, findProps, propCells, propPart, PropError, type Prop } from '../core/props.js';
 import { requireProject } from './project-tools.js';
@@ -176,6 +179,23 @@ export function registerTowngenTools(server: McpServer): void {
           'wanderer can walk into a doorway at runtime, which no static check can see.'
         ),
       npcNamePrefix: z.string().default('Villager').describe('Event names, numbered from 1'),
+      shop: z.boolean().default(true)
+        .describe(
+          'Give the town a working shop, stocked from the project database. The keeper stands ' +
+          'beside the door of the building nearest the middle of the map — never on the door ' +
+          'approach tile, which would block its own shop. Off leaves the town with no merchant.'
+        ),
+      shopPreset: z.enum(['general', 'weapon', 'armor']).default('general')
+        .describe('What the shop deals in. Same presets as place_shop.'),
+      shopStockCount: z.number().int().min(1).max(40).default(6)
+        .describe('How many things the shop stocks'),
+      shopPriceBand: z.array(z.number().min(0).max(1)).length(2).optional()
+        .describe(
+          'Slice of the price range to stock, as two fractions of the tradeable entries sorted ' +
+          'by price. Defaults to [0, 0.5] — the cheaper half, which suits a town.'
+        ),
+      shopGreeting: z.string().optional()
+        .describe('What the keeper says before the window opens. Omit for the preset line.'),
       keepExistingTiles: z.boolean().default(false)
         .describe(
           'Leave whatever is already painted on layers 1-3, the shadow plane and the region ' +
@@ -461,38 +481,101 @@ export function registerTowngenTools(server: McpServer): void {
         let npcRejected = 0;
         let npcRanOut = false;
         const missingSheets: string[] = [];
+        let shopLine: string | null = null;
+        let shopStock: string[] = [];
 
-        if (args.npcCount > 0) {
-          const wanted = args.npcSheets ?? DEFAULT_NPC_SHEETS;
-          const available = await listCharacterSheets(project.path);
-          const sheets = wanted.filter((s) => available.length === 0 || available.includes(s));
-          missingSheets.push(...wanted.filter((s) => !sheets.includes(s)));
+        const wantsPeople = args.npcCount > 0 || args.shop;
+        const wanted = args.npcSheets ?? DEFAULT_NPC_SHEETS;
+        const available = wantsPeople ? await listCharacterSheets(project.path) : [];
+        const sheets = wanted.filter((s) => available.length === 0 || available.includes(s));
+        if (wantsPeople) missingSheets.push(...wanted.filter((s) => !sheets.includes(s)));
 
-          if (sheets.length === 0) {
-            // The town itself is fine; only its people could not be drawn. A
-            // refusal here would throw away a good map over a missing PNG.
-            notes.push(
-              `None of ${wanted.join(', ')} are in img/characters, so the town was left empty. ` +
-              'Use list_character_sheets to see what the project has, and pass npcSheets.'
-            );
-          } else {
-            const people = planTownPeople(plan);
-            const standable = standableGrid(mapData, tileset.flags);
-            const canStep = (ax: number, ay: number, bx: number, by: number): boolean => {
-              const dx = bx - ax;
-              const dy = by - ay;
-              const d = (dx === 1 ? 6 : dx === -1 ? 4 : dy === 1 ? 2 : 8) as Direction;
-              return canPass(mapData, tileset.flags, ax, ay, d);
-            };
+        if (wantsPeople && sheets.length === 0) {
+          // The town itself is fine; only its people could not be drawn. A
+          // refusal here would throw away a good map over a missing PNG.
+          notes.push(
+            `None of ${wanted.join(', ')} are in img/characters, so the town was left empty. ` +
+            'Use list_character_sheets to see what the project has, and pass npcSheets.'
+          );
+        } else if (wantsPeople) {
+          const people = planTownPeople(plan);
+          const standable = standableGrid(mapData, tileset.flags);
+          const canStep = (ax: number, ay: number, bx: number, by: number): boolean => {
+            const dx = bx - ax;
+            const dy = by - ay;
+            const d = (dx === 1 ? 6 : dx === -1 ? 4 : dy === 1 ? 2 : 8) as Direction;
+            return canPass(mapData, tileset.flags, ax, ay, d);
+          };
+          const takenTiles = () =>
+            mapData.events.filter((e) => e !== null).map((e) => ({ x: e!.x, y: e!.y }));
 
+          // The shop goes down before the townsfolk, so its tile is already an
+          // event by the time they are placed and none of them can take it. It
+          // runs through planNpcPlacement like everyone else rather than being
+          // dropped on a coordinate, which is what earns it the same guarantee:
+          // a keeper who would seal off an alley is refused too.
+          if (args.shop) {
+            const shopPlan = planTownShop(plan, people);
+            if (shopPlan === null || shopPlan.candidates.length === 0) {
+              notes.push(
+                shopPlan === null
+                  ? 'No building to make a shop of, so the town has no merchant.'
+                  : 'Every tile beside the chosen shop door was taken, so the town has no ' +
+                    'merchant. The door approach itself is deliberately not used — a keeper ' +
+                    'standing there would block the shop it belongs to.'
+              );
+            } else {
+              const stock = await loadPresetStock(
+                project.dataPath,
+                args.shopPreset,
+                args.shopStockCount,
+                args.shopPriceBand as [number, number] | undefined
+              );
+              if (stock.refusal !== null) {
+                notes.push(`${stock.refusal} The town was built without a shop.`);
+              } else {
+                const spot = planNpcPlacement(standable, {
+                  count: 1,
+                  seed,
+                  allow: shopPlan.candidates,
+                  blocked: [...people.blocked, ...takenTiles()],
+                  canStep,
+                });
+                if (spot.placed.length === 0) {
+                  notes.push(
+                    'The shopkeeper was refused every tile beside its door — standing on any ' +
+                    'of them would have sealed part of the town off. No merchant was placed.'
+                  );
+                } else {
+                  const at = spot.placed[0];
+                  const greeting = args.shopGreeting ?? SHOP_GREETINGS[args.shopPreset];
+                  const sheet = sheets[0];
+                  const keeper = addEvent(mapData, (id) =>
+                    npcEvent(id, at.x, at.y, 'Shop', {
+                      characterName: sheet,
+                      characterIndex: charactersOnSheet(sheet) === 1 ? 0 : (seed + 3) % 8,
+                      text: greeting,
+                      movement: 'fixed',
+                      commands: shopCommands(stock.goods, false),
+                    })
+                  );
+                  const b = shopPlan.building.rect;
+                  shopLine =
+                    `Shop: event ${keeper.id} at (${at.x}, ${at.y}), beside the door of the ` +
+                    `${b.width}x${b.height} building at (${b.x}, ${b.y}) — the one nearest the ` +
+                    `middle of the map. ${stock.goods.length} row(s) of ${args.shopPreset} stock.`;
+                  shopStock = describeGoods(stock.goods, stock.names);
+                }
+              }
+            }
+          }
+
+          if (args.npcCount > 0) {
             const placement = planNpcPlacement(standable, {
               count: args.npcCount,
               seed,
               allow: people.candidates,
-              blocked: [
-                ...people.blocked,
-                ...mapData.events.filter((e) => e !== null).map((e) => ({ x: e!.x, y: e!.y })),
-              ],
+              blocked: [...people.blocked, ...takenTiles()],
               canStep,
             });
             npcRejected = placement.rejected;
@@ -536,6 +619,9 @@ export function registerTowngenTools(server: McpServer): void {
             'part of the town off.',
           `Shadows: ${shadows.added} tile(s).`,
         ];
+        if (shopLine !== null) {
+          lines.push('', shopLine, ...shopStock.map((g) => `  ${g}`));
+        }
         if (clearedEvents > 0) {
           lines.push(`Cleared ${clearedEvents} event(s) that were already on the map.`);
         }
