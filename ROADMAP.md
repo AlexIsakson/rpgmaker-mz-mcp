@@ -2479,6 +2479,125 @@ non-rectangular shapes P5-07…P5-10 are about. Neither is settled by the corpus
 filed as a task: this one is recorded here rather than in the backlog because the tool behaves as
 its description promises, and a caller who leaves the option alone is unaffected.
 
+### The shape of a hand-made map
+
+Visual review finding 7 — *everything the generators emit is a rectangle* — had never moved,
+because it was an impression with no number opposite it. [`scripts/measure-map-shape.mjs`](scripts/measure-map-shape.mjs)
+puts one there. It takes a directory of maps, so the same instrument that measures the 293
+shipped sample maps can be pointed at a generated project's `data` folder; that is what turns
+these counts from a description into a target.
+
+**Roofs are identified from the editor's own tile labels, not from structure.** RPG Maker ships a
+`.txt` beside every tileset PNG — one line per tile id on the object sheets, one line per *kind*
+on the autotile sheets. A roof is a tile the editor calls `Roof …`. That matters: the C sheets
+also hold towers, monuments and chimneys, and a purely structural "is this a nine-slice block"
+test reads those as roofs. It also confirmed the layout `blueprint.ts` records — `Outside_C`
+line 129 is `Roof A (Green Tile)`, sheet-local id 128, absolute 384, which is exactly the green
+set's `topLeft`.
+
+#### 1. How far a material boundary runs straight
+
+A boundary exists between two adjacent layer-0 cells of different material, and it runs *straight*
+for as long as the same ordered pair of materials stays on the same two sides. Over 80,191 runs:
+
+| | hand-made (293 maps) | `generate_town`, 44x46 seed 7 |
+|---|---|---|
+| median run length | **1** | 4 |
+| mean | 1.73 | 5.02 |
+| p90 | 3 | 7 |
+| p99 | **9** | 19 |
+| max | 45 | 19 |
+| runs ≥ 4 | 8.2% | **58.1%** |
+| runs ≥ 8 | 1.9% | 9.7% |
+| share of boundary length in runs ≥ 4 | 30.9% | **84.1%** |
+
+That is finding 7 as a number at last. **A hand-drawn material boundary turns almost every tile —
+70.5% of all runs are a single tile long** — while 84% of the generated town's boundary length
+sits in runs of 4 or more. The generator's median run is four times the corpus median.
+
+For P5-09 the usable threshold is the corpus p99: **a boundary run longer than 9 is something
+under 1% of hand-made runs do**, and a `fill_map_region` rectangle 20 wide emits one in the top
+0.1%. The honest caveat is that the generated figure is one town against a corpus of every map
+type, and a town's streets are genuinely straighter than a forest; the gap is far too large to be
+that alone, but the comparison should be re-run per generator rather than trusted as one ratio.
+
+#### 2. Roof footprints, and the corners nothing uses
+
+233 roof components of 4+ tiles — 103 A3 autotile roofs (all on layer 0, where `place_building`
+paints them) and 130 nine-slice roofs on layers 2 and 3.
+
+- **A3 autotile roofs: 78 of 103 rectangular (75.7%).** The engine computes the shape from the
+  silhouette, so there is no piece to choose — a quarter of hand-made A3 roofs simply are not
+  rectangles.
+- **Nine-slice roofs need a seam test before they can be counted at all.** Two buildings that
+  share an edge *and* a roof material flood-fill into one component, and its outline then says
+  nothing about whether any single roof is L-shaped. A cell's correct nine-slice piece follows
+  from the silhouette — column 0 where nothing is to its left, 2 where nothing is to its right,
+  1 between — so a cell holding the wrong piece is a seam. Of 94 nine-slice components, **72
+  carry seams and are merged buildings**; of the **22 that are one coherent roof, 4 (18.2%) are
+  not rectangles**.
+- The set's origin has to be read off the roof itself, not off the sheet. Taking the minimum
+  sheet column over a label's tile ids is wrong: **the Snow set's inner corners wrap onto the
+  next row band, two columns to the left of its own `topLeft`**. The cell with nothing above it
+  and nothing to its left is by definition the top-left piece, which fixes the origin without
+  assuming a layout.
+
+**Which inner-corner piece goes where is now settled, and it is a clean rule.** A concave corner
+is a cell with all four orthogonal neighbours and at least one missing *diagonal*. Across every
+sample roof there are **26** of them:
+
+| | count |
+|---|---|
+| turned with the set's dedicated inner-corner piece | **14** (53.8%) |
+| turned with an ordinary edge piece instead | 12 (46.2%) |
+
+Every dedicated use lines up with the catalogue already in `blueprint.ts`, across all four sets:
+
+- **`innerCorners[0]` fills a missing down-**left** diagonal** — green 395, white 411, gold 427
+  (also 419), brown 446.
+- **`innerCorners[1]` fills a missing down-**right** diagonal** — green 396, white 412, gold 428
+  (also 420), brown 447.
+
+And the negative result is as useful: **no dedicated piece is ever used for a missing *up* corner.**
+Every UL-only or UR-only concave corner in the corpus was filled with a plain edge tile. That
+follows from the art being directional — the valley pieces exist for the eave, and there is no
+up-side equivalent to reach for. Gold turning out to have pieces at two rows (419/420 as well as
+427/428) matches `blueprint.ts`'s existing note that brown's extras sit *below* its block rather
+than beside it: the sets are not laid out uniformly, and the left/right ordering is the only thing
+that generalises.
+
+**26 concave corners across 293 maps is a thin sample and P5-08 should treat it as one.** It is
+enough to fix *which* piece and *which* diagonal — the left/right rule holds 14 times out of 14
+with no counterexample — and not enough to say how often an L-shaped roof is worth emitting.
+
+#### 3. Ground regions, and 4. interior rooms
+
+4,139 layer-0 regions of 8+ tiles of one material. Overall 31.3% are exactly their bounding box,
+but that number is almost meaningless on its own, because **rectangularity collapses with size**:
+
+| region size | regions | rectangular |
+|---|---|---|
+| 8–15 tiles | 1866 | 48.2% |
+| 16–31 | 1150 | 28.1% |
+| 32–63 | 509 | 11.4% |
+| 64–127 | 280 | 3.9% |
+| **128+** | **334** | **1.5%** |
+
+**Of the 334 hand-made ground regions of 128 tiles or more, 5 are rectangles.** That is the band a
+generator actually emits into, and it is where the corpus says a rectangle is a mistake. Regions
+fill 67% of their bounding box at the median, and 68.5% vary in width from row to row.
+
+Interiors are the same story rather than a special case: over the 139 maps on an Inside tileset,
+562 floor regions of 8+ tiles, **25.3% rectangular**, filling 70% of their bounding box at the
+median. So P5-10 does not need a separate rule for rooms.
+
+**Naming, and one thing deliberately not done.** This is `measure-map-shape.mjs`, not
+`build-shape-catalogue.mjs`. The `build-*-catalogue` scripts generate a committed `.ts` because
+the runtime needs the table — prop names, passage flags. Nothing here is a table the server reads:
+it is four distributions that inform three future features, and generating a module nothing
+imports would be copying the form without the reason. The numbers live here and the script
+re-derives them on demand. Not filed as a task either way.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live

@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 6 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 7 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 15 / 16.** Defects turned up while doing the above, listed at the end.
 
@@ -509,13 +509,33 @@ The one finding that has never moved: **everything the generators emit is a rect
 hand-made maps have almost no straight material boundaries. Now measurable against the 293 sample
 maps — do P5-07 first, and let it decide the shape of the three that follow.
 
-- [ ] **P5-07 — Measure what hand-made shape actually looks like**
+- [x] **P5-07 — Measure what hand-made shape actually looks like**
   A measurement task, no feature. Over `samplemaps/`: how long is a straight material run before
   it turns? How often is a roof footprint non-rectangular, and which inner-corner cells do
   L-shaped roofs use? How wide are streets and do they change width? Are interior rooms
   rectangular? Commit the numbers as a catalogue under `scripts/` the way
   `build-prop-catalogue.mjs` and `build-passage-catalogue.mjs` already do.
   *Done when:* there are counts to design P5-08…P5-10 against, recorded in ROADMAP.
+  *Done:* `scripts/measure-map-shape.mjs`. It takes a directory, so the instrument that measures
+  the 293 sample maps also measures a generated project — which is how finding 7 finally got a
+  number. **Hand-made boundary runs: median 1, p90 3, p99 9, and 70.5% of all runs are a single
+  tile. A generated town: median 4, p99 19, with 84.1% of its boundary length in runs of 4+
+  against 30.9% by hand.** P5-09's threshold is the corpus p99: a run longer than **9** is
+  something under 1% of hand-made runs do.
+  **Rectangularity collapses with size** — 48.2% of 8-15 tile regions are rectangles, but **5 of
+  334 regions of 128+ tiles**, which is the band a generator emits into. Interiors are the same
+  story, not a special case: 25.3% of 562 floor regions across 139 Inside maps.
+  **Roofs needed a seam test to be countable at all**: two buildings sharing an edge and a roof
+  material flood-fill into one component. Of 94 nine-slice components 72 are merged buildings;
+  of the **22 that are one coherent roof, 4 (18.2%) are not rectangles**. A3 autotile roofs: 78
+  of 103 rectangular. **The inner-corner rule is settled and clean — `innerCorners[0]` fills a
+  missing down-LEFT diagonal, `innerCorners[1]` a missing down-RIGHT, 14 uses out of 14 with no
+  counterexample across all four sets** — but only **26 concave corners exist in 293 maps**, and
+  46.2% of those were filled with a plain edge tile anyway, so P5-08 should treat the sample as
+  thin. No dedicated piece is ever used for a missing *up* corner. Roofs are identified from the
+  editor's own `Roof …` tile labels, not from structure, because the C sheets also hold towers
+  and monuments a structural test reads as roofs. See
+  [The shape of a hand-made map](ROADMAP.md#the-shape-of-a-hand-made-map).
 
 - [ ] **P5-08 — L-shaped roofs and inner corners**
   `src/core/blueprint.ts` already catalogues each roof set's inner-corner pieces and nothing uses
