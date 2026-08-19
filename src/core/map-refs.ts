@@ -320,19 +320,27 @@ function requireTransferTarget(
 }
 
 /**
- * Refuse a landing tile that reaches only a pocket of the target map.
+ * Refuse a landing tile the player cannot even stand on, or one they can
+ * stand on but effectively never leave.
  *
- * A tile a player can stand on but effectively never leave looks fine to
- * `requireTransferTarget`'s bounds check — it is inside the map, and it is
- * even standable. `Wicked Heart` map 32 transfers to map 59's (0, 49), a tile
- * passable down, left and up but not right, so `Game_CharacterBase.canPass`
- * blocks column 0's only way out and the player can walk 11 of the map's 516
- * reachable tiles. `reachableFromLanding` is the same flood
- * `analyseWalkability` runs for the walkability report, reduced to the ratio
- * this needs. See `TRAPPED_LANDING_RATIO` for where the threshold comes from.
+ * P5-34 already checks the landing square is *inside* the target map, which
+ * only needs its width and height. This is the other half, and it needs the
+ * whole tileset resolved: `locate()` has no passability check of its own, so
+ * a tile impassable from every direction — `readTile(...).isWall` — freezes
+ * the player exactly as if they had landed off the map, just with nothing
+ * else catching it. `check_map_walkability` already ports the rule
+ * (`Game_CharacterBase.canPass`); this is reuse, not new reasoning.
+ * **Measured** in P5-38's arrival sweep: 24 of the 394 arrival points on this
+ * machine land on a tile the player cannot stand on, so this is not
+ * hypothetical.
  *
- * A landing tile the player cannot stand on at all is left alone — that is a
- * different failure (P5-36), not this one.
+ * The standable-but-stuck case is different: `Wicked Heart` map 32 transfers
+ * to map 59's (0, 49), a tile passable down, left and up but not right, so
+ * `Game_CharacterBase.canPass` blocks column 0's only way out and the player
+ * can walk 11 of the map's 516 reachable tiles. `reachableFromLanding` is the
+ * same flood `analyseWalkability` runs for the walkability report, reduced to
+ * the ratio this needs. See `TRAPPED_LANDING_RATIO` for where that threshold
+ * comes from.
  */
 function requireWalkableLanding(
   mapId: number,
@@ -344,8 +352,20 @@ function requireWalkableLanding(
   const entry = inventory.mapReach?.get(mapId);
   if (entry === undefined) return; // unreadable target or tileset — no claim
 
+  const inside = x >= 0 && y >= 0 && x < entry.map.width && y < entry.map.height;
+  if (!inside) return; // off the map — P5-34's bounds check owns this when it can see the size
+
   const reach = reachableFromLanding(entry.map, entry.flags, { x, y });
-  if (!reach.standable || reach.largestArea === 0) return;
+
+  if (!reach.standable) {
+    throw new MapRefError(
+      `${ordinal(index)} (transfer_player) lands the player at (${x}, ${y}) on map ${mapId}, ` +
+        'a tile impassable from every direction. Game_Player.performTransfer places them there ' +
+        'with no passability check, and Game_CharacterBase.canPass is then false for up, down, ' +
+        'left and right — the player is frozen in place exactly as if they had landed off the ' +
+        'map, except this time they are standing on a tile that looks like part of the map.'
+    );
+  }
 
   const ratio = reach.reachableTiles / reach.largestArea;
   if (ratio >= TRAPPED_LANDING_RATIO) return;

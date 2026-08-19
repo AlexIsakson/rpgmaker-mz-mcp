@@ -2424,7 +2424,7 @@ would let them leave the pocket.
 already runs, reduced to the two numbers this needs: how big the area under the landing tile is,
 against how big the map's largest connected area is. `requireTransferTarget` in `map-refs.ts`
 refuses when the ratio falls under `TRAPPED_LANDING_RATIO`, naming both tile counts. A landing
-tile that is not standable at all is left alone here — that failure is P5-36's, not this one.
+tile that is not standable at all is a different failure, P5-36's — see the next section.
 
 **Where the threshold comes from — measured, not stated.** P5-38 found 36 arrivals across the
 corpus that land outside a map's largest area; this task's whole premise depends on where those
@@ -2461,6 +2461,38 @@ below the line) was written to disk with real `Map002.json` and `Tilesets.json` 
 `loadTransferInventory` + `checkMapRefs` run against them from the built `dist/` — not a
 hand-built `MapRefInventory` — refused the pocket landing and accepted the room one, confirming
 the loader's file reads and the core check agree the way they do in the unit tests.
+
+### A landing tile you cannot stand on at all
+
+P5-34 checks the landing square is *inside* the target map, using only its width and height. This
+is the other half of the same idea, and the one that needed the tileset resolved rather than just
+the map's dimensions: `locate()` has no passability check, so a tile impassable from every
+direction freezes the player exactly as if they had landed off the map — the failure P5-34 already
+catches — except this time the tile is sitting inside the map's bounds where that check cannot see
+it.
+
+**No new reasoning.** `check_map_walkability` already ports the rule: `readTile(...).isWall` is
+true when a tile's passage flags block all four directions, and `reachableFromLanding`'s
+`standable` field is exactly `!isWall`. P5-39's work already computes it for every checked
+landing, so this is a second branch in `requireWalkableLanding`, not a second flood.
+
+**Measured, in P5-38's arrival sweep**, not newly for this task: of the 394 arrival points found
+across every project on this machine, **24 (6.1%) land on a tile the player cannot stand on**. Not
+a hypothetical shape.
+
+**Ordering matters.** The bounds check (P5-34, against `mapSizes`) runs first and can throw before
+`requireWalkableLanding` is even called; this check runs second, against `mapReach`, and only after
+confirming the point is inside the target map using `entry.map`'s own width and height — so an
+off-map point that `mapSizes` did not catch (because only `mapReach` was available) is left
+unclaimed here too, rather than being misreported as "on a wall". The pocket check from the section
+above runs third, on the same `reachableFromLanding` result, so a caller gets at most one of the
+three transfer refusals per command, in the order the engine would actually hit them: LoadError,
+frozen on arrival, stranded in a corner.
+
+**Verified end to end**, the same way as the section above: a 10x6 room written to real
+`Map002.json` / `Tilesets.json` files, read back through `loadTransferInventory` and `checkMapRefs`
+from the built `dist/`. A landing on the open floor was accepted; a landing on the wall corner
+(0, 0) was refused, naming `canPass` and "frozen in place".
 
 ### Tool ergonomics, from building a town by hand
 

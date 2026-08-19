@@ -260,7 +260,7 @@ describe('a transfer whose destination is in variables', () => {
   });
 });
 
-describe('checkMapRefs — a landing tile the player cannot walk out of', () => {
+describe('checkMapRefs — a landing tile the player cannot use', () => {
   const FLOOR = 100;
   const WALL = 200;
 
@@ -323,8 +323,31 @@ describe('checkMapRefs — a landing tile the player cannot walk out of', () => 
     expect(message).toContain('canPass');
   });
 
-  it('leaves a landing on a wall alone — that failure belongs to a different check', () => {
-    expect(() => checkMapRefs([transfer(2, 0, 0)], inventory)).not.toThrow();
+  it('refuses a landing on a wall tile, impassable from every direction', () => {
+    expect(() => checkMapRefs([transfer(2, 0, 0)], inventory)).toThrow(MapRefError);
+  });
+
+  it('says the tile is impassable, not just that it is a wall', () => {
+    let message = '';
+    try {
+      checkMapRefs([transfer(2, 0, 0)], inventory);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('impassable from every direction');
+    expect(message).toContain('canPass');
+    expect(message).toContain('frozen');
+  });
+
+  it('makes no claim about a point off the map — the bounds check owns that', () => {
+    // (99, 99) is outside the 10x6 pocket map, so this function has nothing to
+    // add; requireTransferTarget's own bounds check (against mapSizes) is what
+    // catches an off-map landing when the size is known.
+    const offMapOnly: MapRefInventory = {
+      mapIds: new Set([1, 2]),
+      mapReach: new Map([[2, { map: makePocketMap(), flags: makeFlags() }]]),
+    };
+    expect(() => checkMapRefs([transfer(2, 99, 99)], offMapOnly)).not.toThrow();
   });
 
   it('makes no claim when the target map or its tileset could not be read', () => {
@@ -333,6 +356,7 @@ describe('checkMapRefs — a landing tile the player cannot walk out of', () => 
       mapSizes: new Map([[2, { width: 10, height: 6 }]]),
     };
     expect(() => checkMapRefs([transfer(2, 7, 2)], noReach)).not.toThrow();
+    expect(() => checkMapRefs([transfer(2, 0, 0)], noReach)).not.toThrow();
   });
 
   it('the threshold sits between the pocket ratio and an ordinary landing', () => {

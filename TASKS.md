@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 12 / 39**
+**Progress: 13 / 39**
 
 ---
 
@@ -255,7 +255,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   read back through the built `dist/`, not just a hand-built inventory. See
   [A landing tile you can stand on and never leave](ROADMAP.md#a-landing-tile-you-can-stand-on-and-never-leave).
 
-- [ ] **P5-36 — Refuse a transfer that lands somewhere the player cannot stand**
+- [x] **P5-36 — Refuse a transfer that lands somewhere the player cannot stand**
   *(turned up by P5-34.)* P5-34 checks the landing square is *inside* the target map, which is
   the half that needs only its width and height. The other half is passability: `locate()` will
   put the player inside a wall, and if that tile is impassable in all four directions
@@ -267,6 +267,14 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   *Note:* P5-38 measured the population — **24 of the 394 arrival points on this machine land on
   a tile the player cannot stand on**, so this is not hypothetical. The neighbouring class, a
   tile they can stand on but never leave, is P5-39.
+  *Done:* a second branch in `requireWalkableLanding` (`src/core/map-refs.ts`), reusing P5-39's
+  `reachableFromLanding` result rather than a new flood — its `standable` field is exactly
+  `!readTile(...).isWall`. Refused, matching the sibling checks. Runs after the bounds check
+  (P5-34) and before the pocket-ratio check (P5-39), so a bad transfer gets exactly one refusal,
+  in the order the engine would actually hit the failures. Verified end to end the same way as
+  P5-39: a real 10x6 room written to disk, read back through the built `dist/`, accepts a floor
+  landing and refuses the wall corner (0, 0). See
+  [A landing tile you cannot stand on at all](ROADMAP.md#a-landing-tile-you-cannot-stand-on-at-all).
 
 - [ ] **P5-29 — Write page conditions**
   *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic
