@@ -307,6 +307,40 @@ export function reachableFromAny(
   return { grid, used, stranded, areas: claimed.size };
 }
 
+export interface LandingReach {
+  /** Whether the landing tile can be stood on at all. */
+  standable: boolean;
+  /** Size of the connected area the landing tile sits in. */
+  reachableTiles: number;
+  /** Size of the map's largest connected area, for comparison. */
+  largestArea: number;
+}
+
+/**
+ * What a player who lands on one tile can actually reach.
+ *
+ * `reachableGrid` answers this for the caller's own arrival tile; this is the
+ * same flood, reduced to the two numbers a transfer check needs — how big the
+ * landing tile's area is, against how big the map's biggest area is. A ratio
+ * near 1 means the player lands in the map proper; a ratio near 0 means they
+ * land in a pocket walled off from almost everywhere else on the map.
+ */
+export function reachableFromLanding(
+  map: MapData,
+  flags: number[],
+  point: { x: number; y: number }
+): LandingReach {
+  const { areas, standable } = surveyAreas(map, flags, {});
+  const inside = point.x >= 0 && point.y >= 0 && point.x < map.width && point.y < map.height;
+  const isStandable = inside && standable[point.y][point.x];
+  const area = isStandable ? areas.find((a) => a.seen[point.y][point.x]) : undefined;
+  return {
+    standable: isStandable,
+    reachableTiles: area?.size ?? 0,
+    largestArea: areas[0]?.size ?? 0,
+  };
+}
+
 export function analyseWalkability(
   map: MapData,
   flags: number[],

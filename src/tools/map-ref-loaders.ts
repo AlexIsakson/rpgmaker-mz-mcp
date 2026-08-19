@@ -19,6 +19,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { FileHandler } from '../core/file-handler.js';
 import { requireCharacterSheet, type MapRefInventory, type MapSize } from '../core/map-refs.js';
+import { TilesetReader } from '../core/tileset-reader.js';
 import type { MapData } from '../schemas/map.js';
 import {
   collectTransferArrivals,
@@ -116,8 +117,38 @@ export async function loadMapSizes(
 }
 
 /**
- * The inventory for a command list: which maps exist, and how big the ones it
- * transfers to are.
+ * Full map data and tileset flags for the given targets, so the walk-out-again
+ * check can flood-fill the same way `check_map_walkability` does.
+ *
+ * A target is left out — not defaulted — when either read fails: the map file
+ * will not parse, or its `tilesetId` is not a resolvable tileset. The latter
+ * is exactly `requireTileset`'s failure case, checked separately; here it just
+ * means "cannot tell", the same as an unreadable map.
+ */
+export async function loadMapReach(
+  dataPath: string,
+  mapIds: Iterable<number>
+): Promise<ReadonlyMap<number, { map: MapData; flags: number[] }>> {
+  const out = new Map<number, { map: MapData; flags: number[] }>();
+  await Promise.all(
+    [...mapIds].map(async (id) => {
+      try {
+        const file = `Map${String(id).padStart(3, '0')}.json`;
+        const map = (await FileHandler.readJsonRaw(path.join(dataPath, file))) as MapData;
+        if (!Array.isArray(map?.data) || typeof map?.tilesetId !== 'number') return;
+        const flags = await TilesetReader.getFlags(dataPath, map.tilesetId);
+        out.set(id, { map, flags });
+      } catch {
+        // unreadable map or tileset — left out, not treated as broken
+      }
+    })
+  );
+  return out;
+}
+
+/**
+ * The inventory for a command list: which maps exist, how big the ones it
+ * transfers to are, and whether each landing tile leads anywhere.
  */
 export async function loadTransferInventory(
   dataPath: string,
@@ -125,7 +156,11 @@ export async function loadTransferInventory(
 ): Promise<MapRefInventory> {
   const mapIds = await loadMapIds(dataPath);
   const wanted = [...targets].filter((id) => mapIds === undefined || mapIds.has(id));
-  return { mapIds, mapSizes: await loadMapSizes(dataPath, wanted) };
+  const [mapSizes, mapReach] = await Promise.all([
+    loadMapSizes(dataPath, wanted),
+    loadMapReach(dataPath, wanted),
+  ]);
+  return { mapIds, mapSizes, mapReach };
 }
 
 /**

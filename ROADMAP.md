@@ -2412,6 +2412,56 @@ One cost worth naming: `loadArrivalPoints` reads every map in the project, becau
 at 14 ms for `Wicked Heart`'s 64 maps and 147 ms for the 293 sample maps, so `add_event_commands`
 derives only when a `sameAsRandomEncounter` battle is actually present.
 
+### A landing tile you can stand on and never leave
+
+P5-38 derived where a map's arrivals land; the section above found one, `Wicked Heart` map 59's
+(0, 49), that reaches only 11 of the map's 516 reachable tiles. That is a third failure class
+alongside P5-34 (off the map) and P5-36 (on a wall): a tile that is inside the map and standable,
+and still strands the player, because `Game_CharacterBase.canPass` blocks the one direction that
+would let them leave the pocket.
+
+**The check.** `reachableFromLanding` in `walkability.ts` is the same flood `analyseWalkability`
+already runs, reduced to the two numbers this needs: how big the area under the landing tile is,
+against how big the map's largest connected area is. `requireTransferTarget` in `map-refs.ts`
+refuses when the ratio falls under `TRAPPED_LANDING_RATIO`, naming both tile counts. A landing
+tile that is not standable at all is left alone here — that failure is P5-36's, not this one.
+
+**Where the threshold comes from — measured, not stated.** P5-38 found 36 arrivals across the
+corpus that land outside a map's largest area; this task's whole premise depends on where those
+36 actually land, so `scripts/measure-arrival.mjs`'s `reachableDelta` was widened into a full
+calibration pass over all of them (44 data directories: `Wicked Heart` and its two mirrors, the
+`VisuMZ` sample project, and the RTP/DLC demo projects). Deduplicated to 19 distinct
+(map, landing tile) pairs, the reachable-to-largest ratio splits into two clusters with nothing
+between them:
+
+| cluster | ratio range | example |
+|---|---|---|
+| trapped | 0.4% – 16.9% | `Wicked Heart` map 59 (0, 49): 11 of 516 (2.1%); a `VisuMZ` demo map lands 8 arrivals at 21-60 of 4717 (0.4-1.3%) |
+| fine | 66.7% – 96.9% | `Wicked Heart` map 22 (15, 4): 54 of 81 (66.7%) — a smaller wing of the same building, not a pocket |
+
+The highest trapped ratio (16.9%, map 19's (3, 0), reaching 24 of 142) sits **4x** below the
+lowest fine one (66.7%). `TRAPPED_LANDING_RATIO = 0.25` sits in that gap rather than on either
+cluster — the corpus does not say exactly where the line belongs, only that nothing on disk falls
+between 17% and 67%, so 25% is a round number inside the silence rather than a measurement of it.
+
+**Refusal, not a warning**, matching the two sibling checks already in `requireTransferTarget`
+(missing map, off-map landing) rather than the softer note `add_event_commands` uses for a
+designation-1 transfer it cannot resolve at all — the difference is that here the server can
+compute the answer, and the codebase's rule is to refuse rather than let a caller write something
+broken.
+
+**Loading it.** `loadMapReach` in `map-ref-loaders.ts` reads the target map's JSON and its
+tileset's flags — one more step than `loadMapSizes` needs, and one more way to fail, so it
+degrades to "unchecked" the same way: an unreadable map or an unresolvable `tilesetId` leaves the
+target out of `mapReach` rather than raising. `loadTransferInventory` now loads sizes and reach
+data for the same target list in parallel.
+
+**Verified end to end.** A 10x6 map with a 16-tile room and a 3-tile pocket (18.8% of the room,
+below the line) was written to disk with real `Map002.json` and `Tilesets.json` files, and
+`loadTransferInventory` + `checkMapRefs` run against them from the built `dist/` — not a
+hand-built `MapRefInventory` — refused the pocket landing and accepted the room one, confirming
+the loader's file reads and the core check agree the way they do in the unit tests.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 11 / 39**
+**Progress: 12 / 39**
 
 ---
 
@@ -230,7 +230,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   [The largest area is not where the player is](ROADMAP.md#the-largest-area-is-not-where-the-player-is).
   Turned up P5-39.
 
-- [ ] **P5-39 — Refuse a transfer the player can never walk out of**
+- [x] **P5-39 — Refuse a transfer the player can never walk out of**
   *(turned up by P5-38.)* The arrival sweep found `Wicked Heart` map 32 carrying
   `201 [0,59,0,49,0,0]` — a transfer to map 59 at (0, 49). That tile is passable down, left and
   up but **not right**, so `Game_CharacterBase.canPass` blocks every attempt to leave column 0
@@ -242,6 +242,18 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   calibrate against.
   *Done when:* a transfer whose landing tile reaches only a fraction of the target map is
   refused or warned about, saying how many tiles the player would be able to walk.
+  *Done:* `reachableFromLanding` (`src/core/walkability.ts`) reduces the existing flood to two
+  numbers — the landing tile's area, against the map's largest — and `requireTransferTarget`
+  (`src/core/map-refs.ts`) refuses under `TRAPPED_LANDING_RATIO`. Widened
+  `scripts/measure-arrival.mjs`'s calibration data to all 36 outside-largest arrivals (19
+  distinct landings across 44 data directories) and it splits cleanly: 13 reach 0.4%-16.9% of
+  the largest area, the other 6 reach 66.7%-96.9% — a 4x gap with nothing in it, so
+  `TRAPPED_LANDING_RATIO = 0.25` sits in the gap rather than on either cluster. Refused rather
+  than warned, matching the two sibling checks already in the same function. `loadMapReach`
+  (`src/tools/map-ref-loaders.ts`) reads the target's map data and tileset flags, degrading to
+  unchecked the same way `loadMapSizes` does. Verified against real files written to disk and
+  read back through the built `dist/`, not just a hand-built inventory. See
+  [A landing tile you can stand on and never leave](ROADMAP.md#a-landing-tile-you-can-stand-on-and-never-leave).
 
 - [ ] **P5-36 — Refuse a transfer that lands somewhere the player cannot stand**
   *(turned up by P5-34.)* P5-34 checks the landing square is *inside* the target map, which is

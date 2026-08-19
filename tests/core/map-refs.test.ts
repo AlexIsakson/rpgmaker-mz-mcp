@@ -6,8 +6,10 @@ import {
   requireTileset,
   transferTargets,
   MapRefError,
+  TRAPPED_LANDING_RATIO,
   type MapRefInventory,
 } from '../../src/core/map-refs.js';
+import type { MapData } from '../../src/schemas/map.js';
 
 /**
  * Three references a map carries, and the two different ways they fail.
@@ -255,5 +257,86 @@ describe('a transfer whose destination is in variables', () => {
 
   it('still checks a direct transfer sitting beside it', () => {
     expect(() => checkMapRefs([fromVariables, transfer(9)], inventory)).toThrow(MapRefError);
+  });
+});
+
+describe('checkMapRefs — a landing tile the player cannot walk out of', () => {
+  const FLOOR = 100;
+  const WALL = 200;
+
+  function makeFlags(): number[] {
+    const flags = new Array(8192).fill(0);
+    flags[0] = 0x10;
+    flags[FLOOR] = 0x00;
+    flags[WALL] = 0x0f;
+    return flags;
+  }
+
+  /**
+   * A 16-tile room and a 3-tile pocket, connected to nothing — the shape of
+   * `Wicked Heart` map 59's (0, 49): standable, but walled off from almost
+   * everywhere else on the map (ratio 3/16 = 0.1875, under the 25% line).
+   */
+  function makePocketMap(): MapData {
+    const rows = [
+      '##########',
+      '#....##.##',
+      '#....##.##',
+      '#....##.##',
+      '#....#####',
+      '##########',
+    ];
+    const height = rows.length;
+    const width = rows[0].length;
+    const data = new Array(width * height * 6).fill(0);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        data[y * width + x] = rows[y][x] === '#' ? WALL : FLOOR;
+      }
+    }
+    return { width, height, data, tilesetId: 1 } as unknown as MapData;
+  }
+
+  const inventory: MapRefInventory = {
+    mapIds: new Set([1, 2]),
+    mapSizes: new Map([[2, { width: 10, height: 6 }]]),
+    mapReach: new Map([[2, { map: makePocketMap(), flags: makeFlags() }]]),
+  };
+
+  it('accepts a landing in the big room — the pocket is not the whole map', () => {
+    expect(() => checkMapRefs([transfer(2, 2, 2)], inventory)).not.toThrow();
+  });
+
+  it('refuses a landing in the small pocket, 3 tiles against the big room\'s 16', () => {
+    expect(() => checkMapRefs([transfer(2, 7, 2)], inventory)).toThrow(MapRefError);
+  });
+
+  it('names the tile counts, not just "stuck"', () => {
+    let message = '';
+    try {
+      checkMapRefs([transfer(2, 7, 2)], inventory);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('3 tile(s)');
+    expect(message).toContain('16 tiles');
+    expect(message).toContain('canPass');
+  });
+
+  it('leaves a landing on a wall alone — that failure belongs to a different check', () => {
+    expect(() => checkMapRefs([transfer(2, 0, 0)], inventory)).not.toThrow();
+  });
+
+  it('makes no claim when the target map or its tileset could not be read', () => {
+    const noReach: MapRefInventory = {
+      mapIds: new Set([1, 2]),
+      mapSizes: new Map([[2, { width: 10, height: 6 }]]),
+    };
+    expect(() => checkMapRefs([transfer(2, 7, 2)], noReach)).not.toThrow();
+  });
+
+  it('the threshold sits between the pocket ratio and an ordinary landing', () => {
+    expect(3 / 16).toBeLessThan(TRAPPED_LANDING_RATIO);
+    expect(16 / 16).toBeGreaterThanOrEqual(TRAPPED_LANDING_RATIO);
   });
 });

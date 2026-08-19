@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { analyseWalkability } from '../../src/core/walkability.js';
+import { analyseWalkability, reachableFromLanding } from '../../src/core/walkability.js';
 import type { MapData } from '../../src/schemas/map.js';
 
 const FLOOR = 100;
@@ -220,5 +220,41 @@ describe('flooding from a known start', () => {
     const report = analyseWalkability(makeMap(twoRooms), makeFlags(), { start: { x: 99, y: 99 } });
     expect(report.startUnstandable).toBe(true);
     expect(report.reachableTiles).toBe(16);
+  });
+});
+
+describe('reachableFromLanding', () => {
+  const twoRooms = [
+    '##########',
+    '#....##..#',
+    '#....##..#',
+    '#....##..#',
+    '#....##..#',
+    '##########',
+  ];
+
+  it('reports the landing area against the map\'s largest, for a landing in the big room', () => {
+    const reach = reachableFromLanding(makeMap(twoRooms), makeFlags(), { x: 2, y: 2 });
+    expect(reach.standable).toBe(true);
+    expect(reach.reachableTiles).toBe(16);
+    expect(reach.largestArea).toBe(16);
+  });
+
+  it('reports a small ratio for a landing in the smaller room, the pocket a real trap looks like', () => {
+    const reach = reachableFromLanding(makeMap(twoRooms), makeFlags(), { x: 7, y: 2 });
+    expect(reach.standable).toBe(true);
+    expect(reach.reachableTiles).toBe(8);
+    expect(reach.largestArea).toBe(16);
+  });
+
+  it('reports unstandable rather than a ratio for a wall tile', () => {
+    const reach = reachableFromLanding(makeMap(twoRooms), makeFlags(), { x: 0, y: 0 });
+    expect(reach.standable).toBe(false);
+    expect(reach.reachableTiles).toBe(0);
+  });
+
+  it('reports unstandable for a point off the map', () => {
+    const reach = reachableFromLanding(makeMap(twoRooms), makeFlags(), { x: 99, y: 99 });
+    expect(reach.standable).toBe(false);
   });
 });

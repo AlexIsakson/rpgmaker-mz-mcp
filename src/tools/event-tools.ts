@@ -346,7 +346,7 @@ export function registerEventTools(server: McpServer): void {
 Supported command types:
 - show_text: { type: "show_text", face: "Actor1", faceIndex: 0, text: "Hello!" }
 - show_choices: { type: "show_choices", choices: ["Yes", "No"] }
-- transfer_player: { type: "transfer_player", mapId: 1, x: 5, y: 5 }  (the map must exist and the landing square must be inside it, or the transfer throws a LoadError or freezes the player)
+- transfer_player: { type: "transfer_player", mapId: 1, x: 5, y: 5 }  (the map must exist, the landing square must be inside it, and it must reach at least a quarter of the target map's largest walkable area — otherwise the transfer throws a LoadError, freezes the player, or strands them somewhere they can never walk out of)
 - control_switches: { type: "control_switches", startId: 1, value: 0 }  (0=ON, 1=OFF)
 - control_variables: { type: "control_variables", startId: 1, operationType: 0, operand: 0, value: 100 }
 - control_self_switch: { type: "control_self_switch", key: "A", value: 0 }

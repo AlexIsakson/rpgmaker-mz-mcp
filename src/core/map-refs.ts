@@ -72,6 +72,8 @@
  */
 
 import { transferDesignationOf } from './designation.js';
+import { reachableFromLanding } from './walkability.js';
+import type { MapData } from '../schemas/map.js';
 
 export class MapRefError extends Error {}
 
@@ -93,11 +95,35 @@ export interface MapRefInventory {
   mapIds?: ReadonlySet<number>;
   /** Sizes of whichever of those the caller read. A missing entry is unchecked. */
   mapSizes?: ReadonlyMap<number, MapSize>;
+  /**
+   * Full map data and tileset flags for whichever targets the caller read, for
+   * the walk-out-again check. A missing entry is unchecked, the same as
+   * `mapSizes` — this needs a whole tileset resolved, one more step that can
+   * fail than a width and a height.
+   */
+  mapReach?: ReadonlyMap<number, { map: MapData; flags: number[] }>;
   /** Basenames in `img/characters`, without `.png`. */
   characterSheets?: ReadonlySet<string>;
   /** Tilesets.json, as loaded. Index 0 is the editor's null. */
   tilesets?: readonly (unknown | null)[];
 }
+
+/**
+ * Below this fraction of the target map's largest connected area, a landing
+ * tile is treated as a pocket rather than as the map proper.
+ *
+ * **Measured**, not stated: `scripts/measure-arrival.mjs`'s calibration run
+ * over 36 arrivals that land outside a map's largest area (44 data
+ * directories, `Wicked Heart`, `VisuMZ_Sample_Game_Project` and the RTP demo
+ * projects) splits cleanly in two. Thirteen distinct landings reach at most
+ * 16.9% of the largest area — `Wicked Heart` map 59's (0, 49), the case that
+ * turned up this task, reaches 11 of 516 tiles (2.1%), and eight VisuMZ demo
+ * arrivals reach 21-60 of 4717 (0.4-1.3%). The other six reach at least 66.7%
+ * — a separate wing of a building, not a trap. Nothing in the corpus falls
+ * between 16.9% and 66.7%, so 25% sits in the gap rather than on either
+ * cluster.
+ */
+export const TRAPPED_LANDING_RATIO = 0.25;
 
 /** Commands that name another map. Only one does. */
 export function referencesMap(type: string): boolean {
@@ -276,18 +302,59 @@ function requireTransferTarget(
     );
   }
 
-  const size = mapSizes?.get(mapId);
-  if (size === undefined) return;
-
   const x = typeof command.x === 'number' ? command.x : 0;
   const y = typeof command.y === 'number' ? command.y : 0;
-  if (x >= 0 && y >= 0 && x < size.width && y < size.height) return;
+
+  const size = mapSizes?.get(mapId);
+  if (size !== undefined && !(x >= 0 && y >= 0 && x < size.width && y < size.height)) {
+    throw new MapRefError(
+      `${ordinal(index)} (transfer_player) lands the player at (${x}, ${y}) on map ${mapId}, ` +
+        `which is ${size.width}x${size.height}. Game_Player.performTransfer calls locate() with ` +
+        'no bounds check, and Game_CharacterBase.canPass then returns false for every direction ' +
+        'whose neighbour fails Game_Map.isValid — off the map on more than one side, the player ' +
+        'cannot move at all, and nothing says why.'
+    );
+  }
+
+  requireWalkableLanding(mapId, x, y, index, inventory);
+}
+
+/**
+ * Refuse a landing tile that reaches only a pocket of the target map.
+ *
+ * A tile a player can stand on but effectively never leave looks fine to
+ * `requireTransferTarget`'s bounds check — it is inside the map, and it is
+ * even standable. `Wicked Heart` map 32 transfers to map 59's (0, 49), a tile
+ * passable down, left and up but not right, so `Game_CharacterBase.canPass`
+ * blocks column 0's only way out and the player can walk 11 of the map's 516
+ * reachable tiles. `reachableFromLanding` is the same flood
+ * `analyseWalkability` runs for the walkability report, reduced to the ratio
+ * this needs. See `TRAPPED_LANDING_RATIO` for where the threshold comes from.
+ *
+ * A landing tile the player cannot stand on at all is left alone — that is a
+ * different failure (P5-36), not this one.
+ */
+function requireWalkableLanding(
+  mapId: number,
+  x: number,
+  y: number,
+  index: number,
+  inventory: MapRefInventory
+): void {
+  const entry = inventory.mapReach?.get(mapId);
+  if (entry === undefined) return; // unreadable target or tileset — no claim
+
+  const reach = reachableFromLanding(entry.map, entry.flags, { x, y });
+  if (!reach.standable || reach.largestArea === 0) return;
+
+  const ratio = reach.reachableTiles / reach.largestArea;
+  if (ratio >= TRAPPED_LANDING_RATIO) return;
 
   throw new MapRefError(
     `${ordinal(index)} (transfer_player) lands the player at (${x}, ${y}) on map ${mapId}, ` +
-      `which is ${size.width}x${size.height}. Game_Player.performTransfer calls locate() with ` +
-      'no bounds check, and Game_CharacterBase.canPass then returns false for every direction ' +
-      'whose neighbour fails Game_Map.isValid — off the map on more than one side, the player ' +
-      'cannot move at all, and nothing says why.'
+      `where they can walk to only ${reach.reachableTiles} tile(s) — the map's largest ` +
+      `connected area is ${reach.largestArea} tiles, ${(ratio * 100).toFixed(1)}% of that. ` +
+      'Game_CharacterBase.canPass blocks every direction out of this pocket, so the player ' +
+      'is not off the map and not on a wall — they are simply stuck, with nothing saying why.'
   );
 }
