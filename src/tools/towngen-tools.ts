@@ -3,7 +3,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { FileHandler } from '../core/file-handler.js';
 import { readLayer, writeLayer, TILE_LAYERS } from '../core/map-layers.js';
-import { fillRect, makeAutotileId, getAutotileKind, TILE_ID_A2, TILE_ID_A3 } from '../core/autotile.js';
+import { fillRect, fillCells, makeAutotileId, getAutotileKind, TILE_ID_A2, TILE_ID_A3 } from '../core/autotile.js';
+import { RAGGED_DEFAULTS } from '../core/ragged.js';
 import { applyPlacements, type Placement } from '../core/tile-batch.js';
 import { applyWallShadows } from '../core/shadows.js';
 import { TilesetReader } from '../core/tileset-reader.js';
@@ -150,6 +151,16 @@ export function registerTowngenTools(server: McpServer): void {
           'entered from below in 88 of 88 — nothing shipped is entered from the north. The ' +
           'layout itself is sound: a 44x46 town goes from 8 buildings to 12, every door reaches ' +
           'a street, and walkability stays one connected area.'
+        ),
+      raggedRoads: z.boolean().default(TOWN_DEFAULTS.raggedRoads)
+        .describe(
+          'Give every street an edge that turns instead of a ruled line. On by default, and ' +
+          'the measurement is the reason: over the 293 hand-made sample maps a material ' +
+          `boundary runs straight for a median of 1 tile and a p99 of ${RAGGED_DEFAULTS.maxRun}, ` +
+          'while this generator used to emit a median of 4 and a longest run of 19 — almost all ' +
+          'of it street, since a 4-7 tile building can never make a long one. A street only ' +
+          'ever widens, never narrows, and never into a house, so the town stays walkable and ' +
+          'every door still faces the road. Off restores the ruled streets.'
         ),
       crossStreets: z.number().int().min(1).max(4).default(TOWN_DEFAULTS.crossStreets)
         .describe('Vertical streets. At least one, or the horizontal roads never meet.'),
@@ -322,6 +333,7 @@ export function registerTowngenTools(server: McpServer): void {
             maxBuildingHeight: args.maxBuildingHeight,
             wallHeight: args.wallHeight,
             crossStreets: args.crossStreets,
+            raggedRoads: args.raggedRoads,
             decorDensity: args.decorDensity,
             framePropHeight: TOWN_DEFAULTS.framePropHeight,
             bothSidesOfStreet: args.bothSidesOfStreet,
@@ -363,7 +375,18 @@ export function registerTowngenTools(server: McpServer): void {
           { region: { x: 0, y: 0, width: mapData.width, height: mapData.height } }
         );
         if (roadKind !== undefined) {
-          for (const road of plan.roads) ground = fillRect(ground, road, makeAutotileId(roadKind, 0));
+          // From the mask, not the rectangles: with raggedRoads on they differ,
+          // and the mask is what everything else in the plan was measured
+          // against.
+          const roadCells: { x: number; y: number }[] = [];
+          for (let y = 0; y < mapData.height; y++) {
+            for (let x = 0; x < mapData.width; x++) {
+              if (plan.roadMask[y][x]) roadCells.push({ x, y });
+            }
+          }
+          ground = fillCells(ground, roadCells, makeAutotileId(roadKind, 0), {
+            region: { x: 0, y: 0, width: mapData.width, height: mapData.height },
+          });
         }
         writeLayer(mapData, 0, ground);
 
@@ -630,6 +653,12 @@ export function registerTowngenTools(server: McpServer): void {
         const lines = [
           `Generated a town on map ${mapId} (${mapData.width}x${mapData.height}), seed ${seed}.`,
           '',
+          (args.raggedRoads
+            ? `Street edges turn: the longest straight run of the street boundary is ` +
+              `${plan.roadLongestRun} tile(s), against a hand-made p99 of ${RAGGED_DEFAULTS.maxRun} ` +
+              'measured over the 293 sample maps. Ruled streets gave 19.'
+            : 'Street edges are ruled lines — raggedRoads is off, so every street boundary runs ' +
+              'as straight as the map is wide.'),
           `Streets: ${plan.roads.length} (${plan.bands.length} band(s) of buildings, ` +
             `${args.crossStreets} cross street(s)). They run to the map edge, so the town has ways in.`,
           `${outcome.summary}, ${doors} with door events. ` +

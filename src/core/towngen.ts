@@ -1,4 +1,5 @@
 import { makeRng } from './mapgen.js';
+import { raggedRect, longestBoundaryRun, RAGGED_DEFAULTS } from './ragged.js';
 import type { Rect } from './autotile.js';
 import type { DoorSide } from './blueprint.js';
 
@@ -89,6 +90,21 @@ export interface TownOptions {
    * chosen.
    */
   bothSidesOfStreet: boolean;
+  /**
+   * Give every street an edge that turns instead of a ruled line.
+   *
+   * **On by default, and the measurement is the reason.** P5-07 counted every
+   * material boundary on layer 0: hand-made maps have a median run of 1 and a
+   * p99 of 9, and this generator had a median of 4 and a max of 19 — the streets
+   * being nearly all of it, since a building is only 4-7 tiles wide and can
+   * never emit a long one. Off restores the ruled streets, which is worth having
+   * for a deliberately formal town and for comparing the two.
+   *
+   * A street only ever widens: {@link ragged} is given `minThickness` equal to
+   * `roadWidth`, so no seed can pinch a road, and it is told the building
+   * footprints are unavailable, so no bulge eats a wall.
+   */
+  raggedRoads: boolean;
 }
 
 export const TOWN_DEFAULTS: Omit<TownOptions, 'width' | 'height' | 'seed'> = {
@@ -106,6 +122,7 @@ export const TOWN_DEFAULTS: Omit<TownOptions, 'width' | 'height' | 'seed'> = {
   // Off, and the render is the reason — see `bothSidesOfStreet` above and the
   // ROADMAP. The layout is sound; the RTP art is not on its side.
   bothSidesOfStreet: false,
+  raggedRoads: true,
 };
 
 export interface TownBuilding {
@@ -129,7 +146,20 @@ export interface Slot {
 export interface TownPlan {
   width: number;
   height: number;
+  /** The rectangles the streets were planned as, kept for reporting. */
   roads: Rect[];
+  /**
+   * The cells the streets actually cover — the rectangles once their edges have
+   * been made to turn. Everything downstream reads this rather than
+   * {@link roads}, so a prop, a townsperson and a frame tree all agree with what
+   * gets painted.
+   */
+  roadMask: boolean[][];
+  /**
+   * The longest straight run of the street/ground boundary, measured the way
+   * P5-07 measured the corpus. The hand-made p99 is 9.
+   */
+  roadLongestRun: number;
   bands: Rect[];
   buildings: TownBuilding[];
   /** Free ground inside the town, chosen for props. */
@@ -164,6 +194,7 @@ export function planTown(options: TownOptions): TownPlan {
     width, height, seed, border, roadWidth, bandHeight,
     minBuildingWidth, maxBuildingWidth, minBuildingHeight, maxBuildingHeight,
     wallHeight, crossStreets, decorDensity, framePropHeight, bothSidesOfStreet,
+    raggedRoads,
   } = options;
 
   if (crossStreets < 1) {
@@ -237,8 +268,6 @@ export function planTown(options: TownOptions): TownPlan {
     verticals.push({ x, y: 0, width: roadWidth, height });
   }
   roads.push(...verticals);
-
-  const onRoad = (x: number, y: number): boolean => roads.some((r) => inRect(r, x, y));
 
   // --- buildings ---
   // The two rows of a band get separate height budgets with one spare row
@@ -327,17 +356,74 @@ export function planTown(options: TownOptions): TownPlan {
     );
   }
 
-  // --- what is taken ---
-  const taken: boolean[][] = Array.from({ length: height }, () => new Array<boolean>(width).fill(false));
-  for (const road of roads) {
-    for (let y = road.y; y < road.y + road.height; y++) {
-      for (let x = road.x; x < road.x + road.width; x++) taken[y][x] = true;
-    }
-  }
+  // --- streets, as painted ---
+  // Ragging happens *after* the buildings are laid out, and for two reasons.
+  // The obvious one is that a street may only widen into ground nothing else
+  // wants, so it has to know where the houses are. The quieter one is that the
+  // building layout for a given seed is then untouched by this feature: the
+  // rng reaches the road edges only once every house has drawn from it.
+  const onBuilding: boolean[][] = Array.from({ length: height }, () =>
+    new Array<boolean>(width).fill(false)
+  );
   for (const building of buildings) {
     const r = building.rect;
     for (let y = r.y; y < r.y + r.height; y++) {
-      for (let x = r.x; x < r.x + r.width; x++) taken[y][x] = true;
+      for (let x = r.x; x < r.x + r.width; x++) onBuilding[y][x] = true;
+    }
+  }
+
+  const roadMask: boolean[][] = Array.from({ length: height }, () =>
+    new Array<boolean>(width).fill(false)
+  );
+  for (const road of roads) {
+    if (!raggedRoads) {
+      for (let y = road.y; y < road.y + road.height; y++) {
+        for (let x = road.x; x < road.x + road.width; x++) roadMask[y][x] = true;
+      }
+      continue;
+    }
+    // Only the long sides move. A street runs the full width or the full height
+    // of the map so that it reaches the edge and becomes a way in; disturbing
+    // its ends would take that away.
+    const vertical = road.height > road.width;
+    const patch = raggedRect({ ...road }, rng, {
+      edges: vertical ? { left: true, right: true } : { top: true, bottom: true },
+      minThickness: roadWidth,
+      // A street may widen into open ground inside the town, and into nothing
+      // else. Not into a house, for the obvious reason. **And not into the
+      // border band**, for a reason worth writing down: the tree line is laid
+      // as framePropHeight-tall props whose top half the player walks under, so
+      // the walkable cells there are a chain of prop tops. A street bulging one
+      // column deeper than its neighbour shifts that column's prop and breaks
+      // the chain, stranding a tile under a canopy. Measured over 12 seeds of a
+      // 44x46 town: bulges allowed through the border left **10 tiles cut off
+      // under scenery, on 6 of the 12 seeds**; kept out of it, none. The street
+      // still crosses the border — it just crosses it straight, which costs a
+      // straight run as long as the border and no more.
+      available: (x, y) =>
+        x >= 0 && y >= 0 && x < width && y < height &&
+        !onBuilding[y][x] && inRect(usable, x, y),
+    });
+    for (const cell of patch.cells) roadMask[cell.y][cell.x] = true;
+  }
+
+  const onRoad = (x: number, y: number): boolean =>
+    x >= 0 && y >= 0 && x < width && y < height && roadMask[y][x];
+  const roadLongestRun = longestBoundaryRun(roadMask);
+  if (raggedRoads && roadLongestRun > RAGGED_DEFAULTS.maxRun) {
+    warnings.push(
+      `The streets still have a straight run ${roadLongestRun} tiles long, against a hand-made ` +
+        `p99 of ${RAGGED_DEFAULTS.maxRun}. That happens where a street is boxed in — houses on ` +
+        'one side and nowhere to widen on the other — so the edge had nowhere to turn to. ' +
+        'A wider band or fewer buildings gives it room.'
+    );
+  }
+
+  // --- what is taken ---
+  const taken: boolean[][] = Array.from({ length: height }, () => new Array<boolean>(width).fill(false));
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (roadMask[y][x] || onBuilding[y][x]) taken[y][x] = true;
     }
   }
 
@@ -394,7 +480,10 @@ export function planTown(options: TownOptions): TownPlan {
     }
   }
 
-  return { width, height, roads, bands, buildings, decorSlots, frameSlots, warnings };
+  return {
+    width, height, roads, roadMask, roadLongestRun, bands, buildings,
+    decorSlots, frameSlots, warnings,
+  };
 }
 
 /**
@@ -406,9 +495,9 @@ export function renderTownAscii(plan: TownPlan): string {
     new Array<string>(plan.width).fill('.')
   );
 
-  for (const road of plan.roads) {
-    for (let y = road.y; y < road.y + road.height; y++) {
-      for (let x = road.x; x < road.x + road.width; x++) grid[y][x] = '=';
+  for (let y = 0; y < plan.height; y++) {
+    for (let x = 0; x < plan.width; x++) {
+      if (plan.roadMask[y][x]) grid[y][x] = '=';
     }
   }
   for (const slot of plan.frameSlots) grid[slot.y][slot.x] = 'T';

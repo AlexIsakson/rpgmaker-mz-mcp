@@ -4,8 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { FileHandler } from '../core/file-handler.js';
 import { readLayer, writeLayer, TILE_LAYERS } from '../core/map-layers.js';
 import {
-  fillRect,
-  refreshAutotileShapes,
+  fillCells,
   makeAutotileId,
   isTileA2,
   getAutotileKind,
@@ -14,11 +13,12 @@ import {
   TILE_ID_MAX,
 } from '../core/autotile.js';
 import {
-  fillWallRect,
-  refreshWallShapes,
+  fillWallCells,
   usesWallAutotileTable,
   isTileA3,
 } from '../core/wall-autotile.js';
+import { raggedRect, RAGGED_DEFAULTS } from '../core/ragged.js';
+import { makeRng } from '../core/mapgen.js';
 import { applyPlacements, type Placement } from '../core/tile-batch.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
@@ -79,13 +79,30 @@ export function registerMapPaintTools(server: McpServer): void {
           'Only paint cells that are currently empty on this layer. Use it for ' +
           'decoration passes so a later object cannot silently overwrite an earlier one.'
         ),
+      ragged: z.boolean().default(false)
+        .describe(
+          'Give the patch an edge that turns instead of four ruled sides. Measured over the ' +
+          '293 hand-made sample maps, a material boundary runs straight for a median of 1 tile ' +
+          `and a p99 of ${RAGGED_DEFAULTS.maxRun}, and 70.5% of all runs are a single tile; a ` +
+          'rectangle emits four runs as long as its sides, which is why a painted patch reads ' +
+          'as a slab. The area comes out within about a quarter of what was asked for, in one ' +
+          'connected piece, and the result reports its own longest run.'
+        ),
+      raggedSeed: z.number().int().default(1)
+        .describe('Seed for the ragged edge. The same seed gives the same silhouette.'),
+      raggedAmplitude: z.number().int().min(1).max(4).default(RAGGED_DEFAULTS.amplitude)
+        .describe(
+          'How far an edge may move from where the rectangle put it. 1 by default: the ' +
+          'measurement is about how often an edge turns, not how far it wanders, and a larger ' +
+          'amplitude moves the silhouette without changing the run lengths.'
+        ),
       allowOverlayOnGround: z.boolean().default(false)
         .describe(
           'Permit an overlay material (one with transparent edge pieces) on layer 0. ' +
           'Normally refused, because its edges show the map background as black in game.'
         ),
     },
-    async ({ mapId, x, y, width, height, autotileKind, tileId, layer, skipOccupied, allowOverlayOnGround }) => {
+    async ({ mapId, x, y, width, height, autotileKind, tileId, layer, skipOccupied, allowOverlayOnGround, ragged, raggedSeed, raggedAmplitude }) => {
       try {
         if ((autotileKind === undefined) === (tileId === undefined)) {
           return {
@@ -173,38 +190,48 @@ export function registerMapPaintTools(server: McpServer): void {
 
         const grid = readLayer(mapData, layer);
 
+        // The rectangle, or the rectangle with an edge that turns. Everything
+        // downstream works from the cell list either way, so there is one path
+        // rather than two — and a ragged patch is clipped by the same rule the
+        // rectangle is, through raggedRect's availability hook.
+        const raggedPatch = ragged
+          ? raggedRect(
+              { x, y, width: clippedWidth, height: clippedHeight },
+              makeRng(raggedSeed),
+              {
+                amplitude: raggedAmplitude,
+                available: (px, py) =>
+                  px >= 0 && py >= 0 && px < mapData.width && py < mapData.height,
+              }
+            )
+          : null;
+
+        const targetCells: { x: number; y: number }[] = [];
+        if (raggedPatch) targetCells.push(...raggedPatch.cells);
+        else {
+          for (let j = y; j < y + clippedHeight; j++) {
+            for (let i = x; i < x + clippedWidth; i++) targetCells.push({ x: i, y: j });
+          }
+        }
+
         let skippedCells = 0;
         let overwrittenCells = 0;
-        for (let j = y; j < y + clippedHeight; j++) {
-          for (let i = x; i < x + clippedWidth; i++) {
-            if ((grid[j]?.[i] ?? 0) !== 0) {
-              if (skipOccupied) skippedCells++;
-              else overwrittenCells++;
-            }
+        for (const cell of targetCells) {
+          if ((grid[cell.y]?.[cell.x] ?? 0) !== 0) {
+            if (skipOccupied) skippedCells++;
+            else overwrittenCells++;
           }
         }
 
         // Walls use a different table from floors, so dispatch on the family
         // rather than treating every autotile as A2.
         const isWall = usesWallAutotileTable(resolvedTileId);
-        const refresh = isWall ? refreshWallShapes : refreshAutotileShapes;
-        const fill = isWall ? fillWallRect : fillRect;
+        const fill = isWall ? fillWallCells : fillCells;
 
-        let painted: number[][];
-        if (skipOccupied) {
-          // paint cell by cell, then refresh, so occupied cells keep what they have
-          const next = grid.map((row) => [...row]);
-          for (let j = y; j < y + clippedHeight; j++) {
-            for (let i = x; i < x + clippedWidth; i++) {
-              if ((next[j]?.[i] ?? 0) === 0) next[j][i] = resolvedTileId;
-            }
-          }
-          painted = refresh(next, {
-            region: { x: x - 1, y: y - 1, width: clippedWidth + 2, height: clippedHeight + 2 },
-          });
-        } else {
-          painted = fill(grid, { x, y, width, height }, resolvedTileId);
-        }
+        const paintCells = skipOccupied
+          ? targetCells.filter((c) => (grid[c.y]?.[c.x] ?? 0) === 0)
+          : targetCells;
+        const painted = fill(grid, paintCells, resolvedTileId);
 
         writeLayer(mapData, layer, painted);
 
@@ -212,8 +239,18 @@ export function registerMapPaintTools(server: McpServer): void {
         await project.getVersionSync().bump();
 
         const lines = [
-          `Painted ${clippedWidth}x${clippedHeight} tiles at (${x}, ${y}) on map ${mapId}, layer ${layer}.`,
+          raggedPatch
+            ? `Painted ${raggedPatch.cells.length} tile(s) in a ragged patch inside ` +
+              `${clippedWidth}x${clippedHeight} at (${x}, ${y}) on map ${mapId}, layer ${layer}.`
+            : `Painted ${clippedWidth}x${clippedHeight} tiles at (${x}, ${y}) on map ${mapId}, layer ${layer}.`,
         ];
+        if (raggedPatch) {
+          lines.push(
+            `Edge: longest straight boundary run ${raggedPatch.longestRun} tile(s), against a ` +
+            `hand-made p99 of ${RAGGED_DEFAULTS.maxRun} over the 293 sample maps. The ` +
+            `${clippedWidth}x${clippedHeight} rectangle would have emitted ${Math.max(clippedWidth, clippedHeight)}.`
+          );
+        }
         if (clippedWidth !== width || clippedHeight !== height) {
           lines.push(`Clipped to the map bounds (${mapData.width}x${mapData.height}).`);
         }

@@ -2680,6 +2680,100 @@ business, not this one's. And the corpus does not say how often an L is worth em
 22 coherent hand-made roofs are non-rectangular (18.2%), which is a rate measured on 22 roofs and
 much too thin to hard-code as a generator's probability.
 
+### A boundary that turns
+
+P5-07 put a number on visual review finding 7 and P5-08 spent it on roofs; this spends it on the
+ground. [`src/core/ragged.ts`](src/core/ragged.ts) gives a rectangle an edge that turns,
+`fill_map_region` takes `ragged`, and **`generate_town` uses it for every street by default**.
+
+The whole feature is aimed at one measured threshold and reports against it. Over the 293
+hand-made sample maps a material boundary on layer 0 runs straight for a median of 1 tile with a
+p99 of 9, and 70.5% of all runs are a single tile. The same instrument on the same 44x46 town,
+seed 7, before and after:
+
+| | hand-made (293 maps) | `generate_town` before | after |
+|---|---|---|---|
+| boundary runs counted | 80,191 | 64 | 329 |
+| median run | **1** | 4 | **1** |
+| mean | 1.73 | 6.31 | 1.54 |
+| p90 | 3 | 15 | 3 |
+| **p99** | **9** | 19 | **7** |
+| max | 45 | 19 | **7** |
+| runs of exactly 1 | **70.5%** | 7.8% | 75.2% |
+| share of boundary length in runs of 4+ | 30.9% | 87.6% | 22.4% |
+
+The town went from a median run four times the corpus's to the corpus's own, and the longest
+straight edge anywhere on the map from 19 tiles to 7. The count of runs rising from 64 to 329 is
+the same fact from the other side: the same boundary, turning five times as often.
+
+#### The cap is enforced, not checked
+
+`maxRun` defaults to **9, the corpus p99** — the one threshold the corpus states outright. It is
+enforced by construction: the edge is made to turn once it has gone that far. The rest —
+`turnChance` 0.7, from the 70.5% of runs that are a single tile — is marked in the code as the
+weaker claim it is, because the corpus tail is far fatter than any geometric series (its longest
+run is 45). Hand-made maps mix organic edges with deliberate straight ones; this reproduces the
+typical edge, not the whole distribution.
+
+**Forcing the turn at the cap is not enough on its own, and finding that out took a measurement.**
+An edge can be *pinned*: a street's near side cannot bulge where a house stands against it. A run
+that reaches the cap in the gap between two houses then carries on through the next house and
+comes out at the cap plus the house's width — a 44x46 town measured **16, which is 9 + a 7-wide
+building, on 11 of 25 seeds**. So the decision to turn is made against the *runway*: how many
+cells ahead the edge has no alternative at all. Turn while there is still somewhere to turn to.
+With that, 120 town plans across three map sizes all come in at **9 or under, with no warnings**.
+What is left is a conditional guarantee and the honest one: the cap holds unless the edge is
+pinned for more than `maxRun - 1` cells in a row, and `RaggedPatch.longestRun` reports what
+actually happened rather than what was promised.
+
+#### Two things only the render could say
+
+**The first version satisfied every number above and looked worse than the straight line it
+replaced.** Picking each new offset independently from the whole range at amplitude 1 makes the
+edge alternate between two levels: a regular comb, a battlement. Stepping *one tile from where the
+edge already is*, over an amplitude of 2, gives identical run-length statistics and somewhere to
+go — the edge drifts, and a 2-tile street comes out varying between 2 and 6 tiles wide. That is
+the difference between "the boundary turns" and "the road bends and changes width", which is what
+the task actually asked for, and only the second survives being looked at.
+
+**The second was a walkability regression, and it was invisible in the plan.** The tree line is
+laid as 2-tall props whose top half the player walks under, so the walkable cells there are a
+chain of prop tops. A street bulging one column deeper than its neighbour shifts that column's
+prop and breaks the chain, stranding a tile under a canopy. Measured over 12 seeds of a 44x46
+town: **ragged streets left 10 tiles cut off under scenery on 6 of the 12 seeds; ruled streets
+left none.** The first attempt at a fix was a repair pass in `planTown` that flood-filled the
+plan and pulled out the offending trees — and it never fired once, because the plan counts a whole
+prop as blocked while the engine counts only its bottom half. It was deleted rather than kept as
+decoration. The fix that works is upstream: **a street may widen into open ground inside the town
+and nothing else** — not into a house, and not into the border band. The street still crosses the
+tree line, it just crosses it straight, which costs a run as long as the border and no more. After
+it: **0 tiles cut off on 12 of 12 seeds**, and a seed-7 town reports 1658 standable tiles, all one
+connected area, no unreachable events and no blocked doors.
+
+#### What it refuses to do
+
+A street only ever widens. `minThickness` is set to `roadWidth`, so no seed can pinch a road,
+and the inward budget is computed per side from the rectangle's own thickness — a patch already at
+the minimum simply gets no inward option. `available` governs where a patch may **grow** and not
+where it may exist, which is the distinction that keeps a street that runs through an obstruction
+from coming out severed. Both edges of a street have to be ragged for any of this to show, and
+that is asserted rather than assumed: ragging one side and leaving the other flush changes nothing
+the measure can see, because the flush side is still one run the length of the street.
+
+**Still open.** Interiors and dungeon rooms are untouched — that is P5-10, which is where the
+region-size numbers from P5-07 (1.5% of hand-made regions of 128+ tiles are rectangles) get spent.
+And P5-07's own caveat stands: the corpus median of 1 is over every map type, and a town's streets
+are genuinely straighter than a forest's tree line, so landing the town exactly on the corpus
+median may be slightly past the mark rather than short of it. `raggedRoads: false` restores the
+ruled streets for a deliberately formal town, and is the control the comparison above was made
+against.
+
+**One thing found and filed rather than fixed here.** A decor prop can seal a 1-tile gap between
+two houses, leaving a tile of ground the player can see and never reach. It is **not caused by
+this change** — it turned up on 1 of 12 seeds with ragged streets and 1 of 12 with ruled ones,
+which is the measurement that settles it as pre-existing — but a player would notice it, so it is
+P5-43 rather than a paragraph.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live

@@ -19,8 +19,14 @@ function options(over: Partial<TownOptions> = {}): TownOptions {
 const inRect = (r: Rect, x: number, y: number) =>
   x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
 
+/**
+ * The streets as painted, not as planned. With raggedRoads on the two differ —
+ * the mask is the rectangles once their edges have been made to turn — and
+ * every property below is about the town the player walks in, so all of them
+ * ask the mask.
+ */
 const onRoad = (plan: TownPlan, x: number, y: number) =>
-  plan.roads.some((r) => inRect(r, x, y));
+  x >= 0 && y >= 0 && x < plan.width && y < plan.height && plan.roadMask[y][x];
 
 const onBuilding = (plan: TownPlan, x: number, y: number) =>
   plan.buildings.some((b) => inRect(b.rect, x, y));
@@ -291,6 +297,89 @@ describe('both sides of the street', () => {
         // And never inside the building it belongs to.
         expect(inRect(shop.building.rect, c.x, c.y), `seed ${seed}`).toBe(false);
       }
+    }
+  });
+});
+
+describe('streets that are not ruled lines', () => {
+  // P5-07 measured every material boundary on layer 0 of the 293 hand-made
+  // sample maps: median run 1, p99 9. This generator used to emit a longest run
+  // of 19, essentially all of it street.
+  const CORPUS_P99 = 9;
+
+  it('keeps every street boundary inside the hand-made p99, across seeds', () => {
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed }));
+      expect(plan.roadLongestRun, `seed ${seed}`).toBeLessThanOrEqual(CORPUS_P99);
+    }
+  });
+
+  it('says so rather than pretending when it could not', () => {
+    // The cap is conditional — an edge pinned for longer than it can survive
+    // has nowhere to turn — so the plan warns instead of quietly missing.
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed }));
+      const warned = plan.warnings.some((w) => w.includes('straight run'));
+      expect(warned).toBe(plan.roadLongestRun > CORPUS_P99);
+    }
+  });
+
+  it('leaves a ruled town ruled when asked', () => {
+    for (const seed of SEEDS.slice(0, 5)) {
+      const plan = planTown(options({ seed, raggedRoads: false }));
+      // Every planned rectangle, cell for cell, and nothing else.
+      for (let y = 0; y < plan.height; y++) {
+        for (let x = 0; x < plan.width; x++) {
+          expect(plan.roadMask[y][x]).toBe(plan.roads.some((r) => inRect(r, x, y)));
+        }
+      }
+      expect(plan.roadLongestRun).toBeGreaterThan(CORPUS_P99);
+    }
+  });
+
+  it('only ever widens a street, never narrows one', () => {
+    // The street has to stay a street: every cell of every planned rectangle is
+    // still road, whatever the edge did.
+    for (const seed of SEEDS) {
+      for (const road of planTown(options({ seed })).roads) {
+        const plan = planTown(options({ seed }));
+        for (let y = road.y; y < road.y + road.height; y++) {
+          for (let x = road.x; x < road.x + road.width; x++) {
+            expect(plan.roadMask[y][x], `seed ${seed}: lost road at ${x},${y}`).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it('never widens a street into a house', () => {
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed }));
+      for (const b of plan.buildings) {
+        for (let y = b.rect.y; y < b.rect.y + b.rect.height; y++) {
+          for (let x = b.rect.x; x < b.rect.x + b.rect.width; x++) {
+            expect(plan.roadMask[y][x], `seed ${seed}: street inside a house at ${x},${y}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it('leaves the building layout exactly where it was', () => {
+    // The rng reaches the road edges only after every house has drawn from it,
+    // so turning this on moves no wall and no door. Worth asserting, because it
+    // is what lets a caller compare the two on one seed.
+    for (const seed of SEEDS) {
+      const ragged = planTown(options({ seed }));
+      const ruled = planTown(options({ seed, raggedRoads: false }));
+      expect(ragged.buildings).toEqual(ruled.buildings);
+      expect(ragged.roads).toEqual(ruled.roads);
+    }
+  });
+
+  it('is reproducible — same seed, same streets', () => {
+    for (const seed of SEEDS) {
+      expect(planTown(options({ seed })).roadMask).toEqual(planTown(options({ seed })).roadMask);
     }
   });
 });

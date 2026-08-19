@@ -8,9 +8,9 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 8 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 9 / 25.** The Phase 5 features this backlog was written for.
 
-**Found while working: 15 / 16.** Defects turned up while doing the above, listed at the end.
+**Found while working: 15 / 17.** Defects turned up while doing the above, listed at the end.
 
 Two numbers, not one: most commits so far went on defects rather than on the plan,
 and a single combined figure hid that. The discovered list is a byproduct of the verification
@@ -448,7 +448,8 @@ architectural model into an inhabited place.
   third generation over two previous towns is indistinguishable from a fresh one, 1112 standable
   all in one connected area. See
   [What the last generation left behind](ROADMAP.md#what-the-last-generation-left-behind).
-  Turned up P5-42.
+  Turned up the decoration-doubling question, which was weighed and *not* filed — see
+  [What the last generation left behind](ROADMAP.md#what-the-last-generation-left-behind).
 
 - [x] **P5-05 — `generate_town` places a shop**
   `place_shop` needs a coordinate and `generate_town` builds the buildings; neither knows about
@@ -557,12 +558,26 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   `check_map_walkability` reporting 423 standable tiles of 600 in one connected area.
   See [A roof that turns a corner](ROADMAP.md#a-roof-that-turns-a-corner).
 
-- [ ] **P5-09 — Ragged edges for ground materials**
+- [x] **P5-09 — Ragged edges for ground materials**
   Ground patches are hard-edged rectangles. Give material boundaries controlled irregularity, and
   let roads bend and change width. The autotile shape computation already handles any silhouette;
   what is missing is a generator that produces one.
   *Done when:* a generated ground layer has no straight material runs longer than P5-07 says it
   should.
+  *Done:* `src/core/ragged.ts`, `fill_map_region`'s `ragged` flag, and `generate_town`'s
+  `raggedRoads` — **on by default**. Measured on the same 44x46 seed-7 town with the same
+  instrument: median run **4 → 1**, p99 **19 → 7**, longest straight edge anywhere **19 → 7**,
+  and the share of runs that are a single tile **7.8% → 75.2%** against a hand-made 70.5%. The
+  cap is enforced rather than audited, and forcing the turn *at* the cap was not enough — an edge
+  pinned by a house carried the run through it and out the other side at 9 + a 7-wide building on
+  11 of 25 seeds, so the turn is decided against the runway ahead. 120 plans across three map
+  sizes now come in at 9 or under with no warnings.
+  Two things only the render said: an amplitude-1 edge that jumps is a **battlement**, so it is a
+  bounded walk at amplitude 2 and the streets now bend and vary from 2 to 6 tiles wide; and
+  bulging into the tree line **stranded 10 walkable tiles under the canopy on 6 of 12 seeds**,
+  fixed by keeping street growth inside the town — 0 of 12 after, with a seed-7 town at 1658
+  standable tiles all in one connected area.
+  See [A boundary that turns](ROADMAP.md#a-boundary-that-turns).
 
 - [ ] **P5-10 — Rooms and blocks that are not boxes**
   Interior rooms are a single rectangle; town blocks are a grid; dungeon rooms are axis-aligned
@@ -697,3 +712,18 @@ for one that was deliberately not filed.
   the ids it used are named in the result.
   *Note:* the other half of encounter zones is `encounterList`, which no tool writes at all —
   that belongs with P5-17, and until it exists a regioned map has nothing to gate.
+
+- [ ] **P5-43 — A prop can seal a gap the player can see into**
+  *(turned up by P5-09.)* `generate_town` puts decoration on free ground beside something, and
+  the gap between two neighbouring houses is `randInt(rng, 1, 3)` tiles wide. When that gap is
+  one tile and a prop lands above and below it, the tile between them is walkable, visible, and
+  unreachable. Measured over 12 seeds of a 44x46 town: **1 seed in 12 with ragged streets and 1
+  in 12 with ruled ones**, so it is not a side effect of P5-09 — it is the decoration pass, and
+  it was there before. `check_map_walkability` does not mention it either, because it declines
+  to report an island under 3 tiles.
+  The plan cannot see this on its own: it counts a whole prop as blocking, while the engine
+  blocks only the tiles the tileset's flags say are impassable — which is why the obvious repair
+  inside `planTown` does nothing. The fix has to know the prop's passability, which means it
+  belongs where the tileset flags are.
+  *Done when:* a generated town leaves no walkable tile cut off from the rest, across seeds, and
+  the sweep that proves it is the same one P5-09 used.

@@ -252,6 +252,50 @@ export function refreshAutotileShapes(
  *
  * `tileId` may be any tile id; only A2 autotiles get shape correction.
  */
+/**
+ * Paint an arbitrary set of cells with one material and recompute shapes over
+ * their bounding box and the ring around it.
+ *
+ * {@link fillRect} without the rectangle. The shape computation already handles
+ * any silhouette — it reads the grid, not the cell list — so a ragged patch
+ * needs nothing from it beyond being painted a cell at a time.
+ */
+export function fillCells(
+  grid: number[][],
+  cells: { x: number; y: number }[],
+  tileId: number,
+  options: RefreshOptions = {}
+): number[][] {
+  const height = grid.length;
+  const width = grid[0]?.length ?? 0;
+
+  const painted = grid.map((row) => [...row]);
+  if (cells.length === 0) return painted;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const { x, y } of cells) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    if (x < 0 || y < 0 || x >= width || y >= height) continue;
+    painted[y][x] = tileId;
+  }
+
+  return refreshAutotileShapes(painted, {
+    ...options,
+    region: options.region ?? {
+      x: minX - 1,
+      y: minY - 1,
+      width: maxX - minX + 3,
+      height: maxY - minY + 3,
+    },
+  });
+}
+
 export function fillRect(
   grid: number[][],
   rect: Rect,
