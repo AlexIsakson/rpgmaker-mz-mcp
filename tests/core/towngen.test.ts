@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   planTown,
+  assessTownBuild,
   renderTownAscii,
   TownError,
   TOWN_DEFAULTS,
@@ -324,5 +325,72 @@ describe('renderTownAscii', () => {
     expect(rows).toHaveLength(plan.height);
     expect(rows[0]).toHaveLength(plan.width);
     expect(renderTownAscii(plan).split('+').length - 1).toBe(plan.buildings.length);
+  });
+});
+
+describe('assessTownBuild', () => {
+  /**
+   * The rule under test: a map with streets and no buildings is not a town, and
+   * `generate_town` used to report one as a success. A partial loss is a
+   * different thing — still a town, but the count has to be said out loud.
+   */
+  it('refuses when nothing was planned, and points at the geometry', () => {
+    const { refusal, summary } = assessTownBuild(0, 0, [], 4);
+    expect(refusal).toContain('No building fitted the plan');
+    expect(refusal).toContain('minBuildingWidth (4)');
+    expect(refusal).toContain('Nothing was written');
+    expect(summary).toBe('Buildings: none planned.');
+  });
+
+  it('refuses when every planned building was refused, quoting the first reason', () => {
+    const { refusal } = assessTownBuild(2, 0, [
+      '(4, 6): Wall kind 128 is outside the wall families — A3 is 48-79 and A4 is 80-127.',
+      '(19, 6): Wall kind 128 is outside the wall families — A3 is 48-79 and A4 is 80-127.',
+    ], 4);
+    expect(refusal).toContain('All 2 planned building(s) were refused');
+    expect(refusal).toContain('Wall kind 128');
+    expect(refusal).toContain('Nothing was written');
+  });
+
+  it('says so rather than crashing when no reason was recorded', () => {
+    expect(assessTownBuild(3, 0, [], 4).refusal).toContain('(no reason recorded)');
+  });
+
+  it('accepts a partial placement but names the loss on the buildings line', () => {
+    const { refusal, summary } = assessTownBuild(13, 11, ['a', 'b'], 4);
+    expect(refusal).toBeNull();
+    expect(summary).toBe('Buildings: 11 of 13 planned — 2 refused and lost');
+  });
+
+  it('keeps the plain line when nothing was lost', () => {
+    const { refusal, summary } = assessTownBuild(13, 13, [], 4);
+    expect(refusal).toBeNull();
+    expect(summary).toBe('Buildings: 13 of 13 planned');
+  });
+});
+
+describe('the window where a plan yields no building', () => {
+  /**
+   * `planTown` warns and carries on when nothing fits, which is what let a
+   * building-less town through. Measured here rather than asserted from memory:
+   * at TOWN_DEFAULTS the window is widths 22-24 and nothing else, so the
+   * refusal above cannot fight ordinary use.
+   */
+  it('is width 22-24 at the defaults, and never from 25 up', () => {
+    const zeroWidths = new Set<number>();
+    const okWidths = new Set<number>();
+    for (let width = 25; width <= 60; width++) {
+      for (let seed = 1; seed <= 3; seed++) {
+        const plan = planTown(options({ width, height: 30, seed }));
+        (plan.buildings.length === 0 ? zeroWidths : okWidths).add(width);
+      }
+    }
+    expect([...zeroWidths]).toEqual([]);
+    expect(okWidths.size).toBe(36);
+
+    // Width 22 is the one that always comes out empty.
+    for (let seed = 1; seed <= 3; seed++) {
+      expect(planTown(options({ width: 22, height: 30, seed })).buildings).toHaveLength(0);
+    }
   });
 });

@@ -11,7 +11,7 @@ import { loadA2Materials } from '../core/tileset-image.js';
 import { checkGroundKinds } from '../core/ground-material.js';
 import { checkSheetsPresent } from '../core/tileset-sheets.js';
 import { placeBuildingOnMap, BuildingPlacementError } from '../core/building-placement.js';
-import { planTown, renderTownAscii, TownError, TOWN_DEFAULTS } from '../core/towngen.js';
+import { planTown, renderTownAscii, assessTownBuild, TownError, TOWN_DEFAULTS } from '../core/towngen.js';
 import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
 import { collectProps, findProps, propCells, propPart, PropError, type Prop } from '../core/props.js';
 import { requireProject } from './project-tools.js';
@@ -306,6 +306,23 @@ export function registerTowngenTools(server: McpServer): void {
           }
         }
 
+        // A run where every building was refused used to reach the end, write
+        // the file and report itself a success. Judged here — before the props
+        // and before the only write — so a refusal leaves the map as it was
+        // rather than replacing it with streets and scenery.
+        const outcome = assessTownBuild(
+          plan.buildings.length,
+          placed,
+          failures,
+          args.minBuildingWidth
+        );
+        if (outcome.refusal !== null) {
+          const detail = failures.length > 1
+            ? ['', 'The rest:', ...failures.slice(1, 5).map((f) => `  ${f}`)]
+            : [];
+          return errorResult([outcome.refusal, ...detail].join('\n'));
+        }
+
         // --- props ---
         const catalogue = collectProps(tileset.tilesetNames);
         const missing: string[] = [];
@@ -377,7 +394,7 @@ export function registerTowngenTools(server: McpServer): void {
           '',
           `Streets: ${plan.roads.length} (${plan.bands.length} band(s) of buildings, ` +
             `${args.crossStreets} cross street(s)). They run to the map edge, so the town has ways in.`,
-          `Buildings: ${placed} of ${plan.buildings.length} planned, ${doors} with door events. ` +
+          `${outcome.summary}, ${doors} with door events. ` +
             'Every door faces the street below its building.',
           `Decoration: ${plan.decorSlots.length} prop(s) on free ground, ${framed} framing the edge.`,
           `Shadows: ${shadows.added} tile(s).`,

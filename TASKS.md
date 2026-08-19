@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 16 / 40**
+**Progress: 17 / 40**
 
 ---
 
@@ -358,9 +358,9 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   on black; the same seed on `Dungeon` is the dungeon the caller meant. Read-filter `floorKind`
   arguments (`decorate_dungeon`, `place_dungeon_stairs`) are deliberately not checked, and props
   were already safe via `collectProps`. See [A sheet that is not there](ROADMAP.md#a-sheet-that-is-not-there).
-  Turned up P5-35.
+  Turned up P5-40.
 
-- [ ] **P5-35 — A town with no buildings should not report success**
+- [x] **P5-40 — A town with no buildings should not report success**
   *(turned up by P5-31.)* `generate_town` collects per-building `BuildingPlacementError`s into a
   `failures` list and reports the call as a success regardless of how many landed — measured
   with `roofKinds: [120]` on `Dungeon`, which derives an out-of-family wall kind: every building
@@ -370,6 +370,18 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   *Done when:* a town where no building was placed is a refusal that names why the first one
   failed, and a partial placement says plainly how many were lost. Decide and state whether the
   map should still be written when the count is 0.
+  *Done:* `assessTownBuild` in `src/core/towngen.ts`, called **before the props pass and before
+  the only write**, so a refusal leaves the map untouched — verified over MCP with a marker tile
+  and marker event that both survive a refused run, where before it wrote 660 tiles of ground and
+  cleared the events. Two zero cases, separated because they have different causes. **Nothing
+  planned** turned out to be a narrow window: measured over 4356 accepted plans (widths 17-60,
+  heights 13-45, 3 seeds, at `TOWN_DEFAULTS`), a plan yields no building at **width 22 in 93 of
+  93, widths 23 and 24 in 31 of 93 each, and never from 25 up**; the same plans place a median of
+  8 and at most 25. **Everything refused** quotes the first reason, justified by counting the
+  refusal sites: **6 of the 8 are argument-driven, and the 2 plot-driven ones cannot fire from
+  `generate_town`** — `planTown` only emits in-bounds rects, and the ground is filled before the
+  first building. Partial placement stays a success with the loss on the buildings line. See
+  [A town with no buildings in it](ROADMAP.md#a-town-with-no-buildings-in-it).
 
 ## M2 — Make the generators compose
 

@@ -350,3 +350,84 @@ export function renderTownAscii(plan: TownPlan): string {
 
   return grid.map((row) => row.join('')).join('\n');
 }
+
+/**
+ * Was that a town, or a map with streets on it?
+ *
+ * `generate_town` places its buildings one at a time and catches each
+ * `BuildingPlacementError` into a list, so a run where *every* building was
+ * refused still reached the end, wrote the file and reported itself a success —
+ * the count `Buildings: 0 of 2 planned` was the only trace, in the middle of a
+ * result that otherwise reads exactly like a working town.
+ *
+ * Two different ways to end with nothing, and they need different answers:
+ *
+ *  - **Nothing was planned.** `planTown` warns and carries on when no band
+ *    segment is wide enough for `minBuildingWidth` plus its clearance. Measured
+ *    over 4356 accepted plans (widths 17-60, heights 13-45, 3 seeds each, at
+ *    `TOWN_DEFAULTS`): this happens at **width 22 in 93 of 93 plans, and at
+ *    widths 23 and 24 in 31 of 93 each**. From width 25 up it never happens, and
+ *    below 22 `planTown` already throws. So it is a narrow geometry window with
+ *    a precise cause, not a normal outcome — worth naming rather than warning
+ *    about.
+ *  - **Everything planned was refused.** The building placer said no to each
+ *    one, for a reason it already phrased well. The first of those reasons is
+ *    almost always the whole story, since the refusals come from the arguments
+ *    rather than from the individual plots.
+ *
+ * Where there is at least one building, a partial loss is *not* a refusal — a
+ * town with 11 of 13 buildings is a town — but the count belongs on the line
+ * that reports the buildings, not only in a block further down.
+ *
+ * For scale: those same 4356 plans place a median of 8 buildings and at most
+ * 25, so 0 is far outside what any accepted plan produces.
+ *
+ * Pure: given three counts and the refusal texts, it returns what to say.
+ */
+export interface TownBuildOutcome {
+  /** Refusal text when the result is not a town, else null. */
+  refusal: string | null;
+  /** What the buildings line should say. */
+  summary: string;
+}
+
+export function assessTownBuild(
+  planned: number,
+  placed: number,
+  failures: string[],
+  minBuildingWidth: number
+): TownBuildOutcome {
+  if (planned === 0) {
+    return {
+      refusal:
+        'No building fitted the plan: every band segment came out narrower than ' +
+        `minBuildingWidth (${minBuildingWidth}) plus its clearance, so the town would be ` +
+        'streets and scenery with nothing to enter. Nothing was written.\n\n' +
+        'The map is too narrow for these settings. Widen it, lower minBuildingWidth, or use ' +
+        'fewer cross streets — each cross street takes a road\'s width out of the space a ' +
+        'building could stand in.',
+      summary: 'Buildings: none planned.',
+    };
+  }
+
+  if (placed === 0) {
+    return {
+      refusal:
+        `All ${planned} planned building(s) were refused, so the map would have been streets ` +
+        'and scenery with nothing to enter. Nothing was written.\n\n' +
+        `The first refusal was: ${failures[0] ?? '(no reason recorded)'}\n\n` +
+        'These come from the arguments rather than from the individual plots, so fixing that ' +
+        'one usually fixes them all.',
+      summary: `Buildings: 0 of ${planned} planned.`,
+    };
+  }
+
+  const lost = failures.length;
+  return {
+    refusal: null,
+    summary:
+      lost === 0
+        ? `Buildings: ${placed} of ${planned} planned`
+        : `Buildings: ${placed} of ${planned} planned — ${lost} refused and lost`,
+  };
+}

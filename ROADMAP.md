@@ -2127,11 +2127,71 @@ Two things it deliberately does *not* check, and why:
   catalogue from `tilesetNames` and so cannot offer a prop from a sheet the tileset lacks —
   the gap was only ever in the autotile kinds.
 
-**Still open here**, turned up while testing the derivation above: `generate_town` collects
-per-building refusals into a `failures` list and reports the call as a **success** even when the
-count is *"Buildings: 0 of 2 planned"*. A town with no buildings in it is not a town, and the
-result is a map that was written, cannot be told from a real one by its return status, and has
-to be read carefully to notice. Filed as P5-35.
+This also turned up the gap P5-40 closes: `generate_town` collected per-building refusals into a
+`failures` list and reported the call as a **success** even at *"Buildings: 0 of 2 planned"*.
+See [A town with no buildings in it](#a-town-with-no-buildings-in-it).
+
+### A town with no buildings in it
+
+`generate_town` places its buildings one at a time, catching each `BuildingPlacementError` into
+a `failures` list so that one bad plot cannot lose the whole town. The cost of that was that a
+run where **every** building was refused still reached the end, wrote the file and reported
+itself a success. The count `Buildings: 0 of 2 planned` was the only trace, sitting in a result
+that otherwise reads exactly like a working town — same streets line, same decoration line, same
+closing advice to go and check the doors.
+
+There are two ways to end with nothing, and they want different answers.
+
+**Nothing was planned.** `planTown` warns and carries on when no band segment is wide enough for
+`minBuildingWidth` plus its clearance. **Measured over 4356 accepted plans** (widths 17-60,
+heights 13-45, 3 seeds each, at `TOWN_DEFAULTS`), the window where a plan is accepted and yields
+no building is exactly three widths:
+
+| width | plans yielding 0 buildings |
+|---|---|
+| 22 | 93 of 93 |
+| 23 | 31 of 93 |
+| 24 | 31 of 93 |
+| 25-60 | 0 of 93 each |
+
+Below 22, `planTown` already throws. So this is a narrow geometry window with a precise cause,
+not a normal outcome — worth naming rather than warning about. For scale, the same 4356 plans
+place a **median of 8 buildings and at most 25**, so zero is far outside anything an accepted
+plan produces. (A separate 1980-plan sweep at coarser resolution found 420 refused outright by
+`planTown` and 56 in this warn-only window — 2.8%.)
+
+**Everything planned was refused.** The refusal texts are already good; the first one is the
+whole story. That claim is structural rather than impressionistic: of the **8 sites that raise
+`BuildingPlacementError`, 6 are argument-driven** — roof-choice arity, roof set against a non-
+`Outside_C` C sheet, unknown set name, a nine-slice block wrapping the sheet's half-edge, missing
+`wallKind`, and the wall/roof geometry raised through `BlueprintError`. The **2 plot-driven ones
+cannot fire from `generate_town` at all**: footprints come from `planTown`, which only emits
+rects inside the usable area, and the roof-over-empty-ground check cannot trip because the ground
+layer is filled across the whole map before the first building goes down. Hence "these come from
+the arguments rather than from the individual plots" in the refusal text, and hence quoting only
+the first.
+
+`assessTownBuild` in `src/core/towngen.ts` is the judgement, and the tool calls it **before the
+props pass and before the only `writeJson`** — so a refusal leaves the map exactly as it was.
+Verified over MCP: a map seeded with one tile and one event, then `roofKinds: [120]` on
+`Dungeon` (deriving out-of-family wall kind 128), comes back refused with the marker tile and
+marker event both still there. Before this it would have been 660 tiles of ground and the event
+gone.
+
+A partial loss is **not** a refusal — a town with 11 of 13 buildings is a town — but the count
+moved onto the buildings line itself (`Buildings: 11 of 13 planned — 2 refused and lost`) rather
+than living only in a block further down.
+
+**Stated, not measured:** that zero is the right threshold. 1 of 13 buildings is also barely a
+town, but any cut-off above zero is a number nothing in the corpus or the engine settles, and a
+caller who asked for a small town on a cramped map has a legitimate reason to want the one
+building that fitted.
+
+**Honest limit on the verification:** the partial-placement path is unit-tested but was **not**
+reproduced end to end. Several attempts to provoke one through ordinary arguments — narrow
+buildings, tall wall heights, mixed roof kinds — all came back 10 of 10 or 18 of 18, which is the
+same finding as the 6-of-8 count above from the other direction: through `generate_town`'s own
+arguments the outcome is all-or-nothing.
 
 ### What the map points at
 
