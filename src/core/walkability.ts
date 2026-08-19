@@ -156,11 +156,32 @@ function isDoorEvent(event: { pages?: { image?: { characterName?: string } }[] }
   return name.startsWith('!Door');
 }
 
-export function analyseWalkability(
-  map: MapData,
-  flags: number[],
-  options: WalkabilityOptions = {}
-): WalkabilityReport {
+interface WalkableArea {
+  size: number;
+  sample: { x: number; y: number };
+  seen: boolean[][];
+}
+
+interface AreaSurvey {
+  standable: boolean[][];
+  standableTiles: number;
+  /** Every connected area, largest first. */
+  areas: WalkableArea[];
+  /** The one the player is taken to be in. */
+  main: WalkableArea | undefined;
+  startUnstandable: boolean;
+}
+
+/**
+ * Every connected walkable area, and which one counts as the player's.
+ *
+ * Split out of `analyseWalkability` because reachability is not only a
+ * map-integrity question: an encounter region over tiles the player cannot get
+ * to never fires, so `encounters.ts` needs the same flood — and has to agree
+ * with the walkability report about which area is the main one, or the two
+ * tools would disagree about the same map.
+ */
+function surveyAreas(map: MapData, flags: number[], options: WalkabilityOptions): AreaSurvey {
   const { width, height } = map;
 
   const standable: boolean[][] = [];
@@ -177,7 +198,7 @@ export function analyseWalkability(
 
   // Flood every area, largest first, so "reachable" means "in the main area"
   // rather than "in whichever corner the scan happened to start".
-  const areas: { size: number; sample: { x: number; y: number }; seen: boolean[][] }[] = [];
+  const areas: WalkableArea[] = [];
   const claimed = standable.map((row) => row.map(() => false));
 
   for (let y = 0; y < height; y++) {
@@ -205,6 +226,42 @@ export function analyseWalkability(
     given && !startUnstandable
       ? areas.find((a) => a.seen[given.y][given.x]) ?? areas[0]
       : areas[0];
+
+  return { standable, standableTiles, areas, main, startUnstandable };
+}
+
+/**
+ * Which tiles the player can actually get to, as `grid[y][x]`.
+ *
+ * `standableGrid` answers "could the player occupy this tile"; this answers
+ * "can the player ever be here", which is the question an encounter region has
+ * to pass. Same start rule as `analyseWalkability`: a given start wins, and
+ * without one the largest area stands in for where the player is.
+ */
+export function reachableGrid(
+  map: MapData,
+  flags: number[],
+  options: WalkabilityOptions = {}
+): boolean[][] {
+  const { main } = surveyAreas(map, flags, options);
+  return (
+    main?.seen ??
+    Array.from({ length: map.height }, () => new Array<boolean>(map.width).fill(false))
+  );
+}
+
+export function analyseWalkability(
+  map: MapData,
+  flags: number[],
+  options: WalkabilityOptions = {}
+): WalkabilityReport {
+  const { width, height } = map;
+  const { standable, standableTiles, areas, main, startUnstandable } = surveyAreas(
+    map,
+    flags,
+    options
+  );
+  const given = options.start;
 
   const issues: WalkabilityIssue[] = [];
 

@@ -1,7 +1,7 @@
 # rpgmaker-mz-mcp — working notes
 
 An MCP server that edits RPG Maker MZ projects by writing their `data/*.json` files
-directly. No plugin, no running game. 59 tools across [src/tools](src/tools), each backed by
+directly. No plugin, no running game. 61 tools across [src/tools](src/tools), each backed by
 a pure, unit-tested module in [src/core](src/core).
 
 Current focus: **Phase 5 (procedural map generation)**. The ordered backlog is

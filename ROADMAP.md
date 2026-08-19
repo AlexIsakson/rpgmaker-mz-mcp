@@ -2242,6 +2242,108 @@ destination variables allocated as "Return map"/"Return X"/"Return Y" and direct
 still in `params[4]`/`params[5]`. Two sources on one battle refused naming both; a lone
 `mapVariableId` refused naming the two it was missing.
 
+### Weight means nothing on its own
+
+`set_map_encounters` fills the other half of designation 2: the map's own `encounterList` and
+`encounterStep`. The engine path is small enough to quote whole, and every refusal below points
+at one line of it:
+
+```js
+makeEncounterCount:       const n = $gameMap.encounterStep();
+                          this._encounterCount = Math.randomInt(n) + Math.randomInt(n) + 1;
+makeEncounterTroopId:     for (const e of $gameMap.encounterList())
+                            if (this.meetsEncounterConditions(e)) { list.push(e); weightSum += e.weight; }
+                          if (weightSum > 0) { let v = Math.randomInt(weightSum);
+                            for (const e of list) { v -= e.weight; if (v < 0) return e.troopId; } }
+                          return 0;
+meetsEncounterConditions: e.regionSet.length === 0 || e.regionSet.includes(this.regionId())
+executeEncounter:         if ($dataTroops[troopId]) { BattleManager.setup(troopId, true, false); ... }
+encounterProgressValue:   let value = $gameMap.isBush(this.x, this.y) ? 2 : 1;
+```
+
+**The corpus has nothing to copy, and this time the sweep was total.**
+`scripts/measure-troops.mjs` walks every `data/` directory on this machine — the 293 sample
+maps, the reference `newdata`, all three `newdata-N` variants and their eleven language
+subtrees, the eighteen `resource/patch/stepN` sets, both DLC projects, and all of the user's own
+work. That is **64 data directories and 1219 maps, of which 0 carry a single `encounterList`
+row.** `encounterStep` is 30 on 1217 of them and 31 on exactly two — `samplemaps/Map212` and
+`newdata-2/Map108` — and *both of those still have an empty list*, so the field has been nudged
+on this machine and never once paired with a table. There is therefore no measured convention
+for row counts, idiomatic weights, or whether a zone should be a region or the whole map, and
+`src/core/encounters.ts` invents none. It writes what the caller asks for, refuses what the
+engine cannot use, and reports the resulting odds so the caller can judge.
+
+**Weight is not a percentage, and a single number per row would be a lie.** `regionSet` filters
+the list *before* `weightSum` is computed, and the filter runs against the region under the
+**player**, so the denominator changes as they walk. A row scoped to region 1 does not get its
+weight share inside region 1 — it competes there with every empty-`regionSet` row as well. Two
+rows, weight 5 everywhere and weight 3 in region 1, come out as:
+
+```
+  unpainted      331 tile(s)   troop 1 "Rat1" 100.0%
+  region 1        24 tile(s)   troop 1 "Rat1" 62.5%, troop 7 "Crab2" 37.5%
+```
+
+So the tool reports **one probability table per zone** — each region id the player can reach,
+plus id 0 for bare ground — rather than one percentage per row. That is what "what weights mean
+next to each other" turned out to mean, and it is not visible from the row list.
+
+`regionSet: [0]` is a real and different thing from an empty `regionSet`: `regionId()` returns 0
+on unpainted ground, so `[0]` means *only* off the marked areas, where `[]` means everywhere
+including them. Engine-derived; nothing on disk uses either.
+
+**Three refusals, each naming the guard it saves you from.**
+
+- **An empty troop.** `executeEncounter` guards on `$dataTroops[troopId]`, which is truthy for a
+  row with no members; `Game_Unit.isAllDead()` is then true on the first frame and
+  `checkBattleEnd` goes straight to `processVictory()` — a victory fanfare for walking. This is
+  not a rare shape: of **459 troop rows across the 20 Troops.json files on this machine, only
+  173 (37.7%) have a single member.** 286 are slots the editor allocated and nobody filled, and
+  in `Wicked Heart` it is 87 of 100. On a table picked by weight that is an *intermittent*
+  failure, which is worse to diagnose than a constant one, so it is refused rather than noted.
+  Naming works as a handle here: 183 rows carry a name and **all 173 filled rows are among
+  them**, so `troopName` can reach every troop that belongs in a table.
+- **A region the player can never be standing on.** This is the half a tile view cannot show.
+  `meetsEncounterConditions` tests `this.regionId()` — the id under the player — so a region
+  painted on walls, or on floor walled off from where the player starts, gates a row exactly as
+  hard as a region that was never painted. `encounters.ts` therefore floods the map with the
+  same reachability rule `check_map_walkability` uses before accepting a scoped row. Measured on
+  `Wicked Heart` map 8: 465 standable tiles of 800, a main area of 355, and two islands of 104
+  and 4. A 3x3 region painted into the 104-tile island reports `9 tile(s), 0 of them reachable`
+  and the row is refused; pass `startX/startY` inside that island and the same region becomes 6
+  reachable tiles (9 painted, 3 of them impassable — `paint_regions` and `set_map_encounters`
+  agree on the arithmetic) and the row is accepted.
+- **A table that can never produce a pick.** All weights 0 falls through `if (weightSum > 0)` to
+  `return 0` forever; a negative weight both understates the sum and makes its own row
+  unpickable, since `v -= weight` moves `v` the wrong way. `encounterStep < 1` is the same class:
+  `Math.randomInt(0)` is 0, so the count is `0 + 0 + 1` and an encounter fires on every step.
+
+**What the report says about pacing** comes straight from `makeEncounterCount`: the count is
+`randomInt(n) + randomInt(n) + 1`, so steps between encounters run **1 to 2n-1 and average
+exactly n** — a triangular distribution, not a flat one. `encounterProgressValue` returns 2 on a
+bush tile, so tall grass halves the interval. Both are stated in the tool's own output because
+neither is guessable from the number 30.
+
+**`checkEncounterSource` now leans on the same reachability rule.** P5-35 built it against the
+set of *painted* region ids; that was the weaker half of the same question, and it is now given
+the set of ids with at least one reachable tile (`reachableRegions` in `event-tools.ts`, over
+`surveyEncounterRegions`). Driven over stdio MCP against `Wicked Heart` map 8, the chain now
+runs: `add_event_commands` with `sameAsRandomEncounter` on an empty table is refused and points
+at `set_map_encounters`; with a table scoped only to the walled-off island it is refused again
+and points at `paint_regions`; with an everywhere-row added it is accepted, and reports
+`1 of 2 row(s) on map 8 can be picked, every 30 steps`.
+
+`reachableGrid` was split out of `analyseWalkability` for this, so the encounter check and the
+walkability report cannot disagree about which area is the player's.
+
+**Still open.** `checkEncounterSource` has no way to be told where the player arrives, so it
+assumes the largest walkable area — the assumption `analyseWalkability`'s own documentation says
+is wrong on an interior, where a room's wall tops out-number the room. A designation-2 battle
+inside a small room could be refused for a region that is perfectly reachable from where the
+player actually starts. That is P5-38. Nothing here chooses *which* troop suits a floor's depth
+either; total member exp is derivable (`newdata` runs 20, 20, 30, 30, 100 across its five
+troops) but the ordering is P5-17's to make.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

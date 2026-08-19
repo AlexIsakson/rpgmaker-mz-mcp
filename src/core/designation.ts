@@ -47,8 +47,8 @@
  * default. Only one map in the whole sweep paints a single region tile. So a
  * "same as random encounters" battle written today would do nothing on every
  * map on disk — which is why `checkEncounterSource` refuses rather than warns.
- * Nothing in the server writes `encounterList` yet; that belongs with the
- * encounter work (P5-17), and the refusal says so.
+ * `set_map_encounters` is what fills the table now; `encounters.ts` holds the
+ * writing half, and the reachability rule this check leans on.
  *
  * This module is pure: it reads command records and encounter rows, and returns
  * numbers and text.
@@ -245,13 +245,18 @@ export interface EncounterCheck {
  * Refuse a "same as random encounters" battle on a map that cannot produce a
  * troop for it.
  *
- * `paintedRegions` is the set of region ids the map's z=5 plane actually uses.
- * Pass `undefined` to skip the region half of the check — a caller that could
- * not read the plane should not be told its encounters are unreachable.
+ * `liveRegions` is the set of region ids the player can actually be standing
+ * on — painted on z=5, *and* on a tile connected to the player's own walkable
+ * area. `meetsEncounterConditions` tests the region under the player, so an id
+ * painted on walls gates a row exactly as hard as an id that was never painted;
+ * `reachableRegions` in `event-tools.ts` builds the set from
+ * `surveyEncounterRegions`. Pass `undefined` to skip the region half of the
+ * check — a caller that could not read the plane should not be told its
+ * encounters are unreachable.
  */
 export function checkEncounterSource(
   rows: readonly EncounterRow[] | undefined,
-  paintedRegions: ReadonlySet<number> | undefined,
+  liveRegions: ReadonlySet<number> | undefined,
   index: number,
   mapId: number,
   troopExists?: (troopId: number) => boolean
@@ -266,8 +271,7 @@ export function checkEncounterSource(
   if (rows === undefined || rows.length === 0) {
     throw new DesignationError(
       `${where} is sameAsRandomEncounter, but map ${mapId} has an empty encounterList. ` +
-        `${consequence} No tool writes encounterList yet, so this needs setting in the editor ` +
-        'for now.'
+        `${consequence} set_map_encounters writes the table, and paint_regions scopes it.`
     );
   }
 
@@ -282,8 +286,8 @@ export function checkEncounterSource(
     const regionSet = Array.isArray(row.regionSet) ? row.regionSet : [];
     const reachable =
       regionSet.length === 0 ||
-      paintedRegions === undefined ||
-      regionSet.some((id) => paintedRegions.has(id));
+      liveRegions === undefined ||
+      regionSet.some((id) => liveRegions.has(id));
 
     if (!reachable) {
       unreachableByRegion++;
@@ -301,9 +305,11 @@ export function checkEncounterSource(
   if (usable === 0) {
     const why = [
       unreachableByRegion > 0
-        ? `${unreachableByRegion} row(s) name a regionSet this map never paints — ` +
-          'meetsEncounterConditions is `regionSet.length === 0 || regionSet.includes(regionId())`, ' +
-          'and paint_regions is what puts an id on the ground'
+        ? `${unreachableByRegion} row(s) name a regionSet the player can never be standing on — ` +
+          'meetsEncounterConditions is `regionSet.length === 0 || regionSet.includes(regionId())` ' +
+          'and the id it tests is the one under the player, so a region that is unpainted, or ' +
+          'painted only on walls or on floor walled off from where they start, counts for ' +
+          'nothing; paint_regions is what puts an id on ground they can reach'
         : null,
       zeroWeight > 0
         ? `${zeroWeight} row(s) have weight 0, and the pick is guarded by \`weightSum > 0\``
@@ -318,8 +324,8 @@ export function checkEncounterSource(
   if (unreachableByRegion > 0) {
     notes.push(
       `Note: ${unreachableByRegion} of map ${mapId}'s ${rows.length} encounter row(s) name a ` +
-        'region this map never paints, so they can never fire. paint_regions writes the plane ' +
-        'they match against.'
+        'region the player can never stand on — unpainted, or painted only where they cannot ' +
+        'walk — so they can never fire. paint_regions writes the plane they match against.'
     );
   }
   if (missingTroops.length > 0) {

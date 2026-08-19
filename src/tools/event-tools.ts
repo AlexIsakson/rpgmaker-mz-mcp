@@ -18,7 +18,8 @@ import {
   resolveTransferDesignation,
   DesignationError,
 } from '../core/designation.js';
-import { readRegion } from '../core/regions.js';
+import { surveyEncounterRegions } from '../core/encounters.js';
+import { TilesetReader } from '../core/tileset-reader.js';
 import {
   assignIndents,
   maxIndent,
@@ -95,22 +96,20 @@ async function loadDatabaseTables(dataPath: string): Promise<DatabaseTables> {
 }
 
 /**
- * The region ids this map's z=5 plane actually uses.
+ * The region ids a "same as random encounters" battle could actually draw on.
  *
- * `readRegion` reads `data[(5 * height + y) * width + x] ?? 0`, so a map whose
- * data array is short of six planes reports no regions — which is what
- * `Game_Map.regionId` answers for it too, and therefore the right answer for
- * whether a region-gated encounter row can ever fire.
+ * Not simply what z=5 holds: `meetsEncounterConditions` tests the region under
+ * the *player*, so an id painted only on walls, or only on floor cut off from
+ * where the player is, gates a row exactly as hard as an id that was never
+ * painted. `surveyEncounterRegions` floods the map with the same reachability
+ * rule `check_map_walkability` uses, and only ids with a reachable tile count.
+ *
+ * A map whose data array is short of six planes reports no regions, which is
+ * what `Game_Map.regionId` answers for it too.
  */
-function paintedRegions(mapData: MapData): Set<number> {
-  const ids = new Set<number>();
-  for (let y = 0; y < mapData.height; y++) {
-    for (let x = 0; x < mapData.width; x++) {
-      const id = readRegion(mapData, x, y);
-      if (id > 0) ids.add(id);
-    }
-  }
-  return ids;
+function reachableRegions(mapData: MapData, flags: number[]): Set<number> {
+  const survey = surveyEncounterRegions(mapData, flags);
+  return new Set([...survey.values()].filter((r) => r.reachable > 0).map((r) => r.regionId));
 }
 
 async function readMap(dataPath: string, mapId: number): Promise<MapData> {
@@ -556,7 +555,12 @@ An unbalanced list is refused, naming which block was left open and where.
           const troopRows = fromEncounters
             ? ((await loadDatabaseTables(project.dataPath)).troops ?? [])
             : [];
-          const regions = fromEncounters ? paintedRegions(mapData) : new Set<number>();
+          const regions = fromEncounters
+            ? reachableRegions(
+                mapData,
+                (await TilesetReader.get(project.dataPath, mapData.tilesetId)).flags
+              )
+            : new Set<number>();
 
           for (let i = 0; i < resolved.length; i++) {
             const cmd = resolved[i];

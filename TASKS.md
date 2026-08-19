@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 9 / 37**
+**Progress: 10 / 38**
 
 ---
 
@@ -174,7 +174,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   [Designation is a fork in the engine](ROADMAP.md#designation-is-a-fork-in-the-engine).
   Turned up P5-37.
 
-- [ ] **P5-37 — Write a map's encounter table**
+- [x] **P5-37 — Write a map's encounter table**
   *(turned up by P5-35.)* Nothing in the server writes `encounterList` or `encounterStep`, so
   designation 2 is reachable only on a map somebody set up in the editor — **0 of 926 maps on
   this machine have a single row**. The shape is settled and small: `{ troopId, weight,
@@ -186,6 +186,32 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   validator waiting for it.
   *Done when:* a generated map can come back with encounters that `check_map_walkability`'s
   player would actually meet, and `paint_regions` can scope them.
+  *Done:* `set_map_encounters` and `get_map_encounters`, over `src/core/encounters.ts`. Widened
+  the sweep again with `scripts/measure-troops.mjs` — **64 data directories, 1219 maps, 0 with a
+  single `encounterList` row**; `encounterStep` is 30 on 1217 and 31 on exactly two, both of
+  which *still* have an empty list, so the field has been nudged here and never once paired with
+  a table. The reasoning the task predicted would be large landed in one place: **weight is not a
+  percentage.** `regionSet` filters the list before `weightSum` is summed, and the filter runs
+  against the region under the *player*, so an empty-`regionSet` row competes inside every region
+  too and the denominator changes as the player walks. The tool therefore reports one probability
+  table **per zone** rather than one percentage per row. Reachability is the other half: a region
+  painted on walls or on floor walled off from the start gates a row exactly as hard as an
+  unpainted one, so `reachableGrid` was split out of `analyseWalkability` and a scoped row is
+  refused unless the player can stand in it. Third refusal is the empty troop — **459 troop rows
+  on this machine, only 173 (37.7%) have a member**, and an empty one is a battle won on the
+  first frame. `checkEncounterSource` now takes the reachable set rather than the painted one.
+  See [Weight means nothing on its own](ROADMAP.md#weight-means-nothing-on-its-own).
+  Turned up P5-38.
+
+- [ ] **P5-38 — Let the encounter check be told where the player arrives**
+  *(turned up by P5-37.)* `checkEncounterSource`, reached through `add_event_commands`, has no
+  start argument, so `reachableRegions` falls back to the largest walkable area — the exact
+  assumption `analyseWalkability`'s own docs call wrong on an interior, where a room's passable
+  wall tops out-number the room. A `sameAsRandomEncounter` battle inside a small room can
+  therefore be refused for a region that is perfectly reachable from where the player really
+  starts. `set_map_encounters` already takes `startX`/`startY`; the event path does not.
+  *Done when:* the battle-side check can be given a start, and agrees with `set_map_encounters`
+  when both are given the same one.
 
 - [ ] **P5-36 — Refuse a transfer that lands somewhere the player cannot stand**
   *(turned up by P5-34.)* P5-34 checks the landing square is *inside* the target map, which is

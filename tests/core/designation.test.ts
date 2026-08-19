@@ -211,7 +211,7 @@ describe('checkEncounterSource', () => {
     }
     expect(message).toContain('empty encounterList');
     expect(message).toContain('makeEncounterTroopId returns 0');
-    expect(message).toContain('encounterList yet');
+    expect(message).toContain('set_map_encounters writes the table');
   });
 
   it('refuses a table whose every row is gated on a region the map never paints', () => {
@@ -240,7 +240,7 @@ describe('checkEncounterSource', () => {
     ];
     const result = checkEncounterSource(rows, new Set(), 0, 3);
     expect(result.usable).toBe(1);
-    expect(result.notes.join(' ')).toContain('never paints');
+    expect(result.notes.join(' ')).toContain('can never stand on');
   });
 
   it('warns about a row naming a troop that is not there, rather than refusing', () => {
