@@ -431,3 +431,76 @@ export function assessTownBuild(
         : `Buildings: ${placed} of ${planned} planned — ${lost} refused and lost`,
   };
 }
+
+/**
+ * Where a townsperson may stand, worked out from the plan rather than
+ * rediscovered from the finished map.
+ *
+ * `populate_map` is a second pass: it reads back a map it did not build, tells
+ * floor from wall by passage flags, and recognises a door only by its sprite
+ * name. The planner knows all of it outright — which rects are street, which
+ * are plot, and (in `building.door.approach`) exactly which tile a door is used
+ * from. Handing that down is both cheaper and a guarantee rather than an
+ * inference.
+ *
+ * **The count does not come from the map's size, and that is measured.** Over
+ * the 26 populated maps of `Wicked Heart` (64 maps, 63 NPC events), the Pearson
+ * correlation between map area and NPC count is **r = 0.09** — none. The two
+ * most crowded maps in the project are its *smallest*: 7 NPCs on 17x13, which
+ * is 3.17 per 100 tiles, against 4 NPCs on 40x30, which is 0.33. Population
+ * tracks what a place is, not how big it is, so `generate_town` takes a flat
+ * count and does not scale it by area.
+ *
+ * The RPG Maker sample maps settle nothing here — **4 NPC events across all
+ * 293** — so every number below comes from `Wicked Heart` and is labelled as
+ * one project's habit rather than a rule.
+ *
+ * What is *not* settled by either corpus: whether a townsperson belongs on the
+ * street or on the open ground between buildings. Neither corpus marks which
+ * tiles are road, so this offers both and lets the connectivity check in
+ * `planNpcPlacement` decide — a street tile sits in a wide corridor and
+ * survives it, a tile in a one-wide gap between two buildings usually does not.
+ */
+export interface TownPeoplePlan {
+  /** Tiles a townsperson may be considered for: street and open ground. */
+  candidates: Slot[];
+  /**
+   * Tiles nobody may stand on. Every door's approach tile — the one the player
+   * must step onto to open it. An NPC there does not seal the map off, so the
+   * connectivity check would happily allow it, and the door would simply stop
+   * working with nothing to say why.
+   */
+  blocked: Slot[];
+}
+
+export function planTownPeople(plan: TownPlan): TownPeoplePlan {
+  const taken: boolean[][] = Array.from({ length: plan.height }, () =>
+    new Array<boolean>(plan.width).fill(false)
+  );
+
+  const mark = (x: number, y: number) => {
+    if (y >= 0 && y < plan.height && x >= 0 && x < plan.width) taken[y][x] = true;
+  };
+
+  // Building footprints are solid, and the props stand on their own tiles.
+  for (const building of plan.buildings) {
+    const r = building.rect;
+    for (let y = r.y; y < r.y + r.height; y++) {
+      for (let x = r.x; x < r.x + r.width; x++) mark(x, y);
+    }
+  }
+  for (const slot of plan.decorSlots) mark(slot.x, slot.y);
+  for (const slot of plan.frameSlots) mark(slot.x, slot.y);
+
+  const blocked = plan.buildings.map((b) => ({ ...b.door.approach }));
+  for (const slot of blocked) mark(slot.x, slot.y);
+
+  const candidates: Slot[] = [];
+  for (let y = 0; y < plan.height; y++) {
+    for (let x = 0; x < plan.width; x++) {
+      if (!taken[y][x]) candidates.push({ x, y });
+    }
+  }
+
+  return { candidates, blocked };
+}

@@ -339,3 +339,77 @@ describe('placement respects directional passability', () => {
     expect(result.placed.some((s) => s.y === 0)).toBe(true);
   });
 });
+
+describe('planNpcPlacement allow list', () => {
+  /**
+   * `allow` narrows *where* an NPC may be put; it must not narrow what the
+   * connectivity check looks at. A caller that knows its map's structure —
+   * `generate_town`, which planned the streets — needs both halves of that, or
+   * a villager listed as allowed can still seal off a tile that was not.
+   */
+  const open = grid([
+    '##########',
+    '#........#',
+    '#........#',
+    '#........#',
+    '#........#',
+    '##########',
+  ]);
+
+  it('places only on the listed tiles', () => {
+    const allow = [
+      { x: 2, y: 2 }, { x: 3, y: 2 }, { x: 4, y: 2 }, { x: 5, y: 2 },
+    ];
+    const result = planNpcPlacement(open, { count: 4, seed: 3, allow });
+    expect(result.placed).toHaveLength(4);
+    for (const slot of result.placed) {
+      expect(allow.some((a) => a.x === slot.x && a.y === slot.y)).toBe(true);
+    }
+  });
+
+  it('runs out when the list is shorter than the count, rather than spilling', () => {
+    const result = planNpcPlacement(open, {
+      count: 6,
+      seed: 1,
+      allow: [{ x: 2, y: 2 }, { x: 3, y: 2 }],
+    });
+    expect(result.placed).toHaveLength(2);
+    expect(result.ranOut).toBe(true);
+  });
+
+  it('still refuses a listed tile that would seal something off', () => {
+    // A corridor with one room at each end: (3, 2) is the only way through, so
+    // listing it as allowed must not make it placeable.
+    const pinch = grid([
+      '#####',
+      '#...#',
+      '#.#.#',
+      '#...#',
+      '#####',
+    ]);
+    // Blocking (1,2) and (3,2) both would cut the map in two; blocking either
+    // alone leaves it whole, so ask for both and expect only one to land.
+    const result = planNpcPlacement(pinch, {
+      count: 2,
+      seed: 1,
+      allow: [{ x: 1, y: 2 }, { x: 3, y: 2 }],
+      reference: { x: 1, y: 1 },
+    });
+    expect(result.placed).toHaveLength(1);
+    expect(result.rejected).toBe(1);
+  });
+
+  it('ignores a listed tile that is not reachable at all', () => {
+    const result = planNpcPlacement(open, {
+      count: 2,
+      seed: 1,
+      allow: [{ x: 0, y: 0 }, { x: 2, y: 2 }],
+    });
+    expect(result.placed).toEqual([{ x: 2, y: 2 }]);
+  });
+
+  it('considers everything reachable when no list is given', () => {
+    const result = planNpcPlacement(open, { count: 30, seed: 1 });
+    expect(result.placed.length).toBeGreaterThan(4);
+  });
+});

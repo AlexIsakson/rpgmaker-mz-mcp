@@ -253,6 +253,17 @@ export interface NpcPlacementOptions {
   seed: number;
   /** Tiles nothing may stand on: existing events, and the way in to every door. */
   blocked?: Slot[];
+  /**
+   * Restrict candidates to these tiles. Omit to consider everything reachable.
+   *
+   * This narrows only *where an NPC may be put*; the connectivity check still
+   * floods the whole walkable map, because standing on a listed tile can seal
+   * off an unlisted one just as easily. A caller that already knows the map's
+   * structure — `generate_town`, which planned the streets — passes its own
+   * tiles here rather than letting a scatter over everything walkable put a
+   * villager on a rooftop it happens to be able to reach.
+   */
+  allow?: Slot[];
   /** A tile the player can reach; everything must stay connected to it. */
   reference?: Slot;
   /**
@@ -362,8 +373,12 @@ export function planNpcPlacement(
   // floor, but nothing can step onto them, so an NPC put there is visible,
   // unreachable and impossible to explain.
   let reachable = flood(standable, taken, reference, canStep);
+  const allow = options.allow === undefined
+    ? null
+    : new Set(options.allow.map((s) => key(s.x, s.y)));
   const candidates: Slot[] = [];
   for (const cell of reachable) {
+    if (allow !== null && !allow.has(cell)) continue;
     const [x, y] = cell.split(',').map(Number);
     candidates.push({ x, y });
   }
@@ -390,3 +405,30 @@ export function planNpcPlacement(
 
   return { placed, rejected, ranOut: placed.length < options.count };
 }
+
+/**
+ * Sheets the RTP ships that hold ordinary people. Any the project does not have
+ * are skipped and reported, so a project with its own art degrades to whatever
+ * it does have rather than failing.
+ *
+ * Shared by `populate_map` and `generate_town` so a town populated in one call
+ * and one populated in two look the same.
+ */
+export const DEFAULT_NPC_SHEETS = ['People1', 'People2', 'People3', 'People4'];
+
+/**
+ * Obvious placeholder lines. Generated dialogue is scaffolding — it exists so
+ * the town is populated and every NPC is wired up, not because it is worth
+ * reading. Pass `dialogue` to say something. P5-12 is the task for making these
+ * worth the box they appear in.
+ */
+export const DEFAULT_NPC_DIALOGUE = [
+  'Morning. Cold one today.',
+  'Mind the road past the bridge — it floods.',
+  "I've lived here all my life and I still get lost.",
+  'The shop opens late on market days.',
+  'You look like you have somewhere to be.',
+  'Rain again tomorrow, they reckon.',
+  'Careful out past the treeline.',
+  'Nothing ever happens here. Suits me.',
+];

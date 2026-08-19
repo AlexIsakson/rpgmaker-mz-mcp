@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 17 / 40**
+**Progress: 18 / 41**
 
 ---
 
@@ -389,13 +389,41 @@ The pieces exist one level down; the generators just do not reach for them. This
 visible payoff per unit of work in the whole backlog — it turns a correct but empty
 architectural model into an inhabited place.
 
-- [ ] **P5-04 — `generate_town` emits NPCs**
+- [x] **P5-04 — `generate_town` emits NPCs**
   `populate_map` is currently a separate pass over a finished map, so a generated town is
   complete and completely empty. Have the town planner place people as part of the plan, where it
   already knows what is street, what is plot and what is doorway — placement it can guarantee,
   rather than a second pass rediscovering it.
   *Done when:* one `generate_town` call yields a populated town, asserted across seeds, and no NPC
   stands on a door approach tile.
+  *Done:* `planTownPeople` in `src/core/towngen.ts` derives the standable candidates and the
+  blocked approach tiles straight from the plan — `building.door.approach` was already there and
+  nothing had ever read it. `planNpcPlacement` grew an `allow` option that narrows *candidates*
+  only, leaving the connectivity flood over the whole map, since standing on an allowed tile can
+  seal off a disallowed one. **The count is flat, not a density, and that is measured:** over the
+  26 populated maps of `Wicked Heart`, map area and NPC count correlate at **r = 0.09**, and the
+  two most crowded maps are the smallest (7 NPCs on 17x13 = 3.17 per 100, against 4 on 40x30 =
+  0.33). Default 6, at the top of the measured range (median 2, max 7). The sample corpus settles
+  nothing — **4 NPC events across 293 maps** — so every number is labelled as one project's habit;
+  it does confirm the existing page defaults (52 of 63 fixed movement, 45 of 63 Action Button).
+  Verified over MCP across 4 seeds and 4 sizes, 46 NPCs in 5 towns: **0 on a door or approach
+  tile, 0 under a roof or prop, 0 stacked**, and a fresh town is 1133 standable in 1 connected
+  area. See [Somebody to talk to](ROADMAP.md#somebody-to-talk-to). Turned up P5-41.
+
+- [ ] **P5-41 — Regenerating a map should not leave the last one's debris**
+  *(turned up by P5-04.)* `generate_town` says *"The map is replaced — its existing tiles and
+  events both go"*, and that is true only of layer 0. Roofs on layer 2, props on layer 1 (where
+  `applyPlacements` runs with `skipOccupied`, so new props will not even overwrite old ones) and
+  the shadow plane at z=4 all survive a regeneration. Measured on one map: regenerated four
+  times it reports **1037 standable with a 7-tile isolated pocket and 0 new shadows**, against
+  **1133 standable, no pocket and 20 shadows** on a fresh map with the identical seed and
+  arguments — 96 tiles of debris. Caught by a render, where a villager was standing on a roof
+  left by a previous run; invisible in every text grid and in the walkability numbers taken on
+  their own. `generate_map_layout` has the same shape — it rewrites only the chosen layer and
+  already warns about stale tiles rather than clearing them — so decide once whether a generator
+  clears the whole map or says plainly that it does not.
+  *Done when:* a regenerated map is identical to the same generation on a fresh map, or the tool
+  refuses and names what it would have left behind.
 
 - [ ] **P5-05 — `generate_town` places a shop**
   `place_shop` needs a coordinate and `generate_town` builds the buildings; neither knows about

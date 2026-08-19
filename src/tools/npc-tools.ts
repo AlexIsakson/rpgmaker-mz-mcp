@@ -19,6 +19,8 @@ import {
   type MoveType,
   type NpcTrigger,
   type Slot,
+  DEFAULT_NPC_SHEETS as DEFAULT_SHEETS,
+  DEFAULT_NPC_DIALOGUE as DEFAULT_DIALOGUE,
 } from '../core/npcgen.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
@@ -26,34 +28,11 @@ import type { MapData } from '../schemas/map.js';
 import type { Event } from '../schemas/event.js';
 import { logger } from '../logger.js';
 
-/**
- * Sheets the RTP ships that hold ordinary people. Any that the project does not
- * have are skipped and reported, so a project with its own art degrades to
- * whatever it does have rather than failing.
- */
-const DEFAULT_SHEETS = ['People1', 'People2', 'People3', 'People4'];
-
-/**
- * Obvious placeholder lines. Generated dialogue is scaffolding — it exists so
- * the town is populated and every NPC is wired up, not because it is worth
- * reading. Pass `dialogue` to say something.
- */
-const DEFAULT_DIALOGUE = [
-  'Morning. Cold one today.',
-  'Mind the road past the bridge — it floods.',
-  "I've lived here all my life and I still get lost.",
-  'The shop opens late on market days.',
-  'You look like you have somewhere to be.',
-  'Rain again tomorrow, they reckon.',
-  'Careful out past the treeline.',
-  'Nothing ever happens here. Suits me.',
-];
-
 function errorResult(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
 
-async function listCharacterSheets(projectPath: string): Promise<string[]> {
+export async function listCharacterSheets(projectPath: string): Promise<string[]> {
   try {
     const files = await fs.readdir(path.join(projectPath, 'img', 'characters'));
     return files.filter((f) => f.endsWith('.png')).map((f) => f.replace(/\.png$/, '')).sort();

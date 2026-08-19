@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   planTown,
   assessTownBuild,
+  planTownPeople,
   renderTownAscii,
   TownError,
   TOWN_DEFAULTS,
@@ -391,6 +392,82 @@ describe('the window where a plan yields no building', () => {
     // Width 22 is the one that always comes out empty.
     for (let seed = 1; seed <= 3; seed++) {
       expect(planTown(options({ width: 22, height: 30, seed })).buildings).toHaveLength(0);
+    }
+  });
+});
+
+describe('planTownPeople', () => {
+  /**
+   * The rule under test: the planner hands down where a townsperson may stand,
+   * instead of a later pass inferring it from passage flags and sprite names.
+   * Everything here is asserted against the plan's own rects, so a failure
+   * points at the derivation rather than at the town generator.
+   */
+  const plan = planTown(options());
+  const people = planTownPeople(plan);
+  const has = (list: { x: number; y: number }[], x: number, y: number) =>
+    list.some((s) => s.x === x && s.y === y);
+
+  it('blocks exactly the door approach tiles, one per building', () => {
+    expect(people.blocked).toHaveLength(plan.buildings.length);
+    for (const building of plan.buildings) {
+      expect(has(people.blocked, building.door.approach.x, building.door.approach.y)).toBe(true);
+    }
+  });
+
+  it('never offers a tile inside a building footprint', () => {
+    for (const building of plan.buildings) {
+      const r = building.rect;
+      for (let y = r.y; y < r.y + r.height; y++) {
+        for (let x = r.x; x < r.x + r.width; x++) {
+          expect(has(people.candidates, x, y)).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('never offers a tile a prop already stands on', () => {
+    for (const slot of [...plan.decorSlots, ...plan.frameSlots]) {
+      expect(has(people.candidates, slot.x, slot.y)).toBe(false);
+    }
+  });
+
+  it('never offers a door approach tile', () => {
+    for (const slot of people.blocked) {
+      expect(has(people.candidates, slot.x, slot.y)).toBe(false);
+    }
+  });
+
+  it('does offer the streets, which is where townsfolk go', () => {
+    // Every road tile that no building, prop or approach has taken.
+    const road = plan.roads[0];
+    let offered = 0;
+    for (let y = road.y; y < road.y + road.height; y++) {
+      for (let x = road.x; x < road.x + road.width; x++) {
+        if (has(people.candidates, x, y)) offered++;
+      }
+    }
+    expect(offered).toBeGreaterThan(0);
+  });
+
+  it('is reproducible: the same seed gives the same candidates', () => {
+    const again = planTownPeople(planTown(options()));
+    expect(again.candidates).toEqual(people.candidates);
+    expect(again.blocked).toEqual(people.blocked);
+  });
+
+  it('holds across seeds', () => {
+    for (let seed = 1; seed <= 8; seed++) {
+      const p = planTown(options({ seed }));
+      const q = planTownPeople(p);
+      expect(q.blocked).toHaveLength(p.buildings.length);
+      expect(q.candidates.length).toBeGreaterThan(0);
+      for (const b of p.buildings) {
+        expect(has(q.candidates, b.door.approach.x, b.door.approach.y)).toBe(false);
+        // The door tile itself is on the building's bottom row, so the
+        // footprint rule already covers it — assert it rather than assume.
+        expect(has(q.candidates, b.door.x, b.door.y)).toBe(false);
+      }
     }
   });
 });

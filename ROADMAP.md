@@ -2193,6 +2193,73 @@ buildings, tall wall heights, mixed roof kinds — all came back 10 of 10 or 18 
 same finding as the 6-of-8 count above from the other direction: through `generate_town`'s own
 arguments the outcome is all-or-nothing.
 
+### Somebody to talk to
+
+`generate_town` built a complete and completely empty town: streets, buildings, working doors,
+a tree line, props, and nobody. `populate_map` existed, but as a *second* pass over a finished
+map — it read back something it had not built, told floor from wall by passage flags, and
+recognised a door only by whether its sprite name began `!Door`. The planner knew all of it
+outright.
+
+So the placement moved into the plan. `planTownPeople` takes a `TownPlan` and returns the tiles
+a townsperson may stand on — everything that is not a building footprint, a prop slot or a
+door's approach — and the approach tiles as an explicit blocklist. `building.door.approach` was
+already in the plan; nothing had ever read it.
+
+**The count is flat, and that is the measured part.** The obvious design is a density: so many
+people per hundred tiles. The corpus says no. Over the **26 populated maps of `Wicked Heart`**
+(64 maps, 63 NPC events), the Pearson correlation between map area and NPC count is **r = 0.09**
+— none at all. The two most crowded maps in the project are its *smallest*:
+
+| map | NPCs | per 100 tiles |
+|---|---|---|
+| 17x13 | 7 | 3.17 |
+| 17x13 | 7 | 3.17 |
+| 30x20 | 6 | 1.00 |
+| 40x20 | 4 | 0.50 |
+| 40x30 | 4 | 0.33 |
+| 18x60 | 3 | 0.28 |
+
+Population tracks what a place *is*, not how big it is. So `npcCount` is a flat default of 6 —
+inside the measured range (median 2 per populated map, max 7) and at its upper end, because a
+town is the populated kind of map rather than the median one. A bigger town does not get more
+people unless the caller says so.
+
+**The sample corpus settles nothing here and is labelled as such:** `samplemaps` holds **4 NPC
+events across all 293 maps**, because it is a folder of scenery templates. Every number above
+comes from one project, `Wicked Heart`, and is that project's habit rather than a rule. The page
+settings it does confirm agree with the 70 demo-project pages `npcgen.ts` was already built on:
+**52 of 63 fixed movement** (`generate_town` defaults to fixed) and **45 of 63 Action Button**
+(the trigger it uses).
+
+**`planNpcPlacement` grew an `allow` option** rather than a second placement routine. The
+subtlety is that it narrows only *which tiles are candidates* — the connectivity flood still
+runs over the whole walkable map, because standing on an allowed tile can seal off a
+disallowed one just as easily. Without that split, a town could wall off its own back alley
+and pass its own check.
+
+**Verified over MCP across 4 seeds and 4 map sizes** (30x24 to 50x38), 46 NPCs in 5 towns: **0
+on a door tile or its approach, 0 standing under a roof or prop on an upper layer, 0 sharing a
+tile.** On a fresh 44x34 town, `check_map_walkability` reports **1133 standable, all 1133 in one
+connected area** — the townsfolk cost nothing, which is what the per-placement connectivity
+check is for.
+
+**What the render caught that the numbers did not.** The first populated render had a villager
+standing on a rooftop. It was not a placement bug — the tile was open ground in the plan, and
+the roof under his feet was left over from an *earlier* `generate_town` run on the same map.
+`generate_town` says "The map is replaced — its existing tiles and events both go", and that is
+only true of layer 0: roofs on layer 2, props on layer 1 and the shadow plane at z=4 all
+survive a regeneration. The same map regenerated four times reports **1037 standable with a
+7-tile pocket and 0 new shadows**, against **1133 standable, no pocket and 20 shadows** on a
+fresh map with the identical seed and arguments — a 96-tile difference, all of it debris. Filed
+as P5-41; it is a pre-existing bug this task only made visible.
+
+**Still open here:** the dialogue is the same placeholder set `populate_map` uses, now shared
+from `npcgen.ts` so the two agree. P5-12 is the task for making it worth the box it appears in.
+And nothing yet distinguishes a townsperson on a street from one on the open ground between
+buildings — neither corpus marks which tiles are road, so both are offered and the connectivity
+check does the sorting.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live

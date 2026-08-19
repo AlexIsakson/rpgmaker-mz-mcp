@@ -10,8 +10,26 @@ import { TilesetReader } from '../core/tileset-reader.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { checkGroundKinds } from '../core/ground-material.js';
 import { checkSheetsPresent } from '../core/tileset-sheets.js';
-import { placeBuildingOnMap, BuildingPlacementError } from '../core/building-placement.js';
-import { planTown, renderTownAscii, assessTownBuild, TownError, TOWN_DEFAULTS } from '../core/towngen.js';
+import { placeBuildingOnMap, addEvent, BuildingPlacementError } from '../core/building-placement.js';
+import {
+  planTown,
+  renderTownAscii,
+  assessTownBuild,
+  planTownPeople,
+  TownError,
+  TOWN_DEFAULTS,
+} from '../core/towngen.js';
+import {
+  npcEvent,
+  planNpcPlacement,
+  charactersOnSheet,
+  MOVE_TYPES,
+  DEFAULT_NPC_SHEETS,
+  DEFAULT_NPC_DIALOGUE,
+  type MoveType,
+} from '../core/npcgen.js';
+import { standableGrid, canPass, type Direction } from '../core/walkability.js';
+import { listCharacterSheets } from './npc-tools.js';
 import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
 import { collectProps, findProps, propCells, propPart, PropError, type Prop } from '../core/props.js';
 import { requireProject } from './project-tools.js';
@@ -132,6 +150,31 @@ export function registerTowngenTools(server: McpServer): void {
           'Prop for the tree line around the edge. Its top-left column is used, so a name that ' +
           'bundles filler variants still gives a single tree. Empty string leaves the edge bare.'
         ),
+      npcCount: z.number().int().min(0).max(100).default(6)
+        .describe(
+          'Townspeople to place, on the streets and the open ground between buildings. 0 leaves ' +
+          'the town empty. This is a flat count, not a density: across the 26 populated maps of ' +
+          'the largest project on hand, NPC count and map area correlate at r = 0.09 — the two ' +
+          'most crowded maps are the smallest — so a bigger town does not want more people ' +
+          'unless you say so. Nobody is placed on a door approach tile or anywhere that standing ' +
+          'would seal part of the town off.'
+        ),
+      npcSheets: z.array(z.string()).optional()
+        .describe(
+          `Sprite sheets for the townspeople. Defaults to ${DEFAULT_NPC_SHEETS.join(', ')}; any ` +
+          'the project does not have are skipped and reported.'
+        ),
+      npcDialogue: z.array(z.string()).optional()
+        .describe(
+          'Lines to give them, cycled. The built-in default is obvious placeholder text — pass ' +
+          'your own for anything that matters.'
+        ),
+      npcMovement: z.enum(MOVE_TYPES as unknown as [string, ...string[]]).default('fixed')
+        .describe(
+          'fixed stands still, random wanders. Fixed is what 52 of 63 measured NPCs use. A ' +
+          'wanderer can walk into a doorway at runtime, which no static check can see.'
+        ),
+      npcNamePrefix: z.string().default('Villager').describe('Event names, numbered from 1'),
       roofLayer: z.number().int().min(1).max(TILE_LAYERS - 1).default(2)
         .describe('Layer for nine-slice roofs'),
       propLayer: z.number().int().min(1).max(TILE_LAYERS - 1).default(1)
@@ -382,6 +425,73 @@ export function registerTowngenTools(server: McpServer): void {
 
         const shadows = applyWallShadows(mapData, { overwrite: false });
 
+        // --- people ---
+        // Placed here, not by a later populate_map pass: the plan already knows
+        // which tiles are street, which are plot and — in `door.approach` —
+        // exactly which tile each door is used from, so this is a guarantee
+        // rather than a second pass inferring it from passage flags and sprite
+        // names. Standability still comes from the finished map, because only
+        // the tileset's flags know whether the ground that was painted can be
+        // walked on.
+        let npcs = 0;
+        let npcRejected = 0;
+        let npcRanOut = false;
+        const missingSheets: string[] = [];
+
+        if (args.npcCount > 0) {
+          const wanted = args.npcSheets ?? DEFAULT_NPC_SHEETS;
+          const available = await listCharacterSheets(project.path);
+          const sheets = wanted.filter((s) => available.length === 0 || available.includes(s));
+          missingSheets.push(...wanted.filter((s) => !sheets.includes(s)));
+
+          if (sheets.length === 0) {
+            // The town itself is fine; only its people could not be drawn. A
+            // refusal here would throw away a good map over a missing PNG.
+            notes.push(
+              `None of ${wanted.join(', ')} are in img/characters, so the town was left empty. ` +
+              'Use list_character_sheets to see what the project has, and pass npcSheets.'
+            );
+          } else {
+            const people = planTownPeople(plan);
+            const standable = standableGrid(mapData, tileset.flags);
+            const canStep = (ax: number, ay: number, bx: number, by: number): boolean => {
+              const dx = bx - ax;
+              const dy = by - ay;
+              const d = (dx === 1 ? 6 : dx === -1 ? 4 : dy === 1 ? 2 : 8) as Direction;
+              return canPass(mapData, tileset.flags, ax, ay, d);
+            };
+
+            const placement = planNpcPlacement(standable, {
+              count: args.npcCount,
+              seed,
+              allow: people.candidates,
+              blocked: [
+                ...people.blocked,
+                ...mapData.events.filter((e) => e !== null).map((e) => ({ x: e!.x, y: e!.y })),
+              ],
+              canStep,
+            });
+            npcRejected = placement.rejected;
+            npcRanOut = placement.ranOut;
+
+            const dialogue = args.npcDialogue ?? DEFAULT_NPC_DIALOGUE;
+            for (let i = 0; i < placement.placed.length; i++) {
+              const slot = placement.placed[i];
+              const sheet = sheets[i % sheets.length];
+              const index = charactersOnSheet(sheet) === 1 ? 0 : (seed + i) % 8;
+              addEvent(mapData, (id) =>
+                npcEvent(id, slot.x, slot.y, `${args.npcNamePrefix} ${i + 1}`, {
+                  characterName: sheet,
+                  characterIndex: index,
+                  text: dialogue.length > 0 ? dialogue[i % dialogue.length] : '',
+                  movement: args.npcMovement as MoveType,
+                })
+              );
+              npcs++;
+            }
+          }
+        }
+
         await FileHandler.writeJson(mapPath, mapData);
         await project.getVersionSync().bump();
 
@@ -397,6 +507,9 @@ export function registerTowngenTools(server: McpServer): void {
           `${outcome.summary}, ${doors} with door events. ` +
             'Every door faces the street below its building.',
           `Decoration: ${plan.decorSlots.length} prop(s) on free ground, ${framed} framing the edge.`,
+          `People: ${npcs} of ${args.npcCount} townsfolk, on streets and open ground. ` +
+            'None on a door approach tile, and none anywhere that standing would seal ' +
+            'part of the town off.',
           `Shadows: ${shadows.added} tile(s).`,
         ];
         if (clearedEvents > 0) {
@@ -415,6 +528,37 @@ export function registerTowngenTools(server: McpServer): void {
             '',
             `Not in this tileset, so skipped: ${missing.join(', ')}. ` +
             '(Only 1x1 props are scattered; a name that resolves to a larger prop counts as missing.)'
+          );
+        }
+        if (missingSheets.length > 0) {
+          lines.push('', `Not in img/characters, so skipped: ${missingSheets.join(', ')}.`);
+        }
+        if (npcRejected > 0) {
+          lines.push(
+            '',
+            `${npcRejected} tile(s) were passed over for townsfolk because standing there would ` +
+            'have sealed off part of the town — a gap between two buildings, usually.'
+          );
+        }
+        if (npcRanOut) {
+          lines.push(
+            '',
+            'The town ran out of tiles that could take a townsperson without cutting something ' +
+            'off. Lower npcCount, or make the map bigger.'
+          );
+        }
+        if (npcs > 0 && !args.npcDialogue) {
+          lines.push(
+            '',
+            'The townsfolk speak the built-in placeholder lines. Pass npcDialogue to give them ' +
+            'something worth reading.'
+          );
+        }
+        if (npcs > 0 && args.npcMovement === 'random') {
+          lines.push(
+            '',
+            'These townsfolk wander. The connectivity check only holds for where they start — a ' +
+            'wandering NPC can stand in a doorway at runtime, which no static check can see.'
           );
         }
 
