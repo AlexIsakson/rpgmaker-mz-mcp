@@ -133,7 +133,24 @@ export function registerTowngenTools(server: McpServer): void {
       roadWidth: z.number().int().min(1).max(4).default(TOWN_DEFAULTS.roadWidth)
         .describe('Street thickness in tiles'),
       bandHeight: z.number().int().min(4).default(TOWN_DEFAULTS.bandHeight)
-        .describe('Height of a row of buildings plus the gap above it'),
+        .describe(
+          'Height of a row of buildings plus the gap above it. With bothSidesOfStreet on, a ' +
+          'band this tall holds two rows back to back once floor((bandHeight - 1) / 2) is at ' +
+          'least the shortest legal building.'
+        ),
+      bothSidesOfStreet: z.boolean().default(TOWN_DEFAULTS.bothSidesOfStreet)
+        .describe(
+          'Build a north-facing row of buildings along the top of every band that has a road ' +
+          'above it, so a street is built up on both sides instead of only below. Needs a band ' +
+          'tall enough for two buildings back to back; on a shorter band it does nothing, and ' +
+          'says so. Off by default because of how it looks, not what it does: a north-facing ' +
+          'building has to put its wall band above its roof, and the RTP roof sets are ' +
+          'directional art, so the wall renders as though it were standing on the roof. Of the ' +
+          '107 door events in the 293 sample maps, the 88 with an unambiguous approach are ' +
+          'entered from below in 88 of 88 — nothing shipped is entered from the north. The ' +
+          'layout itself is sound: a 44x46 town goes from 8 buildings to 12, every door reaches ' +
+          'a street, and walkability stays one connected area.'
+        ),
       crossStreets: z.number().int().min(1).max(4).default(TOWN_DEFAULTS.crossStreets)
         .describe('Vertical streets. At least one, or the horizontal roads never meet.'),
       minBuildingWidth: z.number().int().min(2).default(TOWN_DEFAULTS.minBuildingWidth),
@@ -307,6 +324,7 @@ export function registerTowngenTools(server: McpServer): void {
             crossStreets: args.crossStreets,
             decorDensity: args.decorDensity,
             framePropHeight: TOWN_DEFAULTS.framePropHeight,
+            bothSidesOfStreet: args.bothSidesOfStreet,
           });
         } catch (error) {
           if (error instanceof TownError) return errorResult(error.message);
@@ -376,6 +394,7 @@ export function registerTowngenTools(server: McpServer): void {
                 roofLayer,
                 door: true,
                 doorOffsetX: building.doorOffsetX,
+                doorSide: building.doorSide,
                 doorSprite: TOWN_DOOR_SPRITE,
                 doorSpriteIndex: 0,
                 allowRoofOverEmptyGround: false,
@@ -606,13 +625,19 @@ export function registerTowngenTools(server: McpServer): void {
           `Generated town on map ${mapId}: ${placed} buildings, ${plan.roads.length} streets, seed ${seed}`
         );
 
+        const northFacing = plan.buildings.filter((b) => b.doorSide === 'top').length;
+
         const lines = [
           `Generated a town on map ${mapId} (${mapData.width}x${mapData.height}), seed ${seed}.`,
           '',
           `Streets: ${plan.roads.length} (${plan.bands.length} band(s) of buildings, ` +
             `${args.crossStreets} cross street(s)). They run to the map edge, so the town has ways in.`,
           `${outcome.summary}, ${doors} with door events. ` +
-            'Every door faces the street below its building.',
+            (northFacing === 0
+              ? 'Every door faces the street below its building.'
+              : `${northFacing} of them face the street above their building instead, so ` +
+                `${plan.buildings.length - northFacing} street frontage(s) run along the ` +
+                'south side of a road and the rest along the north. Every door faces a street.'),
           `Decoration: ${plan.decorSlots.length} prop(s) on free ground, ${framed} framing the edge.`,
           `People: ${npcs} of ${args.npcCount} townsfolk, on streets and open ground. ` +
             'None on a door approach tile, and none anywhere that standing would seal ' +
@@ -624,6 +649,19 @@ export function registerTowngenTools(server: McpServer): void {
         }
         if (clearedEvents > 0) {
           lines.push(`Cleared ${clearedEvents} event(s) that were already on the map.`);
+        }
+        if (args.bothSidesOfStreet && northFacing === 0 && plan.bands.length > 1) {
+          // Say why the option did nothing rather than letting the caller
+          // conclude it is broken.
+          lines.push(
+            '',
+            `bothSidesOfStreet was on but no north-facing row fitted: a bandHeight of ` +
+            `${args.bandHeight} splits into ${Math.floor((args.bandHeight - 1) / 2)} rows for ` +
+            'the north row, and the shortest legal building here is ' +
+            `${Math.max(args.minBuildingHeight, args.wallHeight + 2)} (max of minBuildingHeight ` +
+            'and wallHeight plus two roof rows). Raise bandHeight, or lower minBuildingHeight, ' +
+            'to build up both sides of a street.'
+          );
         }
         if (keptNote !== null) lines.push('', keptNote);
 

@@ -1,5 +1,6 @@
 import { makeRng } from './mapgen.js';
 import type { Rect } from './autotile.js';
+import type { DoorSide } from './blueprint.js';
 
 /**
  * Town layout.
@@ -12,18 +13,36 @@ import type { Rect } from './autotile.js';
  * layout testable: every property below is asserted against the plan, with no
  * map file involved.
  *
- * **The layout is built around a constraint of the building primitive.** A
- * door sits on the bottom wall row and is approached from the tile below it, so
- * a building only works if there is a road immediately beneath it. The whole
- * town therefore reads as horizontal bands, each one a row of buildings sitting
- * on the street it faces:
+ * **The layout used to be built around a constraint of the building primitive.**
+ * A door sat on the bottom wall row and was approached from the tile below it,
+ * so a building only worked with a road immediately beneath it. The town read as
+ * horizontal bands, each one a row of buildings sitting on the street it faces —
+ * and the top of every band, against the road above, was dead ground:
  *
  *     ~~~~~~~~~~~~~~~~   frame
  *     ###  ###   ####    band  — buildings, bottom-aligned
  *     ================   road  — full width, so it reaches both map edges
+ *     ....dead ground...
  *     ####  ###  ###     band
  *     ================   road
  *     ~~~~~~~~~~~~~~~~   frame
+ *
+ * `planBuilding` now takes a {@link DoorSide}, so a band that has a road above
+ * it *and* enough height for two buildings back to back gets a **north-facing
+ * row** along its top edge, doors onto the road above. A street is then built up
+ * on both sides:
+ *
+ *     ================   road
+ *     ###  ####  ###     north-facing row — top-aligned, doors on its top edge
+ *     ...................gap, so the two rows' roofs never touch
+ *     ####  ###  ###     south-facing row — bottom-aligned, doors on its bottom edge
+ *     ================   road
+ *
+ * The band is split into two height budgets, `floor((bandHeight - 1) / 2)` for
+ * the north row and the rest for the south, with the spare row between them.
+ * Both budgets must hold the shortest legal building or the band stays
+ * single-sided — so this turns itself off on a short band rather than producing
+ * two rows that overlap.
  *
  * Cross streets run the full height and intersect every road, which is what
  * makes the network connected **by construction** rather than by luck — the
@@ -54,6 +73,22 @@ export interface TownOptions {
   decorDensity: number;
   /** Height of the props used to frame the map edge. */
   framePropHeight: number;
+  /**
+   * Build a north-facing row along the top of every band that has a road above
+   * it and room for two buildings. Off leaves the town in horizontal bands with
+   * the ground above each row unused.
+   *
+   * **Off by default, and the reason is what it looks like rather than what it
+   * does.** The layout is sound — every door reaches a street, and a 44x46 town
+   * at bandHeight 12 goes from 8 buildings to 12 with walkability still one
+   * connected area of 1573 tiles. But a north-facing building has to put its
+   * wall band above its roof, and the RTP roof sets are directional art: the
+   * render shows the wall apparently standing *on* the roof, with the wall's own
+   * drop shadow falling across it. That is the corpus count showing up visually
+   * — 0 of 107 sample doors are entered from the north. So this is offered, not
+   * chosen.
+   */
+  bothSidesOfStreet: boolean;
 }
 
 export const TOWN_DEFAULTS: Omit<TownOptions, 'width' | 'height' | 'seed'> = {
@@ -68,6 +103,9 @@ export const TOWN_DEFAULTS: Omit<TownOptions, 'width' | 'height' | 'seed'> = {
   crossStreets: 2,
   decorDensity: 0.08,
   framePropHeight: 2,
+  // Off, and the render is the reason — see `bothSidesOfStreet` above and the
+  // ROADMAP. The layout is sound; the RTP art is not on its side.
+  bothSidesOfStreet: false,
 };
 
 export interface TownBuilding {
@@ -75,6 +113,8 @@ export interface TownBuilding {
   wallHeight: number;
   /** Door column within the footprint. */
   doorOffsetX: number;
+  /** Which edge of the footprint the door is on. */
+  doorSide: DoorSide;
   /** Absolute door tile, and the tile the player stands on to use it. */
   door: { x: number; y: number; approach: { x: number; y: number } };
   /** Pick a roof with `variant % choices.length`. */
@@ -123,7 +163,7 @@ export function planTown(options: TownOptions): TownPlan {
   const {
     width, height, seed, border, roadWidth, bandHeight,
     minBuildingWidth, maxBuildingWidth, minBuildingHeight, maxBuildingHeight,
-    wallHeight, crossStreets, decorDensity, framePropHeight,
+    wallHeight, crossStreets, decorDensity, framePropHeight, bothSidesOfStreet,
   } = options;
 
   if (crossStreets < 1) {
@@ -201,8 +241,59 @@ export function planTown(options: TownOptions): TownPlan {
   const onRoad = (x: number, y: number): boolean => roads.some((r) => inRect(r, x, y));
 
   // --- buildings ---
+  // The two rows of a band get separate height budgets with one spare row
+  // between them, so a north-facing roof never touches the south-facing one
+  // behind it. Both budgets have to hold the shortest legal building, or the
+  // band stays single-sided rather than emitting two rows that overlap.
+  const northBudget = Math.floor((bandHeight - 1) / 2);
+  const southBudget = bandHeight - 1 - northBudget;
+  const twoSided =
+    bothSidesOfStreet && northBudget >= minHeight && southBudget >= minHeight;
+
   const buildings: TownBuilding[] = [];
-  for (const band of bands) {
+
+  /** Lay one row of buildings along a band segment, facing `side`. */
+  const layRow = (
+    band: Rect,
+    segment: { x: number; width: number },
+    side: DoorSide,
+    budget: number
+  ): void => {
+    // One tile of clearance at each end so a wall never sits flush against a
+    // cross street.
+    let x = segment.x + 1;
+    const limit = segment.x + segment.width - 1;
+
+    while (x + minBuildingWidth <= limit) {
+      const maxW = Math.min(maxBuildingWidth, limit - x);
+      const w = randInt(rng, minBuildingWidth, maxW);
+      const h = randInt(rng, minHeight, Math.min(maxBuildingHeight, budget));
+
+      // North-facing buildings hang from the top of the band and are entered
+      // from the road above; south-facing ones sit on the bottom as before.
+      const rect: Rect =
+        side === 'top'
+          ? { x, y: band.y, width: w, height: h }
+          : { x, y: band.y + band.height - h, width: w, height: h };
+      const doorOffsetX = w >= 3 ? randInt(rng, 1, w - 2) : 0;
+      const doorX = rect.x + doorOffsetX;
+      const doorY = side === 'top' ? rect.y : rect.y + rect.height - 1;
+      const approachY = side === 'top' ? doorY - 1 : doorY + 1;
+
+      buildings.push({
+        rect,
+        wallHeight,
+        doorOffsetX,
+        doorSide: side,
+        door: { x: doorX, y: doorY, approach: { x: doorX, y: approachY } },
+        variant: randInt(rng, 0, 1023),
+      });
+
+      x += w + randInt(rng, 1, 3);
+    }
+  };
+
+  for (const [index, band] of bands.entries()) {
     // A band is cut into segments by the cross streets.
     const cuts = verticals
       .map((v) => ({ from: v.x, to: v.x + v.width }))
@@ -218,32 +309,14 @@ export function planTown(options: TownOptions): TownPlan {
       segments.push({ x: cursor, width: band.x + band.width - cursor });
     }
 
+    // Band 0 has the map's border above it, not a road, so its top edge has
+    // nothing to face. Every later band sits directly under the previous
+    // band's road — `band.y - 1` is that road's last row.
+    const northRow = twoSided && index > 0;
+
     for (const segment of segments) {
-      // One tile of clearance at each end so a wall never sits flush against a
-      // cross street.
-      let x = segment.x + 1;
-      const limit = segment.x + segment.width - 1;
-
-      while (x + minBuildingWidth <= limit) {
-        const maxW = Math.min(maxBuildingWidth, limit - x);
-        const w = randInt(rng, minBuildingWidth, maxW);
-        const h = randInt(rng, minHeight, Math.min(maxBuildingHeight, bandHeight - 1));
-
-        const rect: Rect = { x, y: band.y + band.height - h, width: w, height: h };
-        const doorOffsetX = w >= 3 ? randInt(rng, 1, w - 2) : 0;
-        const doorX = rect.x + doorOffsetX;
-        const doorY = rect.y + rect.height - 1;
-
-        buildings.push({
-          rect,
-          wallHeight,
-          doorOffsetX,
-          door: { x: doorX, y: doorY, approach: { x: doorX, y: doorY + 1 } },
-          variant: randInt(rng, 0, 1023),
-        });
-
-        x += w + randInt(rng, 1, 3);
-      }
+      if (northRow) layRow(band, segment, 'top', northBudget);
+      layRow(band, segment, 'bottom', northRow ? southBudget : bandHeight - 1);
     }
   }
 
@@ -569,11 +642,13 @@ export function planTownShop(plan: TownPlan, people: TownPeoplePlan): TownShopPl
   const { x: ax, y: ay } = building.door.approach;
 
   // Beside the approach first, then a step further along the same row, then
-  // straight out into the street. Left before right only to be deterministic.
+  // straight out into the street — which is away from the building, so it
+  // follows the door's side. Left before right only to be deterministic.
+  const outward = building.doorSide === 'top' ? -1 : 1;
   const wanted: Slot[] = [
     { x: ax - 1, y: ay }, { x: ax + 1, y: ay },
     { x: ax - 2, y: ay }, { x: ax + 2, y: ay },
-    { x: ax, y: ay + 1 },
+    { x: ax, y: ay + outward },
   ];
 
   return {

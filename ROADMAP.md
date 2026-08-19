@@ -2389,6 +2389,96 @@ area.
 follow the one measured example and move the keeper inside, with the trigger on a counter tile.
 The greeting is also still a canned line per preset; P5-12 covers dialogue worth reading.
 
+### The side a door is entered from
+
+A door sat on the bottom wall row and was approached from the tile below it. The consequence was
+structural rather than cosmetic: `generate_town` could only lay out horizontal *bands*, each a
+row of buildings facing the street beneath them, and the ground along the top of every band —
+against the road above — was dead.
+
+**The first thing measured was whether "98 of 107 doors are on the bottom row" answers the
+question, and it does not.** That count says where the door *tile* is. The question the layout
+needs answered is which side the player walks in from, and
+[`scripts/measure-door-sides.mjs`](scripts/measure-door-sides.mjs) asks that one directly: for
+each door event, which orthogonal neighbours could the player be standing on, via the tileset's
+passage flags and `Game_CharacterBase.canPass`. Over the 293 sample maps:
+
+| | count |
+|---|---|
+| maps with a door | 36 |
+| door events | 107 |
+| … carrying a Transfer Player | 67 |
+| … with **exactly one** open approach side | 88 |
+| of those 88, approached from **below** | **88** |
+| … from above, left or right | **0** |
+| … with no standable neighbour at all (decorative, walled in) | 10 |
+| … standing in open floor with 2-4 open sides | 9 |
+
+So the norm is not merely strong, it is total: **no building in the shipped corpus is entered
+from the north.** Anything on the top edge is a stated judgement, and is marked as one.
+
+**Two of the three things that looked baked in were not.** The task assumed the sprite direction,
+the Set Movement Route and the approach tile all encoded "from below". Checked against
+`rmmz_objects.js` v1.9.0:
+
+- **The sprite direction is an animation frame, not a facing.** `ROUTE_TURN_LEFT`, `_RIGHT` and
+  `_UP` are `setDirection(4)`, `(6)` and `(8)` — absolute, not relative. Reading `!Door1.png`
+  confirms what that means: within one character block the four "direction" rows are the door
+  closed, part-open, further open, open. The sequence 2 → 4 → 6 → 8 plays the same opening
+  animation whichever side you come from.
+- **Move Forward already points the right way.** `Game_Character.moveForward` is
+  `moveStraight(this.direction())` — the *player's* facing, which is by definition into the door,
+  because the Player Touch trigger only fired because they walked into it.
+- **Only the approach tile was actually baked in.**
+
+What *is* required, and is the real constraint, is that **a door has to stand on a wall tile**: a
+door sprite drawn over roof art is a door painted on a roof. So `doorSide` moves the wall band to
+the door's edge and lets the roof take the rest — `'top'` gives wall band at the top of the
+footprint, roof below it, approach at `y - 1`.
+
+**A fourth place held the same assumption, and only the render found it.** `analyseWalkability`
+checked door reachability at `y + 1` and nothing else, so the first generated two-sided town
+reported all four north-facing doors as `door-unreachable` when every one of them opened onto a
+road. It now asks whether *any* neighbour is reachable, which is what the engine actually
+requires. That is a widening, so it was measured rather than assumed safe: over the 107 door
+events on 36 sample maps the two rules **flag the same 19 doors and disagree on 0**. They cannot
+diverge for an ordinary south-facing building, because the tiles above and beside its door are
+its own wall and roof and are not standable.
+
+**In the town planner** this became `bothSidesOfStreet`. A band that has a road above it and
+enough height gets a north-facing row along its top edge; the band splits into
+`floor((bandHeight - 1) / 2)` rows for the north row and the rest for the south, with the spare
+row between so the two roofs never touch. Both budgets must hold the shortest legal building
+(`max(minBuildingHeight, wallHeight + 2)`) or the band stays single-sided — the option turns
+itself off rather than emitting two rows that overlap, and the tool says why. Band 0 never gets
+one: the map border is above it, not a road.
+
+Measured over MCP on a 44x46 map, seed 7, `bandHeight: 12`: **8 buildings single-sided against 12
+two-sided**, every door facing a street, and walkability **1573 standable in one connected area,
+no unreachable door, no isolated pocket**. The default `bandHeight` of 7 splits into 3, below the
+minimum of 4, so a default town is untouched — verified byte-for-byte at 16 buildings and 1493
+standable either way.
+
+**It ships off by default, and the render is the whole reason.** The layout is sound; the art is
+not on its side. A north-facing building puts its wall band above its roof, and the RTP roof sets
+are directional — a nine-slice block is ridge / middle / eave read downward, and there is no
+seen-from-the-north roof to draw. In the render the wall's stone footing course and its drop
+shadow are drawn over the roof below it, so it reads as a wall standing in front of a roof rather
+than as a house. That is the `0 of 107` count showing up as pixels, and it is exactly the kind of
+error CLAUDE.md warns is invisible in a text grid: the ASCII layout, the door coordinates and the
+walkability numbers were all perfect.
+
+So this is offered rather than chosen. `place_building` takes `doorSide`, `generate_town` takes
+`bothSidesOfStreet`, both default to the shipped idiom, and both descriptions carry the count and
+the caveat so a caller opting in knows what they are getting.
+
+**Still open here:** the RTP has no north-facing house art, so the honest ways forward are to
+build the north row out of something that is not a house — a gate in a wall, a shopfront, a
+fence-and-yard frontage — or to keep bands single-sided and fill the dead ground with the
+non-rectangular shapes P5-07…P5-10 are about. Neither is settled by the corpus, and neither was
+filed as a task: this one is recorded here rather than in the backlog because the tool behaves as
+its description promises, and a caller who leaves the option alone is unaffected.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live

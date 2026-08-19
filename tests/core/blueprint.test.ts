@@ -142,7 +142,65 @@ describe('planBuilding', () => {
 
   it('puts the door on the bottom wall row, approached from below', () => {
     const plan = planBuilding(spec());
-    expect(plan.door).toEqual({ x: 6, y: 7, approach: { x: 6, y: 8 } });
+    expect(plan.door).toEqual({ x: 6, y: 7, approach: { x: 6, y: 8 }, side: 'bottom' });
+  });
+
+  it('defaults to the bottom edge, which is what 88 of 88 sample doors use', () => {
+    expect(planBuilding(spec()).door).toEqual(planBuilding(spec({ doorSide: 'bottom' })).door);
+    expect(planBuilding(spec()).wallRect).toEqual(planBuilding(spec({ doorSide: 'bottom' })).wallRect);
+  });
+
+  describe('doorSide: top', () => {
+    it('moves the wall band to the top and the roof below it', () => {
+      const plan = planBuilding(spec({ doorSide: 'top' }));
+      expect(plan.wallRect).toEqual({ x: 4, y: 3, width: 4, height: 2 });
+      expect(plan.roofRect).toEqual({ x: 4, y: 5, width: 4, height: 3 });
+      // Still tiles the footprint exactly, with no gap and no overlap.
+      expect(plan.wallRect.y + plan.wallRect.height).toBe(plan.roofRect.y);
+      expect(plan.roofRect.y + plan.roofRect.height).toBe(3 + 5);
+    });
+
+    it('puts the door on the top row, approached from above', () => {
+      const plan = planBuilding(spec({ doorSide: 'top' }));
+      expect(plan.door).toEqual({ x: 6, y: 3, approach: { x: 6, y: 2 }, side: 'top' });
+    });
+
+    it('keeps the door standing on wall, never on roof', () => {
+      // The whole reason the wall band moves: a door sprite drawn over roof art
+      // is a door painted on a roof.
+      for (const doorSide of ['bottom', 'top'] as const) {
+        for (const height of [4, 5, 6, 7]) {
+          for (const wallHeight of [1, 2]) {
+            const plan = planBuilding(spec({ doorSide, height, wallHeight }));
+            const { y } = plan.door!;
+            expect(y).toBeGreaterThanOrEqual(plan.wallRect.y);
+            expect(y).toBeLessThan(plan.wallRect.y + plan.wallRect.height);
+          }
+        }
+      }
+    });
+
+    it('puts the approach outside the footprint on both sides', () => {
+      for (const doorSide of ['bottom', 'top'] as const) {
+        const plan = planBuilding(spec({ doorSide }));
+        const { approach } = plan.door!;
+        expect(approach.y < 3 || approach.y >= 3 + 5).toBe(true);
+        expect(approach.x).toBe(plan.door!.x);
+        // Exactly one tile away, so the player steps straight in.
+        expect(Math.abs(approach.y - plan.door!.y)).toBe(1);
+      }
+    });
+
+    it('still refuses a door outside the footprint', () => {
+      expect(() => planBuilding(spec({ doorSide: 'top', doorOffsetX: 4 }))).toThrow(BlueprintError);
+    });
+
+    it('warns about a mismatched roof/wall pairing the same way', () => {
+      const plan = planBuilding(
+        spec({ doorSide: 'top', roof: { style: 'autotile', kind: 49 }, wallKind: 58 })
+      );
+      expect(plan.warnings.join(' ')).toMatch(/usually paired with wall kind 57/);
+    });
   });
 
   it('omits the door when asked to', () => {

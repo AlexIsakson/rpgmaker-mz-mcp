@@ -116,13 +116,28 @@ describe('analyseWalkability', () => {
     expect(report.issues[0].message).toContain('Door - Sealed');
   });
 
-  it('reports a door on the bottom row, whose approach tile is off the map', () => {
+  it('reports a door on the bottom row with no open tile on any side', () => {
+    // Walled left, right and above, and the map edge below.
     const report = analyseWalkability(makeMap([
       '.....',
       '#####',
-    ], [{ name: 'Door - Edge', x: 2, y: 1, characterName: '!Door1' }]), makeFlags());
+      '#####',
+    ], [{ name: 'Door - Edge', x: 2, y: 2, characterName: '!Door1' }]), makeFlags());
 
     expect(report.issues.map((i) => i.kind)).toContain('door-unreachable');
+  });
+
+  it('accepts a door reachable only from above', () => {
+    // A north-facing building: the door is on the top row of its footprint and
+    // the street is above it. Checking only `y + 1` used to call this
+    // unreachable, which made every north-facing door in a generated town look
+    // broken when it was not.
+    const report = analyseWalkability(makeMap([
+      '.....',
+      '#####',
+    ], [{ name: 'Door - North', x: 2, y: 1, characterName: '!Door1' }]), makeFlags());
+
+    expect(report.issues).toEqual([]);
   });
 
   it('treats the largest area as the main one, not whichever is scanned first', () => {

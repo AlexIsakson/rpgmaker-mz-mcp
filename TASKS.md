@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 5 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 6 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 15 / 16.** Defects turned up while doing the above, listed at the end.
 
@@ -471,7 +471,7 @@ architectural model into an inhabited place.
   to talk from, 1133 standable in one connected area. See
   [Somewhere to spend the money](ROADMAP.md#somewhere-to-spend-the-money).
 
-- [ ] **P5-06 — Doors on a building's top edge**
+- [x] **P5-06 — Doors on a building's top edge**
   A door sits on the bottom wall row and is entered from the tile below
   ([blueprint.ts:302](src/core/blueprint.ts:302)). Three things bake this in: the sprite
   direction, the Set Movement Route that walks the player forward, and the approach tile. The
@@ -481,6 +481,27 @@ architectural model into an inhabited place.
   *Done when:* a building can be entered from above, and the town planner uses both.
   *Note:* the samples say 98 of 107 doors are on the bottom row, so bottom stays the default —
   this adds an option, it does not change the norm.
+  *Done:* `doorSide` on `planBuilding`, `bothSidesOfStreet` on `planTown`. **Two of the three
+  things the task names were not baked in at all**, checked against `rmmz_objects.js` v1.9.0:
+  `ROUTE_TURN_LEFT/RIGHT/UP` are `setDirection(4|6|8)`, so the door's four "directions" are the
+  four rows of `!Door1` — closed through open — and play the same animation from any side; and
+  `moveForward` is `moveStraight(this.direction())`, the *player's* facing, which already points
+  into the door. Only the approach tile was. The real constraint is that a door must stand on
+  **wall**, so `doorSide` moves the wall band to the door's edge.
+  The new `scripts/measure-door-sides.mjs` sharpens the note above by asking which side the
+  player stands on rather than where the tile is: of 107 door events, the **88 with exactly one
+  open approach are approached from below in 88 of 88** — **0** from the north. A **fourth**
+  place held the assumption and only the render found it: `analyseWalkability` checked `y + 1`
+  only and called all four north-facing doors unreachable when each opened onto a road; it now
+  accepts any neighbour, and the two rules **flag the same 19 of 107 corpus doors, disagreeing on
+  0**. Verified over MCP at 44x46 seed 7: **8 buildings single-sided against 12 two-sided**,
+  every door onto a street, 1573 standable in one connected area, no unreachable door.
+  **Ships off by default, on the render rather than the numbers** — the wall band has to go above
+  the roof, the RTP roof sets are directional art, and the wall's footing course and drop shadow
+  draw over the roof, so it reads as a wall in front of a roof, not a house. The ASCII layout,
+  the coordinates and the walkability were all perfect; only the PNG showed it. The default town
+  is untouched, byte-for-byte 16 buildings and 1493 standable. See
+  [The side a door is entered from](ROADMAP.md#the-side-a-door-is-entered-from).
 
 ## M3 — Shape (visual review finding 7)
 

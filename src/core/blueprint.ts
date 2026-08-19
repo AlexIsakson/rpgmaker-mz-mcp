@@ -42,6 +42,17 @@ import type { Event, EventCommand, EventPage } from '../schemas/event.js';
  *    stand on a wall tile — the bottom row of the building — and the player
  *    walks into them from the tile below.
  *
+ *  - **No sample building is entered from the north.** Re-measured with
+ *    `scripts/measure-door-sides.mjs`, which asks a different question from the
+ *    count above: not where the door *tile* is, but which neighbours the player
+ *    could be standing on, via the tileset's passage flags and
+ *    `Game_CharacterBase.canPass`. Of 107 door events on 36 maps, **88 have
+ *    exactly one approach side and it is the bottom in 88 of 88**. Ten have no
+ *    standable neighbour at all (decorative, walled in), and the remaining nine
+ *    stand in open floor with 2-4 open sides, where "the side" is not a
+ *    question. So {@link DoorSide} `'top'` has **no support in the corpus** and
+ *    is a stated judgement — see {@link planBuilding}.
+ *
  * This module is pure: it plans and builds structures, and never touches a file.
  */
 
@@ -176,17 +187,27 @@ export type RoofPlan =
   | { style: 'nineslice'; topLeft: number }
   | { style: 'autotile'; kind: number };
 
+/**
+ * Which edge of the footprint the door sits on, and therefore which edge carries
+ * the wall band. `'bottom'` is the default and the only one the corpus supports.
+ */
+export type DoorSide = 'bottom' | 'top';
+
+export const DOOR_SIDES: DoorSide[] = ['bottom', 'top'];
+
 export interface BuildingSpec {
   x: number;
   y: number;
   width: number;
   height: number;
-  /** Rows of wall along the bottom of the footprint; the rest is roof. */
+  /** Rows of wall along the door's edge of the footprint; the rest is roof. */
   wallHeight: number;
   wallKind: number;
   roof: RoofPlan;
   /** Column of the door within the footprint, or null for no door. */
   doorOffsetX: number | null;
+  /** Which edge the door — and so the wall band — is on. Default `'bottom'`. */
+  doorSide?: DoorSide;
 }
 
 export interface DoorPlacement {
@@ -194,6 +215,8 @@ export interface DoorPlacement {
   y: number;
   /** The tile the player stands on to use the door. */
   approach: { x: number; y: number };
+  /** Which edge of the building this door is on. */
+  side: DoorSide;
 }
 
 export interface BuildingPlan {
@@ -214,9 +237,35 @@ export class BlueprintError extends Error {}
  * Work out what a building is made of. Throws {@link BlueprintError} for a spec
  * that cannot produce a sane building, and collects the merely questionable
  * parts into `warnings` so the caller can report them rather than guess.
+ *
+ * ## Which edge the door is on
+ *
+ * A door has to stand on a wall tile — a door sprite drawn over roof art is a
+ * door painted on a roof — so the wall band goes on the door's edge and the roof
+ * fills the rest. `doorSide: 'bottom'` is the shipped idiom: roof above, wall
+ * below, entered from the tile beneath. `'top'` inverts that, wall band at the
+ * top of the footprint and roof below it, entered from the tile above.
+ *
+ * **`'top'` is a stated judgement and the corpus argues against it.** Of the 107
+ * sample door events, the 88 whose approach is unambiguous are approached from
+ * below in 88 of 88; not one building in the 293 maps is entered from the north.
+ * The RTP roof sets are directional art — a nine-slice block is ridge / middle /
+ * eave read downward — so there is no "seen from the north" roof to draw, and a
+ * top-door building necessarily shows its roof *in front of* its wall. It exists
+ * because it lets a town use the ground on both sides of a street instead of
+ * only below it, and it is opt-in for that reason.
+ *
+ * The door *event* needed nothing: verified against `rmmz_objects.js` v1.9.0,
+ * `ROUTE_TURN_LEFT`/`RIGHT`/`UP` are `setDirection(4|6|8)`, so the door's four
+ * "directions" are the four rows of the `!Door1` sheet — closed through open —
+ * and play the same animation whichever side you come from; and
+ * `Game_Character.moveForward` is `moveStraight(this.direction())`, the
+ * *player's* facing, which already points into the door because they walked into
+ * it. Of the three things that looked baked in, only the approach tile was.
  */
 export function planBuilding(spec: BuildingSpec): BuildingPlan {
   const { x, y, width, height, wallHeight, wallKind, roof, doorOffsetX } = spec;
+  const doorSide: DoorSide = spec.doorSide ?? 'bottom';
   const warnings: string[] = [];
 
   if (width < 1 || height < 1) {
@@ -233,8 +282,15 @@ export function planBuilding(spec: BuildingSpec): BuildingPlan {
   }
 
   const roofHeight = height - wallHeight;
-  const roofRect: Rect = { x, y, width, height: roofHeight };
-  const wallRect: Rect = { x, y: y + roofHeight, width, height: wallHeight };
+  // The wall band sits on the door's edge; the roof takes what is left.
+  const roofRect: Rect =
+    doorSide === 'top'
+      ? { x, y: y + wallHeight, width, height: roofHeight }
+      : { x, y, width, height: roofHeight };
+  const wallRect: Rect =
+    doorSide === 'top'
+      ? { x, y, width, height: wallHeight }
+      : { x, y: y + roofHeight, width, height: wallHeight };
 
   // A3 (48-79) and A4 (80-127) both carry walls; anything else is not a wall material.
   if (wallKind < A3_KIND_MIN || wallKind > A4_KIND_MAX) {
@@ -300,8 +356,11 @@ export function planBuilding(spec: BuildingSpec): BuildingPlan {
       );
     }
     const doorX = x + doorOffsetX;
-    const doorY = y + height - 1;
-    door = { x: doorX, y: doorY, approach: { x: doorX, y: doorY + 1 } };
+    // The door goes on the outermost row of the wall band, so it faces the
+    // street rather than sitting one row into the building.
+    const doorY = doorSide === 'top' ? y : y + height - 1;
+    const approachY = doorSide === 'top' ? doorY - 1 : doorY + 1;
+    door = { x: doorX, y: doorY, approach: { x: doorX, y: approachY }, side: doorSide };
   }
 
   return {

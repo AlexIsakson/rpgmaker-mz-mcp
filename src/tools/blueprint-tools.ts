@@ -72,8 +72,8 @@ export function registerBlueprintTools(server: McpServer): void {
         ),
       wallHeight: z.number().int().positive().default(2)
         .describe(
-          'Rows of wall along the bottom of the footprint; the rest of the height is roof. ' +
-          'Two is what the shipped sample maps use most.'
+          'Rows of wall along the door\'s edge of the footprint; the rest of the height is ' +
+          'roof. Two is what the shipped sample maps use most.'
         ),
       roofLayer: z.number().int().min(1).max(TILE_LAYERS - 1).default(2)
         .describe(
@@ -82,9 +82,20 @@ export function registerBlueprintTools(server: McpServer): void {
           'should draw in front of the roof.'
         ),
       door: z.boolean().default(true)
-        .describe('Emit a door event on the bottom wall row.'),
+        .describe('Emit a door event on the wall row named by doorSide.'),
       doorOffsetX: z.number().int().min(0).optional()
         .describe('Door column within the footprint. Defaults to the middle.'),
+      doorSide: z.enum(['bottom', 'top']).default('bottom')
+        .describe(
+          'Which edge the door is on, and so which edge carries the wall band. "bottom" is ' +
+          'the shipped idiom — roof above, wall below, entered from the tile beneath. "top" ' +
+          'inverts it so the building can be entered from a street above it, which is what ' +
+          'lets a town use both sides of a road. Measured: of the 107 door events in the 293 ' +
+          'sample maps, the 88 with an unambiguous approach are entered from below in 88 of ' +
+          '88 — no shipped building is entered from the north, and the RTP roof sets are ' +
+          'directional art, so a "top" building shows its roof in front of its wall. Use it ' +
+          'deliberately.'
+        ),
       doorSprite: z.string().default('!Door1').describe('Door character sheet'),
       doorSpriteIndex: z.number().int().min(0).max(7).default(0)
         .describe('Which door on the sheet (0-7)'),
@@ -106,7 +117,7 @@ export function registerBlueprintTools(server: McpServer): void {
           mapId, x, y, width, height,
           roofSet, roofTopLeftTileId, roofKind, wallKind,
           wallHeight, roofLayer,
-          door, doorOffsetX, doorSprite, doorSpriteIndex,
+          door, doorOffsetX, doorSide, doorSprite, doorSpriteIndex,
           interiorMapId, interiorX, interiorY,
           shadows, allowRoofOverEmptyGround,
         } = args;
@@ -145,7 +156,7 @@ export function registerBlueprintTools(server: McpServer): void {
             {
               x, y, width, height, wallHeight,
               wallKind, roofSet, roofTopLeftTileId, roofKind, roofLayer,
-              door, doorOffsetX, doorSprite, doorSpriteIndex,
+              door, doorOffsetX, doorSide, doorSprite, doorSpriteIndex,
               doorTarget:
                 interiorMapId !== undefined
                   ? { mapId: interiorMapId, x: interiorX ?? 0, y: interiorY ?? 0 }
@@ -190,8 +201,9 @@ export function registerBlueprintTools(server: McpServer): void {
 
         if (plan.door && result.doorEventId !== null) {
           lines.push(
-            `Door: event ${result.doorEventId} at (${plan.door.x}, ${plan.door.y}) using ` +
-            `${doorSprite} index ${doorSpriteIndex}, player-touch trigger. Approach it from ` +
+            `Door: event ${result.doorEventId} at (${plan.door.x}, ${plan.door.y}) on the ` +
+            `${plan.door.side} edge, using ${doorSprite} index ${doorSpriteIndex}, ` +
+            'player-touch trigger. Approach it from ' +
             `(${plan.door.approach.x}, ${plan.door.approach.y})` +
             (interiorMapId !== undefined ? `, leading to map ${interiorMapId}.` : '.')
           );

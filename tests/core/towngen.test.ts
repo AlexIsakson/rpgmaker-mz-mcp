@@ -96,19 +96,26 @@ describe('layout invariants', () => {
   });
 
   it('opens every door onto a street', () => {
-    // The property the whole band layout exists to guarantee: a door is on a
-    // building's bottom row and entered from the tile below, so that tile has
-    // to be road. Without it a house is decoration.
-    for (const seed of SEEDS) {
-      const plan = planTown(options({ seed }));
-      expect(plan.buildings.length).toBeGreaterThan(0);
-      for (const b of plan.buildings) {
-        expect(b.door.y).toBe(b.rect.y + b.rect.height - 1);
-        expect(b.door.approach.y).toBe(b.door.y + 1);
-        expect(
-          onRoad(plan, b.door.approach.x, b.door.approach.y),
-          `seed ${seed}: door approach ${b.door.approach.x},${b.door.approach.y}`
-        ).toBe(true);
+    // The property the whole band layout exists to guarantee: a door is on the
+    // building's outermost wall row and entered from the tile beyond it, so that
+    // tile has to be road. Without it a house is decoration. Swept with the
+    // north-facing row both off and on, because a door that opens onto a roof
+    // is exactly the way adding a second row could go wrong.
+    for (const bothSidesOfStreet of [false, true]) {
+      for (const seed of SEEDS) {
+        const plan = planTown(options({ seed, bothSidesOfStreet, bandHeight: 12 }));
+        expect(plan.buildings.length).toBeGreaterThan(0);
+        for (const b of plan.buildings) {
+          const outer = b.doorSide === 'top' ? b.rect.y : b.rect.y + b.rect.height - 1;
+          const beyond = b.doorSide === 'top' ? outer - 1 : outer + 1;
+          expect(b.door.y).toBe(outer);
+          expect(b.door.approach.y).toBe(beyond);
+          expect(
+            onRoad(plan, b.door.approach.x, b.door.approach.y),
+            `seed ${seed} (bothSides ${bothSidesOfStreet}): ${b.doorSide} door approach ` +
+              `${b.door.approach.x},${b.door.approach.y}`
+          ).toBe(true);
+        }
       }
     }
   });
@@ -176,6 +183,114 @@ describe('layout invariants', () => {
       const touchesLeft = plan.roads.some((r) => r.x === 0);
       expect(touchesTop, `seed ${seed}`).toBe(true);
       expect(touchesLeft, `seed ${seed}`).toBe(true);
+    }
+  });
+});
+
+describe('both sides of the street', () => {
+  // A band tall enough for two buildings back to back. At TOWN_DEFAULTS the
+  // budgets are floor((12 - 1) / 2) = 5 north and 6 south, against a shortest
+  // legal building of max(minBuildingHeight 4, wallHeight 2 + 2 roof rows) = 4.
+  const twoSided = (over: Partial<TownOptions> = {}) =>
+    options({ height: 46, bandHeight: 12, bothSidesOfStreet: true, ...over });
+
+  it('actually builds a north-facing row', () => {
+    for (const seed of SEEDS) {
+      const plan = planTown(twoSided({ seed }));
+      const top = plan.buildings.filter((b) => b.doorSide === 'top');
+      const bottom = plan.buildings.filter((b) => b.doorSide === 'bottom');
+      expect(top.length, `seed ${seed}`).toBeGreaterThan(0);
+      expect(bottom.length, `seed ${seed}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('leaves the town single-sided when switched off', () => {
+    for (const seed of SEEDS) {
+      const plan = planTown(twoSided({ seed, bothSidesOfStreet: false }));
+      expect(plan.buildings.every((b) => b.doorSide === 'bottom'), `seed ${seed}`).toBe(true);
+    }
+  });
+
+  it('stays single-sided on a band too short for two rows', () => {
+    // floor((7 - 1) / 2) = 3, below the 4-row minimum, so the option is inert
+    // rather than producing two rows that overlap. This is the default band.
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed, bandHeight: 7, bothSidesOfStreet: true }));
+      expect(plan.buildings.every((b) => b.doorSide === 'bottom'), `seed ${seed}`).toBe(true);
+    }
+  });
+
+  it('is off by default, so an unchanged call still builds bands', () => {
+    // The render is the reason: a north-facing building shows its wall standing
+    // on its roof, which matches 0 of 107 sample doors being entered from the
+    // north. Turning it on has to be deliberate.
+    expect(TOWN_DEFAULTS.bothSidesOfStreet).toBe(false);
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed, bandHeight: 12 }));
+      expect(plan.buildings.every((b) => b.doorSide === 'bottom'), `seed ${seed}`).toBe(true);
+    }
+  });
+
+  it('never puts a north-facing row in the top band', () => {
+    // The first band has the map border above it, not a road, so its top edge
+    // has nothing to face.
+    for (const seed of SEEDS) {
+      const plan = planTown(twoSided({ seed }));
+      const firstBand = plan.bands[0];
+      for (const b of plan.buildings) {
+        if (b.doorSide !== 'top') continue;
+        expect(b.rect.y, `seed ${seed}`).not.toBe(firstBand.y);
+      }
+    }
+  });
+
+  it('keeps a gap between the two rows, so their roofs never touch', () => {
+    for (const seed of SEEDS) {
+      const plan = planTown(twoSided({ seed }));
+      for (const top of plan.buildings.filter((b) => b.doorSide === 'top')) {
+        for (const bottom of plan.buildings.filter((b) => b.doorSide === 'bottom')) {
+          const overlapX =
+            top.rect.x < bottom.rect.x + bottom.rect.width &&
+            bottom.rect.x < top.rect.x + top.rect.width;
+          if (!overlapX) continue;
+          const topEnd = top.rect.y + top.rect.height;
+          if (bottom.rect.y < topEnd) continue; // a different band entirely
+          expect(bottom.rect.y, `seed ${seed}`).toBeGreaterThan(topEnd);
+        }
+      }
+    }
+  });
+
+  it('is still reproducible from its seed', () => {
+    expect(planTown(twoSided({ seed: 7 }))).toEqual(planTown(twoSided({ seed: 7 })));
+  });
+
+  it('houses more buildings than the single-sided layout', () => {
+    // The point of the whole exercise: the ground above each row stops being
+    // dead. Asserted as a total across the sweep rather than per seed, since a
+    // single band can lose a row to the cross-street cuts.
+    let two = 0;
+    let one = 0;
+    for (const seed of SEEDS) {
+      two += planTown(twoSided({ seed })).buildings.length;
+      one += planTown(twoSided({ seed, bothSidesOfStreet: false })).buildings.length;
+    }
+    expect(two).toBeGreaterThan(one);
+  });
+
+  it('marks the shop keeper outward from the door on either side', () => {
+    for (const seed of SEEDS) {
+      const plan = planTown(twoSided({ seed }));
+      const people = planTownPeople(plan);
+      const shop = planTownShop(plan, people);
+      if (!shop || shop.candidates.length === 0) continue;
+      const { approach } = shop.building.door;
+      for (const c of shop.candidates) {
+        // Never on the approach tile itself — that would block the shop's door.
+        expect(c.x === approach.x && c.y === approach.y).toBe(false);
+        // And never inside the building it belongs to.
+        expect(inRect(shop.building.rect, c.x, c.y), `seed ${seed}`).toBe(false);
+      }
     }
   });
 });

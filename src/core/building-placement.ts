@@ -10,6 +10,7 @@ import {
   BlueprintError,
   OUTSIDE_C_SHEET_NAME,
   type BuildingPlan,
+  type DoorSide,
   type DoorTarget,
   type RoofPlan,
 } from './blueprint.js';
@@ -54,6 +55,7 @@ export interface BuildingRequest {
   doorSprite: string;
   doorSpriteIndex: number;
   doorTarget?: DoorTarget;
+  doorSide?: DoorSide;
   allowRoofOverEmptyGround: boolean;
 }
 
@@ -163,6 +165,7 @@ export async function placeBuildingOnMap(
       wallKind,
       roof,
       doorOffsetX: request.door ? (request.doorOffsetX ?? Math.floor(width / 2)) : null,
+      doorSide: request.doorSide,
     });
   } catch (error) {
     if (error instanceof BlueprintError) throw new BuildingPlacementError(error.message);
@@ -252,10 +255,12 @@ export async function placeBuildingOnMap(
           'Transfer Player command to it once the interior map exists.'
       );
     }
-    if (plan.door.approach.y >= mapData.height) {
+    const { approach, side } = plan.door;
+    if (approach.y < 0 || approach.y >= mapData.height) {
       notes.push(
-        'The door is on the bottom row of the map, so there is no tile in front of it for the ' +
-          'player to stand on. It cannot be reached.'
+        `The door is on the ${side === 'top' ? 'top' : 'bottom'} row of the map, so there is no ` +
+          `tile ${side === 'top' ? 'above' : 'in front of'} it for the player to stand on. It ` +
+          'cannot be reached.'
       );
     }
   }
