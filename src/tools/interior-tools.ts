@@ -28,6 +28,7 @@ import {
 import { isDoorEvent, setDoorDestination } from '../core/blueprint.js';
 import { checkGroundKinds } from '../core/ground-material.js';
 import { checkSheetsPresent } from '../core/tileset-sheets.js';
+import { clearMap } from '../core/map-reset.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { addEvent } from '../core/building-placement.js';
 import { collectProps, findProps, propCells, type Prop } from '../core/props.js';
@@ -308,9 +309,11 @@ export function registerInteriorTools(server: McpServer): void {
         );
         if (groundCheck.refusal !== null) return errorResult(groundCheck.refusal);
 
-        // A fresh room, not a room layered over whatever was there.
-        mapData.data = new Array(mapData.width * mapData.height * 6).fill(0);
-        mapData.events = [null];
+        // A fresh room, not a room layered over whatever was there. This tool
+        // got it right from the start; it goes through the shared clear so that
+        // all three generators mean the same thing by it — see
+        // src/core/map-reset.ts.
+        clearMap(mapData, { events: true });
 
         const result = buildInterior(mapData, plan, style, catalogue, outward);
 

@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 18 / 41**
+**Progress: 19 / 42**
 
 ---
 
@@ -410,7 +410,7 @@ architectural model into an inhabited place.
   tile, 0 under a roof or prop, 0 stacked**, and a fresh town is 1133 standable in 1 connected
   area. See [Somebody to talk to](ROADMAP.md#somebody-to-talk-to). Turned up P5-41.
 
-- [ ] **P5-41 — Regenerating a map should not leave the last one's debris**
+- [x] **P5-41 — Regenerating a map should not leave the last one's debris**
   *(turned up by P5-04.)* `generate_town` says *"The map is replaced — its existing tiles and
   events both go"*, and that is true only of layer 0. Roofs on layer 2, props on layer 1 (where
   `applyPlacements` runs with `skipOccupied`, so new props will not even overwrite old ones) and
@@ -424,6 +424,34 @@ architectural model into an inhabited place.
   clears the whole map or says plainly that it does not.
   *Done when:* a regenerated map is identical to the same generation on a fresh map, or the tool
   refuses and names what it would have left behind.
+  *Done:* `src/core/map-reset.ts` is the one place that decides, but the decision is deliberately
+  **not** the same for all three, because their contracts differ. `generate_town` now clears all
+  six planes by default — its description already promised that, so the code was made to match
+  the promise rather than the other way round — with `keepExistingTiles` for laying a town over
+  hand-painted terrain, and the result then names what it kept, by plane. `generate_map_layout`
+  keeps its "replaces the chosen layer" default, which is honest, but its old tally walked z 0-3
+  only and so silently omitted the shadow and region planes; it now uses the shared census and
+  gained `clearOtherLayers`. `generate_interior` is unchanged and routes through the same
+  `clearMap`. The measurement that mattered: props are written with `skipOccupied`, so a stale
+  prop **displaces** the new one rather than sitting beside it — at (12, 12) the regenerated map
+  kept tile 141 where the fresh town put 144. **Verified against the done-when exactly: 0
+  differing cells of 8976** (was 141), whole tile array identical, 16 events matching. By PNG a
+  third generation over two previous towns is indistinguishable from a fresh one, 1112 standable
+  all in one connected area. See
+  [What the last generation left behind](ROADMAP.md#what-the-last-generation-left-behind).
+  Turned up P5-42.
+
+- [ ] **P5-42 — Running a decoration pass twice should not double the decoration**
+  *(turned up by P5-41.)* `decorate_dungeon` run **twice with the same seed and the same
+  arguments** leaves **16 events where the caller asked for 8 each time** — 12 torches and 4
+  chests. No two share a tile, because the second pass avoids what the first placed rather than
+  recognising it as its own. Seeded generation is supposed to be reproducible, and a re-run of an
+  identical call is the most natural thing a caller does while tuning a parameter; it should be a
+  no-op, not an accumulation. Unlike P5-41 this is not a broken promise — the tool is additive by
+  contract and says so — which is why it is a separate task rather than part of that one. Applies
+  to the other additive passes too (`populate_map`, `place_dungeon_stairs`); check each.
+  *Done when:* running the same decoration call twice leaves the map as it was after the first,
+  or the tool says plainly what it is adding to and how much is already there.
 
 - [ ] **P5-05 — `generate_town` places a shop**
   `place_shop` needs a coordinate and `generate_town` builds the buildings; neither knows about

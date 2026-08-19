@@ -29,6 +29,7 @@ import {
   type MoveType,
 } from '../core/npcgen.js';
 import { standableGrid, canPass, type Direction } from '../core/walkability.js';
+import { censusMap, clearMap, describeKeptContent } from '../core/map-reset.js';
 import { listCharacterSheets } from './npc-tools.js';
 import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
 import { collectProps, findProps, propCells, propPart, PropError, type Prop } from '../core/props.js';
@@ -175,6 +176,15 @@ export function registerTowngenTools(server: McpServer): void {
           'wanderer can walk into a doorway at runtime, which no static check can see.'
         ),
       npcNamePrefix: z.string().default('Villager').describe('Event names, numbered from 1'),
+      keepExistingTiles: z.boolean().default(false)
+        .describe(
+          'Leave whatever is already painted on layers 1-3, the shadow plane and the region ' +
+          'plane, instead of clearing the map first. Off by default: regenerating a town used ' +
+          'to strand the roofs and props of the run before it — 139 cells of one 44x34 town ' +
+          'survived into the next — and props are written only onto empty cells, so a stale one ' +
+          'displaces the new one rather than merely sitting beside it. Turn it on to lay a town ' +
+          'over terrain you painted by hand; the result then says what it kept.'
+        ),
       roofLayer: z.number().int().min(1).max(TILE_LAYERS - 1).default(2)
         .describe('Layer for nine-slice roofs'),
       propLayer: z.number().int().min(1).max(TILE_LAYERS - 1).default(1)
@@ -289,8 +299,22 @@ export function registerTowngenTools(server: McpServer): void {
         // Leaving them behind stacks a fresh set of door events on top of the
         // last run's — thirteen buildings, thirty-six doors, and every door but
         // the newest pointing at a building that is no longer there.
-        const clearedEvents = mapData.events.filter((e) => e !== null).length;
-        mapData.events = [null];
+        //
+        // The tiles used to be the exception: only layer 0 was refilled, so the
+        // roofs and props of the previous run stayed. Regenerating a 44x34 town
+        // at a new seed left 139 cells of the old one — and props are written
+        // with skipOccupied, so a stale prop beat the new one rather than
+        // merely surviving beside it. See src/core/map-reset.ts.
+        const before = censusMap(mapData);
+        const clearedEvents = before.events;
+        let keptNote: string | null = null;
+
+        if (args.keepExistingTiles) {
+          mapData.events = [null];
+          keptNote = describeKeptContent(censusMap(mapData, [0]));
+        } else {
+          clearMap(mapData, { events: true });
+        }
 
         // --- ground and streets ---
         let ground = readLayer(mapData, 0);
@@ -515,6 +539,7 @@ export function registerTowngenTools(server: McpServer): void {
         if (clearedEvents > 0) {
           lines.push(`Cleared ${clearedEvents} event(s) that were already on the map.`);
         }
+        if (keptNote !== null) lines.push('', keptNote);
 
         if (failures.length > 0) {
           lines.push(

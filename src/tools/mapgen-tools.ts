@@ -14,6 +14,7 @@ import {
 import { getAutotileKind, TILE_ID_A2, TILE_ID_A3, TILE_ID_MAX } from '../core/autotile.js';
 import { checkGroundKinds } from '../core/ground-material.js';
 import { checkSheetsPresent } from '../core/tileset-sheets.js';
+import { censusMap, clearMap, describeKeptContent, TOTAL_LAYERS } from '../core/map-reset.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { TilesetReader } from '../core/tileset-reader.js';
 import { requireProject } from './project-tools.js';
@@ -60,6 +61,10 @@ export function registerMapgenTools(server: McpServer): void {
         ),
       seed: z.number().int().default(1).describe('Same seed reproduces the same layout'),
       layer: z.number().int().min(0).max(TILE_LAYERS - 1).default(0).describe('Tile layer 0-3'),
+      clearOtherLayers: z.boolean().default(false)
+        .describe(
+          'Wipe the other tile layers, the shadow plane, the region plane and the events before generating. Off by default, because this tool replaces one layer by design — a caller who painted terrain on another layer means to keep it. Turn it on when regenerating a map you already generated into, or the previous layout leaves a chest in solid rock and a torch in mid-air. Either way the result says what was kept or cleared.'
+        ),
       allowOverlayOnGround: z.boolean().default(false)
         .describe(
           'Paint an overlay A2 material on layer 0 anyway. Refused by default because its ' +
@@ -92,6 +97,7 @@ export function registerMapgenTools(server: McpServer): void {
     },
     async ({
       mapId, style, floorKind, surroundKind, wallFaceKind, seed, layer, allowOverlayOnGround,
+      clearOtherLayers,
       roomAttempts, minRoomSize, maxRoomSize, irregularRoomChance, deadEndAttempts,
       fillProbability, structureSteps, smoothingSteps, pillarDensity,
     }) => {
@@ -192,13 +198,18 @@ export function registerMapgenTools(server: McpServer): void {
         // torches, chests — is still sitting where the *previous* layout put it.
         // Regenerating over a decorated map leaves that stranded, which reads as
         // treasure floating in solid rock.
-        const staleEvents = mapData.events.filter((e) => e !== null).length;
-        let staleTiles = 0;
-        for (let z = 0; z < TILE_LAYERS; z++) {
-          if (z === layer) continue;
-          for (const row of readLayer(mapData, z)) {
-            for (const tile of row) if (tile !== 0) staleTiles++;
-          }
+        //
+        // Unlike generate_town, this tool's contract really is "replaces the
+        // chosen layer", so keeping the rest stays the default. What it owes the
+        // caller is an accurate account of what it kept — which now comes from
+        // the same census generate_town uses, and so covers the shadow and
+        // region planes the old count silently skipped.
+        const stale = censusMap(mapData, [layer]);
+        if (clearOtherLayers) {
+          clearMap(mapData, {
+            planes: [...Array(TOTAL_LAYERS).keys()].filter((z) => z !== layer),
+            events: true,
+          });
         }
 
         if (stats.openTiles === 0) {
@@ -239,14 +250,23 @@ export function registerMapgenTools(server: McpServer): void {
           lines.push('', 'Layout (. open, # solid, @ start):', renderLayoutAscii(layout));
         }
 
-        if (staleEvents > 0 || staleTiles > 0) {
-          lines.push(
-            '',
-            `This map still carries ${staleEvents} event(s) and ${staleTiles} tile(s) on the other ` +
-            'layers, placed against the layout that was here before. They have not moved, so ' +
-            'anything decorative is now in the wrong place — a chest in solid rock, a torch in ' +
-            'mid-air. Clear them, or generate into a fresh map and decorate after.'
-          );
+        if (clearOtherLayers) {
+          if (stale.filledTotal > 0 || stale.events > 0) {
+            lines.push(
+              '',
+              `Cleared the other layers first: ${stale.filledTotal} tile(s) and ${stale.events} ` +
+              'event(s) placed against the layout that was here before.'
+            );
+          }
+        } else {
+          const kept = describeKeptContent(stale);
+          if (kept !== null) {
+            lines.push(
+              '',
+              `${kept} Pass clearOtherLayers to wipe them, or generate into a fresh map and ` +
+              'decorate after.'
+            );
+          }
         }
 
         lines.push(

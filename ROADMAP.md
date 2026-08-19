@@ -2260,6 +2260,74 @@ And nothing yet distinguishes a townsperson on a street from one on the open gro
 buildings — neither corpus marks which tiles are road, so both are offered and the connectivity
 check does the sorting.
 
+### What the last generation left behind
+
+Regenerating a map is the normal way to use a generator — try a seed, look at it, try another.
+Three generators answered that three different ways, and only one of them was right:
+
+| tool | events | layer 0 | layers 1-3 | shadow z=4 | region z=5 |
+|---|---|---|---|---|---|
+| `generate_interior` | cleared | cleared | cleared | cleared | cleared |
+| `generate_map_layout` | kept, warned | rewritten | kept, warned | kept, **not counted** | kept, **not counted** |
+| `generate_town` | cleared | rewritten | **kept, silently** | **kept, silently** | kept, silently |
+
+`generate_town`'s own description said "the map is replaced — its existing tiles and events both
+go". That was true of the events and of layer 0, and of nothing else.
+
+**How much survives, measured.** A 44x34 town generated at seed 5, then regenerated at seed 9,
+compared cell by cell against the same seed-9 town on a fresh map:
+
+| plane | differing cells | only on the regenerated map |
+|---|---|---|
+| layer 0 | 0 | 0 |
+| layer 1 (props) | 49 | 47 |
+| layer 2 (roofs) | 76 | 76 |
+| layer 3 | 0 | 0 |
+| shadow z=4 | 16 | 16 |
+| region z=5 | 0 | 0 |
+| **total** | **141** | **139** |
+
+**The two cells that differ without being extra are the sharp end of it.** Props are written
+with `skipOccupied`, so a stale prop does not merely survive beside the new town — it **wins**.
+At (12, 12) the regenerated map keeps tile 141 where the fresh town put 144, and at (20, 21)
+tile 166 where the fresh town put 170. The debris is not additive; it displaces. The shadow plane
+compounds it from the other side: `applyWallShadows` runs with `overwrite: false`, so a
+regenerated town reported *"Shadows: 16"* against 20 on a fresh map — under-reporting because the
+stale ones were already there.
+
+`src/core/map-reset.ts` is now the one place that decides, and the decision is **not** the same
+for all three, because their contracts are not the same:
+
+- **`generate_town` clears everything by default.** Its description already promised that; the
+  code now matches the promise rather than the promise matching the code. `keepExistingTiles`
+  reaches the old behaviour for laying a town over hand-painted terrain, and then the result
+  *says* what it kept, named by plane.
+- **`generate_map_layout` keeps its default.** "Replaces the chosen layer" is an accurate
+  contract, and a caller who painted terrain on another layer means to keep it. What it owed was
+  an accurate account: its old tally walked z 0-3 only, so it silently omitted the shadow and
+  region planes. It now uses the shared census, and gained `clearOtherLayers` for the
+  regeneration case.
+- **`generate_interior` is unchanged in behaviour**, and now routes its wipe through the shared
+  `clearMap` so all three mean the same thing by it.
+
+Naming the planes is the point of the report. "139 tiles" tells a caller nothing they can act
+on; "76 on layer 2" tells them their roofs are stale.
+
+**Verified over MCP against the task's own condition.** The same experiment after the change:
+a map generated at seed 5 then regenerated at seed 9, against a fresh seed-9 map — **0 differing
+cells of 8976, and the whole tile array identical**, with the 16 events matching on position,
+sprite, page count and name. Shadows now report 20 on both. By PNG, a third generation over two
+previous towns is indistinguishable from a fresh one (1112 standable, all 1112 in one connected
+area), where the same run with `keepExistingTiles` shows white roof slabs with no walls under
+them and a villager standing on one (1020 standable, one tile cut off).
+
+**Still open here:** `decorate_dungeon`, `place_building` and the other additive tools are
+untouched and should be — they add to a map by definition. But the same shape shows one level
+down, measured while checking this: `decorate_dungeon` run **twice with the same seed** leaves
+**16 events** where the caller asked for 8 each time — 12 torches and 4 chests, none sharing a
+tile, because the second pass avoids what the first placed rather than recognising it. Seeded
+reproducibility means a re-run should be a no-op, not a doubling. Filed as P5-42.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live
