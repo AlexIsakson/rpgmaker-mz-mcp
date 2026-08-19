@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build*)",
+      "Bash(npm test*)",
+      "Bash(npx vitest run*)",
+      "Bash(node scripts/*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Edit(src/**)",
+      "Edit(tests/**)",
+      "Edit(scripts/**)",
+      "Edit(*.md)"
+    ]
+  }
+}
