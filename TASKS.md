@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 7 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 8 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 15 / 16.** Defects turned up while doing the above, listed at the end.
 
@@ -537,12 +537,25 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   and monuments a structural test reads as roofs. See
   [The shape of a hand-made map](ROADMAP.md#the-shape-of-a-hand-made-map).
 
-- [ ] **P5-08 — L-shaped roofs and inner corners**
+- [x] **P5-08 — L-shaped roofs and inner corners**
   `src/core/blueprint.ts` already catalogues each roof set's inner-corner pieces and nothing uses
   them, because footprints are rectangles. Accept a non-rectangular footprint, emit the corner
   cells, and keep the existing guards — the transparent-corner check and the sheet half-edge wrap
   refusal both still have to hold.
   *Done when:* an L-shaped building renders correctly, verified by PNG.
+  *Done:* `place_building` takes a **notch** — a rectangle out of one corner — and the wall band
+  then follows each *column* rather than one flat row, so a bottom notch moves the short wing's
+  wall and its door up with it. The shape rule was a passing test before it was code: **the 22
+  sample roofs that are one coherent building hold exactly the piece the silhouette names in every
+  cell but a concave corner**, which is the same test that identifies the other 72 as merged.
+  Inner corners follow **14 of 14 with no counterexample** — `[0]` for a missing down-left
+  diagonal, `[1]` for down-right — and an *upward* bend correctly needs no piece, as none of the
+  26 sample concave corners uses one. The tie P5-07 could not break (3 cells missing both lower
+  diagonals) turns out unreachable: both are missing only above a one-tile stem, which is refused
+  for having no single-width piece. Verified by PNG over stdio — six buildings, four notch
+  corners, an A3 roof over the same L and an un-notched control — with
+  `check_map_walkability` reporting 423 standable tiles of 600 in one connected area.
+  See [A roof that turns a corner](ROADMAP.md#a-roof-that-turns-a-corner).
 
 - [ ] **P5-09 — Ragged edges for ground materials**
   Ground patches are hard-edged rectangles. Give material boundaries controlled irregularity, and

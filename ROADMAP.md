@@ -2598,6 +2598,88 @@ it is four distributions that inform three future features, and generating a mod
 imports would be copying the form without the reason. The numbers live here and the script
 re-derives them on demand. Not filed as a task either way.
 
+### A roof that turns a corner
+
+P5-07 measured the shape of a hand-made map; this is the first thing built against those
+numbers. `place_building` takes a **notch** — a rectangle out of one corner of the footprint —
+and the building comes out an L instead of a box. The inner-corner eave pieces
+`blueprint.ts` has catalogued since the beginning, and which nothing had ever used, are what
+turns it.
+
+**The wall band follows each column, not one flat row.** That is the part that is not obvious
+until you draw it. A notch at the bottom shortens some columns, so their wall — and their door,
+if it is on one of them — moves up with them, and the roof gets a step where the wings meet. A
+notch at the top leaves the wall band a plain rectangle and bends only the roof. For an
+un-notched footprint the per-column split is exactly the old two-rectangle one, which is what
+keeps every existing plan byte-identical.
+
+#### The piece a cell takes was already a passing test
+
+The silhouette rule — column 0 where nothing is to the left, 2 where nothing is to the right, 1
+between, and the same downward for the row — is not a rule invented for this feature. It is the
+seam test `measure-map-shape.mjs` uses to tell one L-shaped roof from two buildings that happen
+to share an edge and a roof material, and it was validated before anything was written:
+**of the 94 nine-slice roof components in the 293 sample maps, the 22 that are one coherent roof
+hold exactly the piece this rule names in every cell but a concave corner.** The other 72
+disagree somewhere, which is what identifies them as merged. So the shape computation is the
+corpus's own answer, not a restatement of itself.
+
+The concave corners are the exception the rule points at, and the ordering is clean:
+**`innerCorners[0]` where the down-left diagonal is missing, `innerCorners[1]` where the
+down-right is — 14 dedicated uses out of 14 across all four sets, no counterexample.** Where an
+up diagonal is missing as well, the down one still decides (gold 428 for UR+DR, 427 for UL+DL).
+**A missing *up* diagonal gets no dedicated piece at all**: none of the 26 sample concave corners
+uses one, the art is directional and the valley pieces belong to the eave, so an upward bend
+keeps the plain piece the silhouette names. A `topRight` notch therefore needs no catalogue
+entry and works on any roof addressed by raw tile id.
+
+**The one case the corpus could not settle turns out not to exist.** Three sample cells are
+missing *both* lower diagonals, split 2:1 for the left piece, and P5-07 flagged that as a tie it
+had no basis to break. It never has to: both diagonals are missing only when the cell directly
+below is a one-tile-wide stem, and no set has a single-width piece, so that silhouette is refused
+one step earlier for a reason that has nothing to do with the tie. Those three cells sit above a
+stem no single roof set can draw — most likely an artefact of two roofs sharing a material, which
+is what 72 of 94 components are. **Not filed as a task**: nothing a player or a caller ever sees
+differs, and the refusal that covers it names the real problem.
+
+#### What it refuses, and why each one
+
+Every guard P5-08 was told to keep still holds, and the L added three more. All five were driven
+over stdio against the real server, not asserted in a unit test alone:
+
+- **A concave corner on a roof named by `roofTopLeftTileId`.** The inner-corner pieces sit off
+  the 3x3 block at no fixed offset — brown's are *below* its block, Snow's wrap onto the next row
+  band two columns to the left of its own origin — so there is nothing to derive them from.
+  Name the set, or pass `roofInnerCornerTileIds`.
+- **Inner-corner ids on a different object sheet from the roof.** All that can be checked, given
+  the sets are not laid out uniformly, is that the pieces belong to the same sheet as the roof
+  they are supposed to trim.
+- **A notch that leaves the roof one tile wide or one tile tall**, for the same reason the 2x2
+  minimum already existed: that cell would have to be both the left slope and the right one.
+- **A notch that leaves the short wing no roof** — every column of an L needs more rows than
+  `wallHeight`, not just the tall one.
+- **Two of the three notch parameters.** Guessing the third would put the corner somewhere the
+  caller did not ask for.
+
+The transparent-corner check and the sheet half-edge wrap refusal are unchanged and still fire;
+the cut-away-corner check now sees the inner-corner tiles too, because they go into the same set
+of tile ids it measures the sheet's alpha for.
+
+#### Verified by looking at it
+
+Six buildings on one 30x20 map, driven over stdio and rendered with `render-map.mjs`: green with
+a bottom-right notch, brown bottom-left, white top-right, gold with its **door on the short
+wing**, an un-notched green as the control, and an A3 autotile roof over the same L. The A3 case
+needs no piece at all — the engine computes an autotile's shape from the silhouette, which is why
+a quarter of hand-made A3 roofs are not rectangles and none of them ever needed a catalogue.
+`check_map_walkability`: 423 standable tiles of 600, all one connected area, no unreachable
+events and no blocked doors.
+
+**Still open.** `generate_town` emits only rectangles — wiring the notch into it is P5-10's
+business, not this one's. And the corpus does not say how often an L is worth emitting: 4 of the
+22 coherent hand-made roofs are non-rectangular (18.2%), which is a rate measured on 22 roofs and
+much too thin to hard-code as a generator's probability.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live

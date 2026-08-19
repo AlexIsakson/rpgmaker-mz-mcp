@@ -139,6 +139,51 @@ export function refreshWallShapes(
 }
 
 /**
+ * Paint an arbitrary set of cells with a wall material, then refresh shapes over
+ * the cells' bounding box and the ring around it.
+ *
+ * This is {@link fillWallRect} without the rectangle: an L-shaped building's
+ * wall band is not one, because a notch that shortens some columns moves their
+ * wall band up with them. The shape refresh reads the grid rather than the cell
+ * list, so the notch shows up in the silhouette on its own — the tiles either
+ * side of the step get their edges from the neighbours that are actually there.
+ */
+export function fillWallCells(
+  grid: number[][],
+  cells: { x: number; y: number }[],
+  tileId: number,
+  options: WallRefreshOptions = {}
+): number[][] {
+  const height = grid.length;
+  const width = grid[0]?.length ?? 0;
+
+  const painted = grid.map((row) => [...row]);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const { x, y } of cells) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    if (x < 0 || y < 0 || x >= width || y >= height) continue;
+    painted[y][x] = tileId;
+  }
+  if (cells.length === 0) return painted;
+
+  return refreshWallShapes(painted, {
+    ...options,
+    region: options.region ?? {
+      x: minX - 1,
+      y: minY - 1,
+      width: maxX - minX + 3,
+      height: maxY - minY + 3,
+    },
+  });
+}
+
+/**
  * Paint a rectangle with a wall material, then refresh shapes across the
  * painted area and the ring around it — the same scoping the floor version
  * uses, for the same reason: only tiles within one step of the change can need

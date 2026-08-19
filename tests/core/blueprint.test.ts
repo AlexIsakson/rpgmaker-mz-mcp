@@ -5,6 +5,8 @@ import {
   nineSliceTileId,
   nineSliceFits,
   nineSliceGrid,
+  nineSliceShape,
+  footprintMask,
   planBuilding,
   doorEventPage,
   doorEvent,
@@ -12,6 +14,7 @@ import {
   isA3RoofKind,
   isA3WallKind,
   findRoofSet,
+  NOTCH_CORNERS,
   BlueprintError,
   OUTSIDE_C_ROOF_SETS,
   type BuildingSpec,
@@ -88,6 +91,96 @@ describe('nineSliceGrid', () => {
       [384, 386],
       [400, 402],
     ]);
+  });
+});
+
+/** `X` occupied, anything else empty — a silhouette is easier to read drawn. */
+function mask(...rows: string[]): boolean[][] {
+  return rows.map((r) => [...r].map((c) => c === 'X'));
+}
+
+describe('footprintMask', () => {
+  it('takes the notch out of the corner it names', () => {
+    expect(footprintMask(4, 3, { corner: 'bottomRight', width: 2, height: 1 })).toEqual(
+      mask('XXXX', 'XXXX', 'XX..')
+    );
+    expect(footprintMask(4, 3, { corner: 'bottomLeft', width: 2, height: 1 })).toEqual(
+      mask('XXXX', 'XXXX', '..XX')
+    );
+    expect(footprintMask(4, 3, { corner: 'topRight', width: 1, height: 2 })).toEqual(
+      mask('XXX.', 'XXX.', 'XXXX')
+    );
+    expect(footprintMask(4, 3, { corner: 'topLeft', width: 1, height: 2 })).toEqual(
+      mask('.XXX', '.XXX', 'XXXX')
+    );
+  });
+
+  it('is solid without a notch', () => {
+    expect(footprintMask(3, 2)).toEqual(mask('XXX', 'XXX'));
+  });
+});
+
+describe('nineSliceShape', () => {
+  const GREEN = 384;
+  const INNER: [number, number] = [395, 396];
+
+  it('agrees with nineSliceGrid on every rectangle it can draw', () => {
+    for (let w = 2; w <= 6; w++) {
+      for (let h = 2; h <= 6; h++) {
+        const solid = Array.from({ length: h }, () => new Array(w).fill(true));
+        expect(nineSliceShape(GREEN, solid, INNER)).toEqual(nineSliceGrid(GREEN, w, h));
+      }
+    }
+  });
+
+  it('turns a down-right corner with innerCorners[1]', () => {
+    // The roof of a building notched at its bottom-right: the right wing stops
+    // a row higher, so the cell above the step is the inside of the bend.
+    expect(nineSliceShape(GREEN, mask('XXXXX', 'XXXXX', 'XXX..'), INNER)).toEqual([
+      [384, 385, 385, 385, 386],
+      [392, 393, 396, 401, 402],
+      [400, 401, 402, null, null],
+    ]);
+  });
+
+  it('turns a down-left corner with innerCorners[0]', () => {
+    expect(nineSliceShape(GREEN, mask('XXXXX', 'XXXXX', '..XXX'), INNER)).toEqual([
+      [384, 385, 385, 385, 386],
+      [400, 401, 395, 393, 394],
+      [null, null, 400, 401, 402],
+    ]);
+  });
+
+  it('refuses the shape whose corner the corpus could not settle', () => {
+    // The three sample cells missing *both* lower diagonals are the ones the
+    // measurement could not call, 2:1 for the left piece. They cannot arise
+    // here: a cell has both lower diagonals missing only when the cell below it
+    // is a one-tile stem, and no set has a piece for that. So the tie is never
+    // played rather than guessed.
+    expect(() => nineSliceShape(GREEN, mask('XXX', 'XXX', '.X.'), INNER)).toThrow(
+      /one tile wide/
+    );
+  });
+
+  it('leaves an upward corner the plain piece, which is what the corpus does', () => {
+    // No set has a piece for a missing up diagonal and none of the 26 sample
+    // concave corners uses one, so this must not need innerCorners at all.
+    const grid = nineSliceShape(GREEN, mask('XXX..', 'XXX..', 'XXXXX', 'XXXXX'), null);
+    expect(grid[2][2]).toBe(393);
+    expect(grid[0]).toEqual([384, 385, 386, null, null]);
+  });
+
+  it('refuses a concave corner it has no piece for', () => {
+    expect(() => nineSliceShape(GREEN, mask('XXXXX', 'XXXXX', 'XXX..'), null)).toThrow(
+      /concave corner/
+    );
+  });
+
+  it('refuses a silhouette one tile wide or one tile tall', () => {
+    expect(() => nineSliceShape(GREEN, mask('XXX', 'XXX', 'X..'), INNER)).toThrow(
+      /one tile wide/
+    );
+    expect(() => nineSliceShape(GREEN, mask('XXXX', 'XX..'), INNER)).toThrow(/one tile tall/);
   });
 });
 
@@ -249,6 +342,136 @@ describe('planBuilding', () => {
 
   it('says nothing when the pairing is right', () => {
     const plan = planBuilding(spec({ roof: { style: 'autotile', kind: 52 }, wallKind: 60 }));
+    expect(plan.warnings).toEqual([]);
+  });
+});
+
+describe('planBuilding with an L-shaped footprint', () => {
+  function lSpec(overrides: Partial<BuildingSpec> = {}): BuildingSpec {
+    return spec({
+      width: 5,
+      height: 5,
+      wallHeight: 2,
+      roof: { style: 'nineslice', topLeft: 384, innerCorners: [395, 396] },
+      notch: { corner: 'bottomRight', width: 2, height: 1 },
+      ...overrides,
+    });
+  }
+
+  it('steps the wall band up on the short wing instead of leaving a flat row', () => {
+    const plan = planBuilding(lSpec());
+    // Columns 0-2 run the full height, so their wall is the bottom two rows;
+    // columns 3-4 stop a row early and take theirs a row higher.
+    expect(plan.wallRect).toEqual({ x: 4, y: 5, width: 5, height: 3 });
+    expect(plan.wallMask).toEqual(mask('...XX', 'XXXXX', 'XXX..'));
+  });
+
+  it('gives the roof the step, and turns it with the inner-corner piece', () => {
+    const plan = planBuilding(lSpec());
+    expect(plan.roofRect).toEqual({ x: 4, y: 3, width: 5, height: 3 });
+    expect(plan.roofMask).toEqual(mask('XXXXX', 'XXXXX', 'XXX..'));
+    expect(plan.roofTiles![1][2]).toBe(396);
+  });
+
+  it('covers the footprint exactly — every cell is roof or wall, never both', () => {
+    for (const corner of NOTCH_CORNERS) {
+      for (const doorSide of ['bottom', 'top'] as const) {
+        const plan = planBuilding(
+          lSpec({ doorSide, notch: { corner, width: 2, height: 1 } })
+        );
+        const seen = new Map<string, number>();
+        const add = (rect: typeof plan.roofRect, m: boolean[][]) => {
+          for (let j = 0; j < rect.height; j++) {
+            for (let i = 0; i < rect.width; i++) {
+              if (!m[j][i]) continue;
+              const k = `${rect.x + i},${rect.y + j}`;
+              seen.set(k, (seen.get(k) ?? 0) + 1);
+            }
+          }
+        };
+        add(plan.roofRect, plan.roofMask);
+        add(plan.wallRect, plan.wallMask);
+        // 5x5 footprint less the 2x1 notch, each cell claimed exactly once.
+        expect(seen.size).toBe(23);
+        expect([...seen.values()].every((n) => n === 1)).toBe(true);
+      }
+    }
+  });
+
+  it('puts a door on the short wing on the bottom row of that wing', () => {
+    const plan = planBuilding(lSpec({ doorOffsetX: 4 }));
+    // The footprint's bottom row is y=7, but column 4 stops at y=6.
+    expect(plan.door).toEqual({ x: 8, y: 6, approach: { x: 8, y: 7 }, side: 'bottom' });
+  });
+
+  it('still puts a door on the tall wing on the bottom row of the footprint', () => {
+    expect(planBuilding(lSpec({ doorOffsetX: 1 })).door).toEqual({
+      x: 5,
+      y: 7,
+      approach: { x: 5, y: 8 },
+      side: 'bottom',
+    });
+  });
+
+  it('needs no inner corners when the notch is on the far side from the door', () => {
+    // A top notch bends the roof upward, and no set has a piece for that.
+    const plan = planBuilding(
+      lSpec({
+        notch: { corner: 'topRight', width: 2, height: 1 },
+        roof: { style: 'nineslice', topLeft: 384 },
+      })
+    );
+    expect(plan.roofMask).toEqual(mask('XXX..', 'XXXXX', 'XXXXX'));
+    expect(plan.wallMask).toEqual(mask('XXXXX', 'XXXXX'));
+    expect(plan.roofTiles![1][2]).toBe(393);
+  });
+
+  it('leaves an un-notched plan exactly as it was', () => {
+    const plain = planBuilding(spec());
+    expect(plain.roofMask.flat().every(Boolean)).toBe(true);
+    expect(plain.wallMask.flat().every(Boolean)).toBe(true);
+    expect(plain.roofTiles).toEqual(nineSliceGrid(384, 4, 3));
+  });
+
+  it('refuses a notch that takes a whole side', () => {
+    expect(() => planBuilding(lSpec({ notch: { corner: 'bottomRight', width: 5, height: 1 } })))
+      .toThrow(/whole side/);
+    expect(() => planBuilding(lSpec({ notch: { corner: 'bottomRight', width: 2, height: 5 } })))
+      .toThrow(/whole side/);
+  });
+
+  it('refuses a notch that leaves the short wing no roof', () => {
+    // height 5, wallHeight 2, notch 3 deep -> the short wing is 2 rows of wall.
+    expect(() => planBuilding(lSpec({ notch: { corner: 'bottomRight', width: 2, height: 3 } })))
+      .toThrow(/no room for a roof on it/);
+  });
+
+  it('refuses a notch that leaves the roof one tile wide', () => {
+    expect(() =>
+      planBuilding(
+        lSpec({
+          width: 3,
+          height: 4,
+          wallHeight: 1,
+          notch: { corner: 'bottomRight', width: 2, height: 1 },
+        })
+      )
+    ).toThrow(/one tile wide/);
+  });
+
+  it('refuses a nine-slice roof with a bend and no piece to bend it with', () => {
+    expect(() => planBuilding(lSpec({ roof: { style: 'nineslice', topLeft: 384 } }))).toThrow(
+      /concave corner/
+    );
+  });
+
+  it('accepts an A3 roof over an L without needing any piece at all', () => {
+    // The engine computes an autotile's shape from the silhouette, so there is
+    // nothing to choose — which is why a quarter of hand-made A3 roofs are not
+    // rectangles and none of them needed a catalogue.
+    const plan = planBuilding(lSpec({ roof: { style: 'autotile', kind: 49 }, wallKind: 57 }));
+    expect(plan.roofTiles).toBeNull();
+    expect(plan.roofMask).toEqual(mask('XXXXX', 'XXXXX', 'XXX..'));
     expect(plan.warnings).toEqual([]);
   });
 });

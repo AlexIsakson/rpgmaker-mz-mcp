@@ -13,6 +13,7 @@ import {
 import {
   isA3Kind,
   ROOF_SET_NAMES,
+  NOTCH_CORNERS,
   OUTSIDE_C_ROOF_SETS,
   A3_KIND_MIN,
   A3_KIND_MAX,
@@ -36,8 +37,11 @@ export function registerBlueprintTools(server: McpServer): void {
       'Takes a footprint and a roof; the wall material defaults to the A3 kind ' +
       'that pairs with the roof. Roofs can be an Outside_C nine-slice set (sloped ' +
       'sides and a shingled eave — what real RPG Maker houses use) or a plain A3 ' +
-      'roof material. The door is emitted as an event carrying a !Door sprite, ' +
-      'because RPG Maker doors are events and not tiles.',
+      'roof material. The footprint can be an L rather than a box — see ' +
+      'notchCorner — in which case the roof turns the corner with the set\'s own ' +
+      'inner-corner eave pieces and the wall band steps up with the short wing. ' +
+      'The door is emitted as an event carrying a !Door sprite, because RPG Maker ' +
+      'doors are events and not tiles.',
     {
       mapId: z.number().int().positive().describe('Map ID'),
       x: z.number().int().min(0).describe('Left edge of the footprint, in tiles'),
@@ -56,6 +60,33 @@ export function registerBlueprintTools(server: McpServer): void {
           'Top-left tile id of a 3x3 nine-slice roof block on a B/C/D/E object sheet (0-1023), ' +
           'as an alternative to roofSet. Cells are addressed topLeft + row * 8 + col, because ' +
           'those sheets are laid out as two 8-wide halves.'
+        ),
+      notchCorner: z.enum(NOTCH_CORNERS as [string, ...string[]]).optional()
+        .describe(
+          'Bite a rectangle out of this corner of the footprint, making the building an L ' +
+          'instead of a box. Needs notchWidth and notchHeight. A notch on the door side ' +
+          '(bottomLeft/bottomRight with the default doorSide) shortens those columns, so their ' +
+          'wall band and their door move up with them, and the roof turns a downward concave ' +
+          'corner — which is the one the roof sets have a dedicated eave piece for. A notch on ' +
+          'the far side bends only the roof, into an upward corner no set has a piece for; the ' +
+          'plain edge piece is used there, which is what all four such corners in the 293 ' +
+          'sample maps do.'
+        ),
+      notchWidth: z.number().int().positive().optional()
+        .describe('Width of the notch in tiles. Must leave at least 2 columns of building.'),
+      notchHeight: z.number().int().positive().optional()
+        .describe(
+          'Height of the notch in tiles. Must leave every column more rows than wallHeight, ' +
+          'and at least 2 rows of roof.'
+        ),
+      roofInnerCornerTileIds: z.array(z.number().int().min(0).max(1023)).length(2).optional()
+        .describe(
+          'The two inner-corner eave pieces of a roof named by roofTopLeftTileId, as ' +
+          '[down-left, down-right] — the piece for a cell whose down-LEFT diagonal is missing ' +
+          'first. Only needed when a notch makes the roof turn a downward concave corner. The ' +
+          'four Outside_C sets carry theirs already. They sit off the 3x3 block at no fixed ' +
+          'offset, so they cannot be derived: measured across all four sets, 14 of 14 dedicated ' +
+          'uses in the sample maps follow the left/right ordering above, with no counterexample.'
         ),
       roofKind: z.number().int().min(A3_KIND_MIN).max(A3_KIND_MAX).optional()
         .describe(
@@ -115,12 +146,24 @@ export function registerBlueprintTools(server: McpServer): void {
       try {
         const {
           mapId, x, y, width, height,
+          notchCorner, notchWidth, notchHeight, roofInnerCornerTileIds,
           roofSet, roofTopLeftTileId, roofKind, wallKind,
           wallHeight, roofLayer,
           door, doorOffsetX, doorSide, doorSprite, doorSpriteIndex,
           interiorMapId, interiorX, interiorY,
           shadows, allowRoofOverEmptyGround,
         } = args;
+
+        const notchGiven = [notchCorner, notchWidth, notchHeight].filter(
+          (v) => v !== undefined
+        ).length;
+        if (notchGiven !== 0 && notchGiven !== 3) {
+          return errorResult(
+            'A notch needs all three of notchCorner, notchWidth and notchHeight. Two of them ' +
+            'describe half a shape, and guessing the third would put the corner somewhere you ' +
+            'did not ask for.'
+          );
+        }
 
         const project = requireProject();
         await requireProjectSheets(project.path, [[doorSprite, 'doorSprite']]);
@@ -155,6 +198,15 @@ export function registerBlueprintTools(server: McpServer): void {
             mapData,
             {
               x, y, width, height, wallHeight,
+              notch:
+                notchCorner !== undefined
+                  ? {
+                      corner: notchCorner as 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight',
+                      width: notchWidth!,
+                      height: notchHeight!,
+                    }
+                  : undefined,
+              roofInnerCorners: roofInnerCornerTileIds as [number, number] | undefined,
               wallKind, roofSet, roofTopLeftTileId, roofKind, roofLayer,
               door, doorOffsetX, doorSide, doorSprite, doorSpriteIndex,
               doorTarget:
@@ -187,16 +239,22 @@ export function registerBlueprintTools(server: McpServer): void {
           (result.doorEventId !== null ? `, door event ${result.doorEventId}` : '')
         );
 
+        const roofCellCount = plan.roofMask.flat().filter(Boolean).length;
+        const wallCellCount = plan.wallMask.flat().filter(Boolean).length;
+
         const lines = [
-          `Placed a ${width}x${height} building at (${x}, ${y}) on map ${mapId}.`,
+          `Placed a ${width}x${height} building at (${x}, ${y}) on map ${mapId}` +
+            (notchCorner !== undefined
+              ? `, with a ${notchWidth}x${notchHeight} notch out of its ${notchCorner} corner.`
+              : '.'),
           roof.style === 'nineslice'
-            ? `Roof: nine-slice set from tile ${roof.topLeft}, ` +
-              `${plan.roofRect.width}x${plan.roofRect.height} on layer ${roofLayer}.`
-            : `Roof: A3 kind ${roof.kind}, ` +
-              `${plan.roofRect.width}x${plan.roofRect.height} on layer 0.`,
+            ? `Roof: nine-slice set from tile ${roof.topLeft}, ${roofCellCount} tile(s) in a ` +
+              `${plan.roofRect.width}x${plan.roofRect.height} box on layer ${roofLayer}.`
+            : `Roof: A3 kind ${roof.kind}, ${roofCellCount} tile(s) in a ` +
+              `${plan.roofRect.width}x${plan.roofRect.height} box on layer 0.`,
           `Walls: ${isA3Kind(result.wallKind) ? 'A3' : 'A4'} kind ${result.wallKind}, ` +
-            `${plan.wallRect.width}x${plan.wallRect.height} at (${plan.wallRect.x}, ${plan.wallRect.y}) ` +
-            'on layer 0, with wall autotile shapes.',
+            `${wallCellCount} tile(s) in a ${plan.wallRect.width}x${plan.wallRect.height} box at ` +
+            `(${plan.wallRect.x}, ${plan.wallRect.y}) on layer 0, with wall autotile shapes.`,
         ];
 
         if (plan.door && result.doorEventId !== null) {

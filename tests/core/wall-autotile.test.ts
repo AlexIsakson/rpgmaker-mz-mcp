@@ -3,6 +3,10 @@ import {
   computeWallShape,
   refreshWallShapes,
   fillWallRect,
+  fillWallCells,
+  WALL_SHAPE_LEFT,
+  WALL_SHAPE_RIGHT,
+  WALL_SHAPE_BOTTOM,
   usesWallAutotileTable,
   isTileA3,
   isTileA4,
@@ -112,6 +116,56 @@ describe('usesWallAutotileTable', () => {
     expect(isTileA3(TILE_ID_A4)).toBe(false);
     expect(isTileA4(TILE_ID_A4)).toBe(true);
     expect(isTileA4(TILE_ID_A3)).toBe(false);
+  });
+});
+
+describe('fillWallCells', () => {
+  const WALL = makeAutotileId(57, 0);
+
+  function blank(width: number, height: number): number[][] {
+    return Array.from({ length: height }, () => new Array<number>(width).fill(0));
+  }
+
+  it('paints only the cells it is given, and shapes them from what is there', () => {
+    // The wall band of an L notched at its bottom-right: columns 0-1 keep the
+    // bottom row, column 2 stops a row higher.
+    const cells = [
+      { x: 0, y: 2 },
+      { x: 1, y: 2 },
+      { x: 0, y: 3 },
+      { x: 1, y: 3 },
+      { x: 2, y: 1 },
+      { x: 2, y: 2 },
+    ];
+    const grid = fillWallCells(blank(4, 4), cells, WALL);
+
+    // Nothing outside the cell list was painted — the notch stays empty.
+    expect(grid[3][2]).toBe(0);
+    expect(grid[1][0]).toBe(0);
+
+    // The step is a real edge in both directions: the tall wing draws its right
+    // side where the short wing has stopped, and the short wing draws its left
+    // side where the tall wing has not started.
+    expect(getAutotileShape(grid[3][1]) & WALL_SHAPE_RIGHT).toBe(WALL_SHAPE_RIGHT);
+    expect(getAutotileShape(grid[1][2]) & WALL_SHAPE_LEFT).toBe(WALL_SHAPE_LEFT);
+    expect(getAutotileShape(grid[2][2]) & WALL_SHAPE_BOTTOM).toBe(WALL_SHAPE_BOTTOM);
+    // Inside the band nothing spurious: (1,2) has wall left, right and below.
+    expect(getAutotileShape(grid[2][1]) & WALL_SHAPE_RIGHT).toBe(0);
+  });
+
+  it('matches fillWallRect when the cells are a rectangle', () => {
+    const rect = { x: 1, y: 1, width: 3, height: 2 };
+    const cells = [];
+    for (let y = rect.y; y < rect.y + rect.height; y++) {
+      for (let x = rect.x; x < rect.x + rect.width; x++) cells.push({ x, y });
+    }
+    expect(fillWallCells(blank(5, 5), cells, WALL)).toEqual(
+      fillWallRect(blank(5, 5), rect, WALL)
+    );
+  });
+
+  it('leaves the grid alone when given nothing to paint', () => {
+    expect(fillWallCells(blank(3, 3), [], WALL)).toEqual(blank(3, 3));
   });
 });
 

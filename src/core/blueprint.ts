@@ -101,9 +101,10 @@ export interface RoofSet {
   /** Tile id of the block's top-left cell. */
   topLeft: number;
   /**
-   * The pair of inner-corner eave pieces that let a roof turn a concave corner.
-   * Nothing here uses them — {@link planBuilding} emits rectangles only — but
-   * they are what an L-shaped roof would need, and they are hard to find again.
+   * The pair of inner-corner eave pieces that let a roof turn a concave corner:
+   * `[0]` where the *down-left* diagonal is missing, `[1]` where the down-right
+   * is. {@link nineSliceShape} places them; see its comment for the count behind
+   * that ordering.
    */
   innerCorners: [number, number] | null;
 }
@@ -157,6 +158,148 @@ export function nineSliceGrid(topLeft: number, width: number, height: number): n
   return grid;
 }
 
+// --- Footprint shape --------------------------------------------------------
+
+/**
+ * A rectangular bite out of one corner of the footprint. One notch turns a box
+ * into an L, which is the shape the corpus actually has evidence for — see
+ * {@link nineSliceShape}. It is deliberately not a free-form mask: the pieces
+ * only exist for the corners an L produces.
+ */
+export type NotchCorner = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
+
+export const NOTCH_CORNERS: NotchCorner[] = [
+  'topLeft',
+  'topRight',
+  'bottomLeft',
+  'bottomRight',
+];
+
+export interface Notch {
+  corner: NotchCorner;
+  width: number;
+  height: number;
+}
+
+/** Footprint occupancy over the bounding box, `mask[y][x]`. */
+export function footprintMask(
+  width: number,
+  height: number,
+  notch?: Notch | null
+): boolean[][] {
+  const mask = Array.from({ length: height }, () => new Array<boolean>(width).fill(true));
+  if (!notch) return mask;
+  const x0 = notch.corner === 'topRight' || notch.corner === 'bottomRight' ? width - notch.width : 0;
+  const y0 = notch.corner === 'bottomLeft' || notch.corner === 'bottomRight' ? height - notch.height : 0;
+  for (let y = Math.max(0, y0); y < Math.min(height, y0 + notch.height); y++) {
+    for (let x = Math.max(0, x0); x < Math.min(width, x0 + notch.width); x++) {
+      mask[y][x] = false;
+    }
+  }
+  return mask;
+}
+
+/**
+ * Lay a nine-slice set over an arbitrary silhouette rather than a rectangle.
+ *
+ * **The piece a cell takes follows from its neighbours**, which is the same rule
+ * `scripts/measure-map-shape.mjs` uses to tell a real L-shaped roof from two
+ * buildings that happen to share an edge: column 0 where nothing is to the left,
+ * 2 where nothing is to the right, 1 between, and the same downward for the row.
+ * That is not a restatement of this code — it is a test that passed. Of the 293
+ * sample maps' 94 nine-slice roof components, **22 are one coherent roof, and in
+ * those 22 every cell but a concave corner holds exactly the piece this rule
+ * names**; the other 72 disagree somewhere, which is what identifies them as
+ * merged buildings.
+ *
+ * **A concave corner takes a dedicated piece, chosen by which lower diagonal is
+ * missing.** A cell with all four orthogonal neighbours and a missing diagonal is
+ * the inside of a bend. Across all 293 maps there are 26 such cells; 14 were
+ * turned with the set's dedicated piece and **all 14 agree, with no
+ * counterexample across all four sets**: `innerCorners[0]` where the down-left
+ * diagonal is missing (green 395, white 411, gold 427/419, brown 446),
+ * `innerCorners[1]` where the down-right is (396, 412, 428/420, 447). Where an
+ * up diagonal is missing too, the down one still decides — gold 428 was used for
+ * UR+DR and 427 for UL+DL.
+ *
+ * **A missing *up* diagonal gets no dedicated piece.** Not one of the 26 is
+ * turned with one; the art is directional and the valley pieces belong to the
+ * eave, so an up corner keeps the plain piece the silhouette names.
+ *
+ * **26 corners in 293 maps is a thin sample and this treats it as one.** It
+ * fixes which piece goes where; it says nothing about how often an L is worth
+ * emitting. The one case the corpus could not settle — a cell missing *both*
+ * lower diagonals, three examples split 2:1 — never arises: both are missing
+ * only when the cell below is a one-tile stem, and no set has a piece for a
+ * one-tile-wide roof, so that silhouette is refused a step earlier. The tie is
+ * not played rather than guessed.
+ *
+ * Cells outside the silhouette come back null.
+ */
+export function nineSliceShape(
+  topLeft: number,
+  mask: boolean[][],
+  innerCorners: [number, number] | null
+): (number | null)[][] {
+  const height = mask.length;
+  const width = mask[0]?.length ?? 0;
+  const has = (x: number, y: number): boolean =>
+    y >= 0 && y < height && x >= 0 && x < width && mask[y][x];
+
+  const grid: (number | null)[][] = [];
+  for (let y = 0; y < height; y++) {
+    const row: (number | null)[] = [];
+    for (let x = 0; x < width; x++) {
+      if (!has(x, y)) {
+        row.push(null);
+        continue;
+      }
+      const left = has(x - 1, y);
+      const right = has(x + 1, y);
+      const up = has(x, y - 1);
+      const down = has(x, y + 1);
+
+      if (!left && !right) {
+        throw new BlueprintError(
+          `The roof is one tile wide at (${x}, ${y}) of its bounding box. A nine-slice set has ` +
+            'no single-width piece — that cell would be both the left slope and the right one. ' +
+            'Widen the building or shrink the notch.'
+        );
+      }
+      if (!up && !down) {
+        throw new BlueprintError(
+          `The roof is one tile tall at (${x}, ${y}) of its bounding box. A nine-slice set has ` +
+            'no single-height piece — that cell would be both the ridge and the eave. Raise the ' +
+            'building or reduce wallHeight.'
+        );
+      }
+
+      if (left && right && up && down) {
+        const missingDownLeft = !has(x - 1, y + 1);
+        const missingDownRight = !has(x + 1, y + 1);
+        if (missingDownLeft || missingDownRight) {
+          if (!innerCorners) {
+            throw new BlueprintError(
+              `The roof turns a concave corner at (${x}, ${y}) of its bounding box, and this ` +
+                'roof needs the two inner-corner eave pieces of its set to turn it. They sit off ' +
+                'the 3x3 block, so they cannot be derived from the top-left tile — name the set ' +
+                'with roofSet, or pass the two tile ids directly.'
+            );
+          }
+          row.push(missingDownLeft ? innerCorners[0] : innerCorners[1]);
+          continue;
+        }
+      }
+
+      const col = !left ? 0 : !right ? 2 : 1;
+      const srow = !up ? 0 : !down ? 2 : 1;
+      row.push(nineSliceTileId(topLeft, col, srow));
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
 // --- A3 roof / wall pairing -------------------------------------------------
 
 export const A3_KIND_MIN = getAutotileKind(TILE_ID_A3);
@@ -184,7 +327,16 @@ export function pairedWallKind(roofKind: number): number {
 // --- Planning ---------------------------------------------------------------
 
 export type RoofPlan =
-  | { style: 'nineslice'; topLeft: number }
+  | {
+      style: 'nineslice';
+      topLeft: number;
+      /**
+       * The set's two inner-corner eave pieces. Absent means "this roof cannot
+       * turn a concave corner" — they sit outside the 3x3 block and at no fixed
+       * offset from it, so there is nothing to derive them from.
+       */
+      innerCorners?: [number, number] | null;
+    }
   | { style: 'autotile'; kind: number };
 
 /**
@@ -208,6 +360,8 @@ export interface BuildingSpec {
   doorOffsetX: number | null;
   /** Which edge the door — and so the wall band — is on. Default `'bottom'`. */
   doorSide?: DoorSide;
+  /** Bite a rectangle out of one corner of the footprint to make an L. */
+  notch?: Notch | null;
 }
 
 export interface DoorPlacement {
@@ -222,8 +376,19 @@ export interface DoorPlacement {
 export interface BuildingPlan {
   roofRect: Rect;
   wallRect: Rect;
-  /** Nine-slice roof tiles, `grid[y][x]` over `roofRect`. Null for an A3 roof. */
-  roofTiles: number[][] | null;
+  /**
+   * Which cells of `roofRect` the roof actually occupies. All true unless a
+   * notch cut the footprint; a caller painting the roof has to honour it, or an
+   * L-shaped building comes out as its bounding box again.
+   */
+  roofMask: boolean[][];
+  /** The same for `wallRect`. */
+  wallMask: boolean[][];
+  /**
+   * Nine-slice roof tiles, `grid[y][x]` over `roofRect`, null outside the mask.
+   * Null altogether for an A3 roof.
+   */
+  roofTiles: (number | null)[][] | null;
   /** Base tile id for an A3 roof, before shape computation. Null otherwise. */
   roofTileId: number | null;
   wallTileId: number;
@@ -255,6 +420,22 @@ export class BlueprintError extends Error {}
  * because it lets a town use the ground on both sides of a street instead of
  * only below it, and it is opt-in for that reason.
  *
+ * ## Footprints that are not rectangles
+ *
+ * A {@link Notch} takes a rectangle out of one corner, which is what turns a box
+ * into an L. The wall band then follows the door's edge of each *column* rather
+ * than one flat row of the footprint: a notch at the bottom shortens some
+ * columns, and their wall — and their door, if it is on one of them — moves up
+ * with them. A notch at the top leaves the wall band a plain rectangle and only
+ * bends the roof.
+ *
+ * Which of those two is worth asking for is decided by the roof art, not by
+ * taste. A bottom notch makes the roof turn a *downward* concave corner, and the
+ * sets carry a dedicated eave piece for exactly that; a top notch makes an
+ * upward one, for which no set has a piece and the corpus never invents one.
+ * Both are allowed and both are drawn correctly — see {@link nineSliceShape} for
+ * the counts.
+ *
  * The door *event* needed nothing: verified against `rmmz_objects.js` v1.9.0,
  * `ROUTE_TURN_LEFT`/`RIGHT`/`UP` are `setDirection(4|6|8)`, so the door's four
  * "directions" are the four rows of the `!Door1` sheet — closed through open —
@@ -263,9 +444,26 @@ export class BlueprintError extends Error {}
  * *player's* facing, which already points into the door because they walked into
  * it. Of the three things that looked baked in, only the approach tile was.
  */
+function boundingRect(cells: { x: number; y: number }[]): Rect {
+  const xs = cells.map((c) => c.x);
+  const ys = cells.map((c) => c.y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x + 1, height: Math.max(...ys) - y + 1 };
+}
+
+function maskOver(rect: Rect, cells: { x: number; y: number }[]): boolean[][] {
+  const mask = Array.from({ length: rect.height }, () =>
+    new Array<boolean>(rect.width).fill(false)
+  );
+  for (const c of cells) mask[c.y - rect.y][c.x - rect.x] = true;
+  return mask;
+}
+
 export function planBuilding(spec: BuildingSpec): BuildingPlan {
   const { x, y, width, height, wallHeight, wallKind, roof, doorOffsetX } = spec;
   const doorSide: DoorSide = spec.doorSide ?? 'bottom';
+  const notch = spec.notch ?? null;
   const warnings: string[] = [];
 
   if (width < 1 || height < 1) {
@@ -281,16 +479,53 @@ export function planBuilding(spec: BuildingSpec): BuildingPlan {
     );
   }
 
-  const roofHeight = height - wallHeight;
-  // The wall band sits on the door's edge; the roof takes what is left.
-  const roofRect: Rect =
-    doorSide === 'top'
-      ? { x, y: y + wallHeight, width, height: roofHeight }
-      : { x, y, width, height: roofHeight };
-  const wallRect: Rect =
-    doorSide === 'top'
-      ? { x, y, width, height: wallHeight }
-      : { x, y: y + roofHeight, width, height: wallHeight };
+  if (notch) {
+    if (notch.width < 1 || notch.height < 1) {
+      throw new BlueprintError('A notch has to take at least one tile out of the footprint.');
+    }
+    if (notch.width >= width || notch.height >= height) {
+      throw new BlueprintError(
+        `A ${notch.width}x${notch.height} notch does not leave an L in a ${width}x${height} ` +
+          'footprint — it takes a whole side of it. Shrink the notch, or place a smaller building.'
+      );
+    }
+    if (wallHeight >= height - notch.height) {
+      throw new BlueprintError(
+        `The notch leaves the short wing ${height - notch.height} rows tall, and wallHeight ` +
+          `${wallHeight} leaves no room for a roof on it. Every column of an L needs more rows ` +
+          'than wallHeight, not just the tall wing.'
+      );
+    }
+  }
+
+  // The wall band follows the door's edge of each *column*, not one flat row of
+  // the footprint: a notch at the bottom shortens some columns and their wall
+  // band moves up with them. For a rectangle this is exactly the old two-rect
+  // split, which is what keeps the un-notched plans identical.
+  const footprint = footprintMask(width, height, notch);
+  const roofCells: { x: number; y: number }[] = [];
+  const wallCells: { x: number; y: number }[] = [];
+  const columnSpans: ({ top: number; bottom: number } | null)[] = [];
+  for (let cx = 0; cx < width; cx++) {
+    let top = -1;
+    let bottom = -1;
+    for (let cy = 0; cy < height; cy++) {
+      if (!footprint[cy][cx]) continue;
+      if (top === -1) top = cy;
+      bottom = cy;
+    }
+    columnSpans.push(top === -1 ? null : { top, bottom });
+    if (top === -1) continue;
+    for (let cy = top; cy <= bottom; cy++) {
+      const isWall = doorSide === 'top' ? cy < top + wallHeight : cy > bottom - wallHeight;
+      (isWall ? wallCells : roofCells).push({ x: x + cx, y: y + cy });
+    }
+  }
+
+  const roofRect = boundingRect(roofCells);
+  const wallRect = boundingRect(wallCells);
+  const roofMask = maskOver(roofRect, roofCells);
+  const wallMask = maskOver(wallRect, wallCells);
 
   // A3 (48-79) and A4 (80-127) both carry walls; anything else is not a wall material.
   if (wallKind < A3_KIND_MIN || wallKind > A4_KIND_MAX) {
@@ -307,7 +542,7 @@ export function planBuilding(spec: BuildingSpec): BuildingPlan {
     );
   }
 
-  let roofTiles: number[][] | null = null;
+  let roofTiles: (number | null)[][] | null = null;
   let roofTileId: number | null = null;
 
   if (roof.style === 'nineslice') {
@@ -318,14 +553,15 @@ export function planBuilding(spec: BuildingSpec): BuildingPlan {
           '8-wide halves.'
       );
     }
-    if (width < 2 || roofHeight < 2) {
+    if (roofRect.width < 2 || roofRect.height < 2) {
       throw new BlueprintError(
-        `A nine-slice roof needs at least 2x2 roof tiles; this footprint gives ${width}x${roofHeight}. ` +
+        `A nine-slice roof needs at least 2x2 roof tiles; this footprint gives ` +
+          `${roofRect.width}x${roofRect.height}. ` +
           'The sets have no single-width or single-height variant. Widen the building, reduce ' +
           'wallHeight, or use an A3 roof kind instead.'
       );
     }
-    roofTiles = nineSliceGrid(roof.topLeft, width, roofHeight);
+    roofTiles = nineSliceShape(roof.topLeft, roofMask, roof.innerCorners ?? null);
   } else {
     if (!isA3Kind(roof.kind)) {
       throw new BlueprintError(
@@ -355,10 +591,17 @@ export function planBuilding(spec: BuildingSpec): BuildingPlan {
         `Door offset ${doorOffsetX} is outside the ${width}-wide footprint.`
       );
     }
+    const span = columnSpans[doorOffsetX];
+    if (!span) {
+      throw new BlueprintError(
+        `Door offset ${doorOffsetX} names a column the notch removed entirely.`
+      );
+    }
     const doorX = x + doorOffsetX;
-    // The door goes on the outermost row of the wall band, so it faces the
-    // street rather than sitting one row into the building.
-    const doorY = doorSide === 'top' ? y : y + height - 1;
+    // The door goes on the outermost row of *its column's* wall band, so it
+    // faces the street rather than sitting one row into the building. On the
+    // short wing of an L that row is higher up than the footprint's bottom.
+    const doorY = doorSide === 'top' ? y + span.top : y + span.bottom;
     const approachY = doorSide === 'top' ? doorY - 1 : doorY + 1;
     door = { x: doorX, y: doorY, approach: { x: doorX, y: approachY }, side: doorSide };
   }
@@ -366,6 +609,8 @@ export function planBuilding(spec: BuildingSpec): BuildingPlan {
   return {
     roofRect,
     wallRect,
+    roofMask,
+    wallMask,
     roofTiles,
     roofTileId,
     wallTileId: makeAutotileId(wallKind, 0),

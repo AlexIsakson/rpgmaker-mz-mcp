@@ -1,5 +1,5 @@
 import { readLayer, writeLayer, hasTileBelow } from './map-layers.js';
-import { fillWallRect } from './wall-autotile.js';
+import { fillWallCells } from './wall-autotile.js';
 import { loadTransparentObjectTiles } from './tileset-image.js';
 import {
   planBuilding,
@@ -11,6 +11,7 @@ import {
   OUTSIDE_C_SHEET_NAME,
   type BuildingPlan,
   type DoorSide,
+  type Notch,
   type DoorTarget,
   type RoofPlan,
 } from './blueprint.js';
@@ -56,6 +57,10 @@ export interface BuildingRequest {
   doorSpriteIndex: number;
   doorTarget?: DoorTarget;
   doorSide?: DoorSide;
+  /** Bite a rectangle out of one corner of the footprint to make an L. */
+  notch?: Notch;
+  /** Inner-corner eave pieces for a roof named by tile id rather than by set. */
+  roofInnerCorners?: [number, number];
   allowRoofOverEmptyGround: boolean;
 }
 
@@ -78,6 +83,11 @@ export function addEvent(mapData: MapData, make: (id: number) => Event): Event {
   return event;
 }
 
+/** The B/C/D/E sheets are 256 tiles each, so this is which sheet a tile is on. */
+function objectSheetOf(tileId: number): number {
+  return Math.floor(tileId / 256);
+}
+
 function resolveRoof(
   request: BuildingRequest,
   ctx: BuildingContext
@@ -95,6 +105,24 @@ function resolveRoof(
     return { roof: { style: 'autotile', kind: request.roofKind } };
   }
 
+  // An inner-corner piece is only meaningful next to its own roof: the sets are
+  // not laid out uniformly — brown's extras sit below its block, Snow's wrap onto
+  // the next row band — so the only thing that can be checked is that the pieces
+  // are at least on the same sheet as the roof they are supposed to belong to.
+  const roofTop = request.roofTopLeftTileId;
+  if (request.roofInnerCorners && roofTop !== undefined) {
+    const stray = request.roofInnerCorners.filter(
+      (id) => objectSheetOf(id) !== objectSheetOf(roofTop)
+    );
+    if (stray.length > 0) {
+      throw new BuildingPlacementError(
+        `Inner-corner tile(s) ${stray.join(', ')} are not on the same object sheet as roof tile ` +
+          `${roofTop}. A piece from another sheet draws whatever art happens to be at that id, ` +
+          'so this is refused rather than painted.'
+      );
+    }
+  }
+
   if (request.roofSet !== undefined) {
     const cSheet = ctx.tilesetNames[C_SHEET_INDEX];
     if (cSheet !== OUTSIDE_C_SHEET_NAME) {
@@ -107,7 +135,14 @@ function resolveRoof(
     }
     const set = findRoofSet(request.roofSet);
     if (!set) throw new BuildingPlacementError(`Unknown roof set "${request.roofSet}".`);
-    return { roof: { style: 'nineslice', topLeft: set.topLeft }, sheetName: cSheet };
+    return {
+      roof: {
+        style: 'nineslice',
+        topLeft: set.topLeft,
+        innerCorners: request.roofInnerCorners ?? set.innerCorners,
+      },
+      sheetName: cSheet,
+    };
   }
 
   const topLeft = request.roofTopLeftTileId!;
@@ -119,7 +154,11 @@ function resolveRoof(
     );
   }
   return {
-    roof: { style: 'nineslice', topLeft },
+    roof: {
+      style: 'nineslice',
+      topLeft,
+      innerCorners: request.roofInnerCorners ?? null,
+    },
     sheetName: ctx.tilesetNames[5 + Math.floor(topLeft / 256)],
   };
 }
@@ -166,6 +205,7 @@ export async function placeBuildingOnMap(
       roof,
       doorOffsetX: request.door ? (request.doorOffsetX ?? Math.floor(width / 2)) : null,
       doorSide: request.doorSide,
+      notch: request.notch,
     });
   } catch (error) {
     if (error instanceof BlueprintError) throw new BuildingPlacementError(error.message);
@@ -174,15 +214,28 @@ export async function placeBuildingOnMap(
 
   const notes = [...plan.warnings];
 
-  // Walls go on the ground layer, where they are opaque by construction.
+  // Walls go on the ground layer, where they are opaque by construction. The
+  // mask matters: painting the wall *rect* of an L would fill the notch back in.
+  const maskedCells = (rect: typeof plan.roofRect, mask: boolean[][]) => {
+    const cells: { x: number; y: number }[] = [];
+    for (let j = 0; j < rect.height; j++) {
+      for (let i = 0; i < rect.width; i++) {
+        if (mask[j][i]) cells.push({ x: rect.x + i, y: rect.y + j });
+      }
+    }
+    return cells;
+  };
+
   let ground = readLayer(mapData, 0);
-  ground = fillWallRect(ground, plan.wallRect, plan.wallTileId);
+  ground = fillWallCells(ground, maskedCells(plan.wallRect, plan.wallMask), plan.wallTileId);
 
   if (plan.roofTiles) {
     // A nine-slice roof's sloped corners are cut away and show whatever is
     // beneath them, so they need ground under them and cannot go on layer 0.
     // Only the cells that are actually cut matter, so measure the sheet.
-    const uniqueRoofTiles = [...new Set(plan.roofTiles.flat())];
+    const uniqueRoofTiles = [...new Set(plan.roofTiles.flat())].filter(
+      (t): t is number => t !== null
+    );
     const cut = sheetName
       ? await loadTransparentObjectTiles(ctx.projectPath, sheetName, uniqueRoofTiles)
       : null;
@@ -194,6 +247,7 @@ export async function placeBuildingOnMap(
     for (let j = 0; j < plan.roofRect.height; j++) {
       for (let i = 0; i < plan.roofRect.width; i++) {
         const tileId = plan.roofTiles[j][i];
+        if (tileId === null) continue;
         if (cut && !cut.has(tileId)) continue;
         const gx = plan.roofRect.x + i;
         const gy = plan.roofRect.y + j;
@@ -222,10 +276,12 @@ export async function placeBuildingOnMap(
     let overwritten = 0;
     for (let j = 0; j < plan.roofRect.height; j++) {
       for (let i = 0; i < plan.roofRect.width; i++) {
+        const tileId = plan.roofTiles[j][i];
+        if (tileId === null) continue;
         const gx = plan.roofRect.x + i;
         const gy = plan.roofRect.y + j;
         if (roofGrid[gy][gx] !== 0) overwritten++;
-        roofGrid[gy][gx] = plan.roofTiles[j][i];
+        roofGrid[gy][gx] = tileId;
       }
     }
     writeLayer(mapData, roofLayer, roofGrid);
@@ -233,7 +289,7 @@ export async function placeBuildingOnMap(
       notes.push(`Overwrote ${overwritten} tile(s) already on layer ${roofLayer} under the roof.`);
     }
   } else {
-    ground = fillWallRect(ground, plan.roofRect, plan.roofTileId!);
+    ground = fillWallCells(ground, maskedCells(plan.roofRect, plan.roofMask), plan.roofTileId!);
   }
 
   writeLayer(mapData, 0, ground);
