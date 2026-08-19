@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 13 / 39**
+**Progress: 14 / 39**
 
 ---
 
@@ -276,7 +276,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   landing and refuses the wall corner (0, 0). See
   [A landing tile you cannot stand on at all](ROADMAP.md#a-landing-tile-you-cannot-stand-on-at-all).
 
-- [ ] **P5-29 — Write page conditions**
+- [x] **P5-29 — Write page conditions**
   *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic
   gates itself — 62 uses in `Wicked Heart`, against 43 Control Switches and 23 conditional
   branches — and no tool writes one. `create_event` and `update_event` do not touch
@@ -285,6 +285,18 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   respond to it.
   *Done when:* a page's switch / variable / self-switch / item / actor conditions can be set,
   by name where the flag has one, and `describe_event` reads them back.
+  *Done:* `resolvePageConditions` (`src/core/command-flags.ts`) reuses the same `resolveOne`
+  allocator `resolveCommandFlags` runs for commands, since a page condition names the same kind
+  of flag; `requirePageConditionRefs` (`src/core/database-refs.ts`) checks `itemId`/`actorId`
+  the same guard-then-do-nothing way `checkDatabaseRefs` already does. `update_event` gained
+  `pageIndex` (append a new page by giving the next index — `findProperPageIndex` scans pages
+  backwards, so a conditioned page has to follow its fallback) and `trigger`, and routed the
+  previously page-0-only `characterName`/`characterIndex` through it too. `describe_event`
+  needed no changes — `describePageConditions` already rendered all six kinds. Verified end to
+  end over stdio MCP: a named switch allocated once and reused on a second page, a self-switch
+  added, and an unknown `itemId` refused naming Items.json rather than silently writing a dead
+  condition. See
+  [Making a page respond to a flag](ROADMAP.md#making-a-page-respond-to-a-flag).
 
 - [ ] **P5-30 — Fix the random operand on `control_variables`**
   *(turned up by P5-03.)* `convertCommand` emits 5 parameters for code 122. `command122`

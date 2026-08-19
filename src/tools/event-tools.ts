@@ -3,14 +3,19 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { FileHandler } from '../core/file-handler.js';
 import { requireProject } from './project-tools.js';
-import { convertCommand, type Event, type EventCommand } from '../schemas/event.js';
+import { convertCommand, type Event, type EventCommand, type EventPage } from '../schemas/event.js';
 import {
   CommandFlagError,
   describeResolutions,
   resolveCommandFlags,
+  resolvePageConditions,
   unusableFlagIds,
+  usesConditionName,
   usesFlagName,
+  type RawPageConditions,
 } from '../core/command-flags.js';
+import { isUsableId, highestUsableId } from '../core/switches.js';
+import { describePageConditions } from '../core/event-flow.js';
 import {
   battleDesignationOf,
   checkEncounterSource,
@@ -31,6 +36,7 @@ import {
 import {
   checkDatabaseRefs,
   referencesDatabase,
+  requirePageConditionRefs,
   DatabaseRefError,
   DATABASE_NAMES,
   type DatabaseName,
@@ -125,6 +131,110 @@ async function writeMap(dataPath: string, mapId: number, mapData: MapData): Prom
   await FileHandler.writeJson(mapPath, mapData);
 }
 
+/**
+ * Resolve a page's `conditions` argument into the full shape
+ * `Game_Event.meetsConditions` reads, allocating any named switch/variable
+ * and checking any item/actor id against the database — the same split
+ * `add_event_commands` already makes between flag names (System.json) and
+ * database rows (`checkDatabaseRefs`), just for one page's worth of fields
+ * instead of a whole command list.
+ *
+ * Returns `undefined` when the caller gave no `conditions` at all, so
+ * `create_event`/`update_event` can tell "leave this page's conditions
+ * alone" apart from "`{}`", which sets every condition off.
+ */
+async function resolvePageConditionsForTool(
+  project: ReturnType<typeof requireProject>,
+  raw: RawPageConditions | undefined
+): Promise<{ conditions: EventPage['conditions']; notes: string[] } | undefined> {
+  if (raw === undefined) return undefined;
+  const notes: string[] = [];
+
+  let switches: string[] = [];
+  let variables: string[] = [];
+  let system: SystemFile | undefined;
+  const systemPath = path.join(project.dataPath, 'System.json');
+
+  if (usesConditionName(raw)) {
+    system = (await FileHandler.readJsonRaw(systemPath)) as SystemFile;
+    if (!Array.isArray(system.switches) || !Array.isArray(system.variables)) {
+      throw new CommandFlagError(
+        'System.json has no switches/variables arrays. Refusing to guess at one.'
+      );
+    }
+    switches = system.switches;
+    variables = system.variables;
+  }
+
+  const result = resolvePageConditions(raw, switches, variables);
+
+  // Written before the map, so a name that resolved is a name that stays
+  // resolved even if the map write then fails.
+  if (result.changed && system !== undefined) {
+    system.switches = result.switches;
+    system.variables = result.variables;
+    await FileHandler.writeJson(systemPath, system);
+  }
+  notes.push(...describeResolutions(result.resolutions));
+
+  // A raw id past the end is only checkable when System.json was actually
+  // read — an id-only caller with no System.json on disk keeps working, the
+  // same degrade `add_event_commands` uses.
+  if (system !== undefined) {
+    const c = result.conditions;
+    const checks: { active: boolean; id: number; kind: 'switch' | 'variable' }[] = [
+      { active: c.switch1Valid, id: c.switch1Id, kind: 'switch' },
+      { active: c.switch2Valid, id: c.switch2Id, kind: 'switch' },
+      { active: c.variableValid, id: c.variableId, kind: 'variable' },
+    ];
+    for (const check of checks) {
+      if (!check.active) continue;
+      const names = check.kind === 'switch' ? result.switches : result.variables;
+      if (isUsableId(names, check.id)) continue;
+      notes.push(
+        `Warning: ${check.kind} ${check.id} is past the end of System.json's ` +
+          `${check.kind === 'switch' ? 'switches' : 'variables'} array, which reaches ` +
+          `${highestUsableId(names)}. setValue is guarded by \`id < length\`, so this condition ` +
+          `is permanently false. Allocate it first, or use ${
+            check.kind === 'switch' ? 'switch1Name/switch2Name' : 'variableName'
+          }.`
+      );
+    }
+  }
+
+  if (raw.itemId !== undefined || raw.actorId !== undefined) {
+    const tables = await loadDatabaseTables(project.dataPath);
+    requirePageConditionRefs(raw.itemId, raw.actorId, tables, 'conditions');
+  }
+
+  return { conditions: result.conditions, notes };
+}
+
+/**
+ * A page's conditions, human-readable. Every field is optional and independent
+ * — `Game_Event.meetsConditions` ANDs whichever kinds are `*Valid`, so naming
+ * one kind does not require naming any other. switch1/switch2/variable can be
+ * named instead of numbered, the same way `switchName`/`variableName` work on
+ * `add_event_commands`: an existing flag of that name is reused, otherwise one
+ * is allocated exactly as `allocate_switch` would.
+ */
+const conditionsSchema = z.object({
+  switch1Id: z.number().int().positive().optional().describe('Switch 1 must be ON'),
+  switch1Name: z.string().optional().describe('Named switch for condition 1'),
+  switch2Id: z.number().int().positive().optional().describe('Switch 2 must be ON (ANDed with switch 1)'),
+  switch2Name: z.string().optional().describe('Named switch for condition 2'),
+  variableId: z.number().int().positive().optional().describe('Variable that must be >= variableValue'),
+  variableName: z.string().optional().describe('Named variable for the variable condition'),
+  variableValue: z.number().int().optional().describe('Threshold for the variable condition (default 0)'),
+  selfSwitchCh: z.enum(['A', 'B', 'C', 'D']).optional().describe('Self-switch that must be ON'),
+  itemId: z.number().int().positive().optional().describe('Item the party must be carrying'),
+  actorId: z.number().int().positive().optional().describe('Actor that must be in the party'),
+}).optional().describe(
+  'Page conditions. Omitting this leaves the page\'s conditions untouched; passing {} clears ' +
+  'every condition (an unconditioned page — always eligible). Naming a switch/variable/item/' +
+  'actor is checked against the project before anything is written.'
+);
+
 export function registerEventTools(server: McpServer): void {
   // --- list_events ---
   server.tool(
@@ -183,8 +293,9 @@ export function registerEventTools(server: McpServer): void {
       characterIndex: z.number().int().optional().describe('Character sprite index'),
       trigger: z.number().int().min(0).max(4).default(0)
         .describe('Trigger: 0=Action Button, 1=Player Touch, 2=Event Touch, 3=Autorun, 4=Parallel'),
+      conditions: conditionsSchema,
     },
-    async ({ mapId, name, x, y, note, characterName, characterIndex, trigger }) => {
+    async ({ mapId, name, x, y, note, characterName, characterIndex, trigger, conditions }) => {
       try {
         const project = requireProject();
         const mapData = await readMap(project.dataPath, mapId);
@@ -196,6 +307,8 @@ export function registerEventTools(server: McpServer): void {
             'characterName'
           );
         }
+
+        const resolvedConditions = await resolvePageConditionsForTool(project, conditions);
 
         // Find next event ID
         let newId = 1;
@@ -225,6 +338,7 @@ export function registerEventTools(server: McpServer): void {
           page.image.characterName = characterName;
           page.image.characterIndex = characterIndex ?? 0;
         }
+        if (resolvedConditions) page.conditions = resolvedConditions.conditions;
 
         const event: Event = {
           id: newId,
@@ -246,14 +360,24 @@ export function registerEventTools(server: McpServer): void {
 
         logger.info(`Event created: [${newId}] "${name}" on map ${mapId} at (${x}, ${y})`);
 
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `Event created!\n\nID: ${newId}\nName: ${name}\nMap: ${mapId}\nPosition: (${x}, ${y})\nTrigger: ${trigger}`,
-          }],
-        };
+        const lines = [
+          `Event created!`,
+          '',
+          `ID: ${newId}`,
+          `Name: ${name}`,
+          `Map: ${mapId}`,
+          `Position: (${x}, ${y})`,
+          `Trigger: ${trigger}`,
+        ];
+        if (resolvedConditions) {
+          const summary = describePageConditions(page);
+          lines.push(`Conditions: ${summary.length > 0 ? summary.join(' AND ') : '(none — always eligible)'}`);
+          lines.push(...resolvedConditions.notes);
+        }
+
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
-        if (error instanceof MapRefError) {
+        if (error instanceof MapRefError || error instanceof CommandFlagError || error instanceof DatabaseRefError) {
           return { content: [{ type: 'text' as const, text: error.message }], isError: true };
         }
         return {
@@ -270,7 +394,8 @@ export function registerEventTools(server: McpServer): void {
   // --- update_event ---
   server.tool(
     'update_event',
-    'Update event properties (name, position, note, character sprite).',
+    'Update event properties (name, position, note) and one page\'s sprite, trigger and ' +
+    'conditions.',
     {
       mapId: z.number().int().positive().describe('Map ID'),
       eventId: z.number().int().positive().describe('Event ID'),
@@ -278,13 +403,24 @@ export function registerEventTools(server: McpServer): void {
       x: z.number().int().optional().describe('New X position'),
       y: z.number().int().optional().describe('New Y position'),
       note: z.string().optional().describe('New event note'),
+      pageIndex: z.number().int().min(0).default(0).describe(
+        'Which page characterName/characterIndex/trigger/conditions apply to (0-based). Equal ' +
+        'to the event\'s current page count to append a new page — pages are evaluated bottom-' +
+        'to-top by the engine, first whose conditions hold wins, so a conditioned page belongs ' +
+        'after its unconditioned fallback. Cannot skip ahead of the next free index.'
+      ),
       characterName: z.string().optional().describe(
-        'Character sprite name (applies to page 1). Must be in img/characters — see ' +
+        'Character sprite name for pageIndex. Must be in img/characters — see ' +
         'list_character_sheets.'
       ),
-      characterIndex: z.number().int().optional().describe('Character sprite index (applies to page 1)'),
+      characterIndex: z.number().int().optional().describe('Character sprite index for pageIndex'),
+      trigger: z.number().int().min(0).max(4).optional().describe(
+        'Trigger for pageIndex: 0=Action Button, 1=Player Touch, 2=Event Touch, 3=Autorun, ' +
+        '4=Parallel'
+      ),
+      conditions: conditionsSchema,
     },
-    async ({ mapId, eventId, name, x, y, note, characterName, characterIndex }) => {
+    async ({ mapId, eventId, name, x, y, note, pageIndex, characterName, characterIndex, trigger, conditions }) => {
       try {
         const project = requireProject();
         const mapData = await readMap(project.dataPath, mapId);
@@ -302,29 +438,59 @@ export function registerEventTools(server: McpServer): void {
         if (y !== undefined) event.y = y;
         if (note !== undefined) event.note = note;
 
-        if (characterName !== undefined && event.pages.length > 0) {
-          requireCharacterSheet(
-            characterName,
-            await loadCharacterSheets(project.path),
-            'characterName'
-          );
-          event.pages[0].image.characterName = characterName;
-          if (characterIndex !== undefined) {
-            event.pages[0].image.characterIndex = characterIndex;
+        if (pageIndex > event.pages.length) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `pageIndex ${pageIndex} is past the end — event ${eventId} has ` +
+                `${event.pages.length} page(s), so the next addable index is ${event.pages.length}. ` +
+                'Pages are a dense array in order; there is no slot to leave empty ahead of one.',
+            }],
+            isError: true,
+          };
+        }
+
+        const touchesPage =
+          characterName !== undefined || characterIndex !== undefined ||
+          trigger !== undefined || conditions !== undefined;
+        const appending = pageIndex === event.pages.length;
+
+        const resolvedConditions = await resolvePageConditionsForTool(project, conditions);
+
+        if (touchesPage) {
+          if (appending) event.pages.push(defaultEventPage());
+          const page = event.pages[pageIndex];
+
+          if (characterName !== undefined) {
+            requireCharacterSheet(
+              characterName,
+              await loadCharacterSheets(project.path),
+              'characterName'
+            );
+            page.image.characterName = characterName;
+            if (characterIndex !== undefined) page.image.characterIndex = characterIndex;
           }
+          if (trigger !== undefined) page.trigger = trigger;
+          if (resolvedConditions) page.conditions = resolvedConditions.conditions;
         }
 
         await writeMap(project.dataPath, mapId, mapData);
         await project.getVersionSync().bump();
 
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `Event ${eventId} on map ${mapId} updated.`,
-          }],
-        };
+        const lines = [`Event ${eventId} on map ${mapId} updated.`];
+        if (appending && touchesPage) lines.push(`Page ${pageIndex} added (now ${event.pages.length} page(s)).`);
+        if (resolvedConditions) {
+          const summary = describePageConditions(event.pages[pageIndex]);
+          lines.push(
+            `Page ${pageIndex} conditions: ` +
+              (summary.length > 0 ? summary.join(' AND ') : '(none — always eligible)')
+          );
+          lines.push(...resolvedConditions.notes);
+        }
+
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (error) {
-        if (error instanceof MapRefError) {
+        if (error instanceof MapRefError || error instanceof CommandFlagError || error instanceof DatabaseRefError) {
           return { content: [{ type: 'text' as const, text: error.message }], isError: true };
         }
         return {

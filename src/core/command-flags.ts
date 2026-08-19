@@ -6,6 +6,7 @@ import {
   SwitchError,
   type FlagKind,
 } from './switches.js';
+import type { EventPageCondition } from '../schemas/event.js';
 
 /**
  * Flag *names* in an event command list.
@@ -39,9 +40,12 @@ import {
  * anything about how variables are actually used, and nothing was invented for
  * them beyond the shape the engine defines.
  *
- * Page conditions are the single largest count (62) and are deliberately *not*
- * handled here: they are not commands, and no tool writes one today except the
- * generators that build their own pages.
+ * Page conditions are the single largest count (62) — more than Control
+ * Switches and conditional branches combined — and `resolvePageConditions`
+ * handles them, on the same `allocateFlag` primitive but through its own
+ * small resolver rather than a `NAME_KEYS` entry: a page's `conditions` is not
+ * a command (it has no `type` to dispatch on), so it does not fit the
+ * per-command loop `resolveCommandFlags` runs.
  *
  * This module is pure. It rewrites names arrays and never reads a file; the
  * caller decides whether to persist them.
@@ -385,6 +389,110 @@ export function unusableFlagIds(
     }
   }
   return bad;
+}
+
+/** What a caller can name on a page's conditions. Already Zod-validated by the tool. */
+export interface RawPageConditions {
+  switch1Id?: number;
+  switch1Name?: string;
+  switch2Id?: number;
+  switch2Name?: string;
+  variableId?: number;
+  variableName?: string;
+  variableValue?: number;
+  selfSwitchCh?: string;
+  itemId?: number;
+  actorId?: number;
+}
+
+/** Whether a conditions object names a switch or variable at all. */
+export function usesConditionName(conditions: RawPageConditions): boolean {
+  return (
+    conditions.switch1Name !== undefined ||
+    conditions.switch2Name !== undefined ||
+    conditions.variableName !== undefined
+  );
+}
+
+export interface ResolveConditionsResult {
+  /** The full 13-field shape `Game_Event.meetsConditions` reads. */
+  conditions: EventPageCondition;
+  switches: string[];
+  variables: string[];
+  /** One entry per distinct name, in the order the names were first seen. */
+  resolutions: FlagResolution[];
+  /** True when either array changed and System.json needs writing. */
+  changed: boolean;
+}
+
+/** A name if given, else a raw id if given, else "not this kind at all". */
+function pick(
+  arrays: Arrays,
+  kind: FlagKind,
+  name: string | undefined,
+  id: number | undefined,
+  seen: Map<string, FlagResolution>
+): number | undefined {
+  if (name === undefined && id === undefined) return undefined;
+  if (name === undefined) return id;
+  return resolveOne(arrays, kind, name, id, seen);
+}
+
+/**
+ * Turn a page's `switch1Name` / `switch2Name` / `variableName` into ids, the
+ * same allocation `resolveCommandFlags` runs for a command list — reusing
+ * `resolveOne` directly, since a page condition and a `control_switches`
+ * command name the same kind of flag.
+ *
+ * This is a **full replace, not a merge**: the result is the complete
+ * six-kind shape the engine reads, with exactly the kinds the caller named
+ * turned on and everything else left at `blankConditions()`'s defaults —
+ * `*Id: 1`, every `*Valid: false`. A caller clearing a page's conditions
+ * passes `{}` rather than needing a separate "unset" argument.
+ *
+ * `itemId` / `actorId` need no allocation — they name a database row, not a
+ * flag — so they pass straight through; checking they exist is
+ * `requirePageConditionRefs`'s job in `database-refs.ts`, the same split
+ * `add_event_commands` already makes between flag names and database rows.
+ */
+export function resolvePageConditions(
+  raw: RawPageConditions,
+  switches: string[],
+  variables: string[]
+): ResolveConditionsResult {
+  const arrays: Arrays = { switch: [...switches], variable: [...variables] };
+  const seen = new Map<string, FlagResolution>();
+
+  const switch1Id = pick(arrays, 'switch', raw.switch1Name, raw.switch1Id, seen);
+  const switch2Id = pick(arrays, 'switch', raw.switch2Name, raw.switch2Id, seen);
+  const variableId = pick(arrays, 'variable', raw.variableName, raw.variableId, seen);
+
+  const conditions: EventPageCondition = {
+    switch1Valid: switch1Id !== undefined,
+    switch1Id: switch1Id ?? 1,
+    switch2Valid: switch2Id !== undefined,
+    switch2Id: switch2Id ?? 1,
+    variableValid: variableId !== undefined,
+    variableId: variableId ?? 1,
+    variableValue: raw.variableValue ?? 0,
+    selfSwitchValid: raw.selfSwitchCh !== undefined,
+    selfSwitchCh: raw.selfSwitchCh ?? 'A',
+    itemValid: raw.itemId !== undefined,
+    itemId: raw.itemId ?? 1,
+    actorValid: raw.actorId !== undefined,
+    actorId: raw.actorId ?? 1,
+  };
+
+  const sameArray = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((n, i) => n === b[i]);
+
+  return {
+    conditions,
+    switches: arrays.switch,
+    variables: arrays.variable,
+    resolutions: [...seen.values()],
+    changed: !sameArray(arrays.switch, switches) || !sameArray(arrays.variable, variables),
+  };
 }
 
 /** One line per resolution, for the tool to report what it allocated. */

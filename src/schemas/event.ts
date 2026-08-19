@@ -70,6 +70,7 @@ export const EventSchema = z.object({
 });
 
 export type EventCommand = z.infer<typeof EventCommandSchema>;
+export type EventPageCondition = z.infer<typeof EventPageConditionSchema>;
 export type EventPage = z.infer<typeof EventPageSchema>;
 export type Event = z.infer<typeof EventSchema>;
 

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveCommandFlags,
+  resolvePageConditions,
   unusableFlagIds,
   describeResolutions,
+  usesConditionName,
   usesFlagName,
   CommandFlagError,
 } from '../../src/core/command-flags.js';
@@ -371,5 +373,139 @@ describe('usesFlagName', () => {
       expect(usesFlagName({ type: 'x', [key]: 'A name' })).toBe(true);
     }
     expect(usesFlagName({ type: 'battle_processing', troopId: 1 })).toBe(false);
+  });
+});
+
+describe('usesConditionName', () => {
+  it('is true for any of the three name fields', () => {
+    expect(usesConditionName({ switch1Name: 'Gate open' })).toBe(true);
+    expect(usesConditionName({ switch2Name: 'Gate open' })).toBe(true);
+    expect(usesConditionName({ variableName: 'Gold' })).toBe(true);
+  });
+
+  it('is false for raw ids, self-switches and database refs', () => {
+    expect(usesConditionName({ switch1Id: 3, selfSwitchCh: 'A', itemId: 1, actorId: 1 })).toBe(false);
+    expect(usesConditionName({})).toBe(false);
+  });
+});
+
+describe('resolvePageConditions', () => {
+  it('defaults to every condition off — blankConditions() shape', () => {
+    const result = resolvePageConditions({}, fresh(), fresh());
+    expect(result.conditions).toEqual({
+      switch1Valid: false, switch1Id: 1,
+      switch2Valid: false, switch2Id: 1,
+      variableValid: false, variableId: 1, variableValue: 0,
+      selfSwitchValid: false, selfSwitchCh: 'A',
+      itemValid: false, itemId: 1,
+      actorValid: false, actorId: 1,
+    });
+    expect(result.changed).toBe(false);
+  });
+
+  it('allocates a switch for switch1Name and turns switch1Valid on', () => {
+    const result = resolvePageConditions({ switch1Name: 'Village gate open' }, fresh(), fresh());
+    expect(result.conditions.switch1Valid).toBe(true);
+    expect(result.conditions.switch1Id).toBe(1);
+    expect(result.switches[1]).toBe('Village gate open');
+    expect(result.changed).toBe(true);
+    expect(result.resolutions).toHaveLength(1);
+  });
+
+  it('reuses an existing flag of that name rather than allocating a new one', () => {
+    const switches = fresh();
+    switches[5] = 'Village gate open';
+    const result = resolvePageConditions({ switch1Name: 'Village gate open' }, switches, fresh());
+    expect(result.conditions.switch1Id).toBe(5);
+    expect(result.changed).toBe(false);
+    expect(result.resolutions[0].created).toBe(false);
+  });
+
+  it('resolves switch1 and switch2 independently, even to the same name', () => {
+    const result = resolvePageConditions(
+      { switch1Name: 'A', switch2Name: 'B' },
+      fresh(),
+      fresh()
+    );
+    expect(result.conditions.switch1Valid).toBe(true);
+    expect(result.conditions.switch2Valid).toBe(true);
+    expect(result.conditions.switch1Id).not.toBe(result.conditions.switch2Id);
+  });
+
+  it('leaves a raw switch1Id alone — no allocation, no name to resolve', () => {
+    const result = resolvePageConditions({ switch1Id: 9 }, fresh(), fresh());
+    expect(result.conditions.switch1Valid).toBe(true);
+    expect(result.conditions.switch1Id).toBe(9);
+    expect(result.changed).toBe(false);
+  });
+
+  it('claims switch1Id as the id when both switch1Id and switch1Name are given', () => {
+    const result = resolvePageConditions(
+      { switch1Id: 9, switch1Name: 'Village gate open' },
+      fresh(),
+      fresh()
+    );
+    expect(result.conditions.switch1Id).toBe(9);
+    expect(result.switches[9]).toBe('Village gate open');
+  });
+
+  it('resolves a named variable and keeps variableValue as given', () => {
+    const result = resolvePageConditions(
+      { variableName: 'Gold', variableValue: 100 },
+      fresh(),
+      fresh()
+    );
+    expect(result.conditions.variableValid).toBe(true);
+    expect(result.conditions.variableValue).toBe(100);
+    expect(result.variables[1]).toBe('Gold');
+  });
+
+  it('defaults variableValue to 0 when not given', () => {
+    const result = resolvePageConditions({ variableId: 4 }, fresh(), fresh());
+    expect(result.conditions.variableValue).toBe(0);
+  });
+
+  it('turns selfSwitchValid on from selfSwitchCh, with no allocation involved', () => {
+    const result = resolvePageConditions({ selfSwitchCh: 'B' }, fresh(), fresh());
+    expect(result.conditions.selfSwitchValid).toBe(true);
+    expect(result.conditions.selfSwitchCh).toBe('B');
+    expect(result.changed).toBe(false);
+    expect(result.resolutions).toHaveLength(0);
+  });
+
+  it('turns itemValid/actorValid on straight from the given id, unresolved', () => {
+    const result = resolvePageConditions({ itemId: 7, actorId: 2 }, fresh(), fresh());
+    expect(result.conditions.itemValid).toBe(true);
+    expect(result.conditions.itemId).toBe(7);
+    expect(result.conditions.actorValid).toBe(true);
+    expect(result.conditions.actorId).toBe(2);
+  });
+
+  it('sets every kind at once when every kind is named', () => {
+    const result = resolvePageConditions(
+      {
+        switch1Name: 'A', switch2Name: 'B', variableName: 'Gold', variableValue: 50,
+        selfSwitchCh: 'C', itemId: 3, actorId: 1,
+      },
+      fresh(),
+      fresh()
+    );
+    const c = result.conditions;
+    expect(c.switch1Valid && c.switch2Valid && c.variableValid).toBe(true);
+    expect(c.selfSwitchValid && c.itemValid && c.actorValid).toBe(true);
+  });
+
+  it('does not mutate the input arrays', () => {
+    const switches = fresh();
+    resolvePageConditions({ switch1Name: 'Village gate open' }, switches, fresh());
+    expect(switches.every((n) => n === '')).toBe(true);
+  });
+
+  it('refuses a name already carried by a different id, the same as resolveCommandFlags', () => {
+    const switches = fresh();
+    switches[3] = 'Village gate open';
+    expect(() =>
+      resolvePageConditions({ switch1Id: 4, switch1Name: 'Village gate open' }, switches, fresh())
+    ).toThrow(CommandFlagError);
   });
 });

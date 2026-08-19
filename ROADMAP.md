@@ -1738,9 +1738,10 @@ reused rather than burning id 2; `startId: 3` alongside a new name claimed exact
 written JSON is `121 [1,1,0]`, `111 [0,1,0]` and `111 [1,1,0,3,1]` — the parameter shapes
 `command121` and `command111` read.
 
-**Still open here:** switch page conditions are the largest single count in the measurement (62)
-and no tool writes one at all, outside the generators that build their own pages — tracked as
-**P5-29**. `control_variables` with `operand: 2` (random) emits five parameters where
+**Still open here:** switch page conditions were the largest single count in the measurement (62)
+and no tool wrote one at all, outside the generators that build their own pages — now closed, see
+[Making a page respond to a flag](#making-a-page-respond-to-a-flag). `control_variables` with
+`operand: 2` (random) emits five parameters where
 `command122` reads `params[5]` as the range top, giving `Math.randomInt(NaN)` — tracked as
 **P5-30**. The read side of a variable operand (`params[4]` on 122, `params[3]` on a 111 type 1)
 still takes an id rather than a name; the corpus shows 0 uses of either, so nothing argues for it
@@ -2493,6 +2494,83 @@ frozen on arrival, stranded in a corner.
 `Map002.json` / `Tilesets.json` files, read back through `loadTransferInventory` and `checkMapRefs`
 from the built `dist/`. A landing on the open floor was accepted; a landing on the wall corner
 (0, 0) was refused, naming `canPass` and "frozen in place".
+
+### Making a page respond to a flag
+
+P5-03's own measurement is what set this task up and then left it undone: **switch page
+conditions are the single most common way real event logic gates itself** — 62 uses in
+`Wicked Heart`, more than Control Switches (43) and conditional branches (23) combined — and
+until now nothing wrote one. `create_event`/`update_event` never touched `page.conditions` at all;
+only the three generators that build their own pages (`lever.ts`, `locked-door.ts`, `vault.ts`)
+ever set one, and each of those sets exactly one kind (`switch1` or self-switch). A caller could
+allocate a switch and flip it, but nothing they built could ever notice.
+
+**The engine's shape**, from `Game_Event.prototype.meetsConditions` (byte-identical between
+corescript v1.4.4 and v1.9.0, so this is stable across every version on disk): six independent
+kinds, each `*Valid` flag gating one check, all ANDed together with no bailout for "nothing set" —
+it falls through every `if` and returns `true`. `switch1` and `switch2` are two separate switches,
+not a range; `variable` compares `>=`, not `==`; `selfSwitchCh` is a literal `'A'|'B'|'C'|'D'` with
+no allocation, since `Game_SelfSwitches` is a plain dictionary; `item`/`actor` read straight into a
+truthiness/membership check with no guard of their own.
+
+**Two different failure classes, so two different modules check them.** `switch1`/`switch2`/
+`variable` name a *flag* — the same allocation `resolveCommandFlags` already runs for a command
+list, so `resolvePageConditions` in `command-flags.ts` reuses `resolveOne` directly rather than
+duplicating it. `item`/`actor` name a *database row* — the same guard-then-do-nothing shape
+`checkDatabaseRefs` already catches for other commands, so `requirePageConditionRefs` in
+`database-refs.ts` reuses `exists`/`rowCount`/`highestId`. Neither function is a drop-in for the
+other's job: a page's `conditions` object has no `type` field to dispatch `NAME_KEYS` on, and it is
+not a command list `checkDatabaseRefs` can walk — both needed a small resolver of their own rather
+than a new entry in an existing one.
+
+**Full replace, not a merge.** `resolvePageConditions` always returns the complete 13-field shape
+`meetsConditions` reads — every kind the caller did not name comes back at `blankConditions()`'s
+defaults (`*Id: 1`, every `*Valid: false`). A caller clearing a page's conditions later passes
+`conditions: {}` rather than needing a second "unset" argument.
+
+**The tool surface had to grow past "one page" to be worth having.** `findProperPageIndex` scans
+an event's pages *backwards* and takes the first whose conditions hold — so a conditioned page has
+to sit *after* its unconditioned fallback, exactly the two-page shape `lever.ts` and
+`locked-door.ts` already build for themselves. `update_event` only ever touched `pages[0]` and
+could not add a page at all; a caller could set conditions on an event's only page (which is a
+real, useful shape — "this event does not exist until flagged") but could never build the more
+common gate-a-*second*-page pattern. `update_event` now takes `pageIndex`, defaulting to 0 and
+accepted up to `pages.length` — equal to the count appends a new page (cloned via
+`defaultEventPage()`), anything higher is refused for skipping ahead of a dense array. Once
+`pageIndex` existed as a targeting mechanism, `characterName`/`characterIndex` (previously
+hardcoded to `pages[0]`) and a new `trigger` param were routed through it too — leaving them
+pinned to page 0 while conditions could target any page would have made the appended page
+unable to look or behave differently from the one it is meant to override.
+
+**What it refuses, each naming what was wrong:** the same flag-naming refusals P5-03 already
+covers (an id already carrying a different name, a range mismatch — n/a here since a condition
+names exactly one flag) apply through the shared `resolveOne`; a `pageIndex` past the next addable
+slot; an `itemId`/`actorId` not in Items.json/Actors.json, with the message naming the row count
+and explaining the *silent* failure (`Game_Event.meetsConditions` does not throw — it just makes
+the condition permanently false, which for a single-page event looks exactly like an event that
+does not exist); and an unnamed switch/variable id past the end of System.json's array, the same
+`isUsableId` warning `add_event_commands` already gives, checked only when a name was actually
+used and System.json was therefore already read — an id-only caller with no System.json on disk is
+unaffected, the same degrade-to-unchecked rule this whole area follows.
+
+**`describe_event` needed no changes.** `describePageConditions` in `event-flow.ts` already
+rendered all six condition kinds in plain English — nothing in this task touched it, and `describe_
+event`/`describe_map_events` picked up every new field for free.
+
+**Verified end to end**, driven over stdio MCP against a scratch project: `create_event` with
+`switch1Name: "Bridge repaired"` allocated switch 1 and reported it; a second event's
+`update_event` with `pageIndex: 1` appended a page, *reused* switch 1 for the same name rather than
+allocating a second one, and added a self-switch condition; `describe_event` on both events showed
+`switch 1 is ON` and `switch 1 is ON AND self-switch A is ON` respectively; and `itemId: 999`
+against a fixture with one item row was refused, naming Items.json and "permanently false" rather
+than crashing or silently writing a dead condition.
+
+**Not measured, stated instead:** whether item/actor page conditions are common in real projects.
+`scripts/measure-flag-usage.mjs`'s existing counter folds `switch1`/`switch2` together and does not
+count `itemValid`/`actorValid` at all, so unlike the switch/variable numbers above, "item and actor
+conditions are checked the same way" is an application of the codebase's established
+guard-then-do-nothing pattern to a new field, not a count-backed claim about how often either kind
+is used in the wild.
 
 ### Tool ergonomics, from building a town by hand
 

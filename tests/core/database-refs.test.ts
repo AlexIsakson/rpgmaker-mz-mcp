@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   checkDatabaseRefs,
   referencesDatabase,
+  requirePageConditionRefs,
   namedRows,
   rowCount,
   highestId,
@@ -275,5 +276,46 @@ describe('a battle whose troop is not a static id', () => {
         tables
       )
     ).toThrow(/exactly one source/);
+  });
+});
+
+describe('requirePageConditionRefs', () => {
+  it('accepts real item and actor ids', () => {
+    expect(() => requirePageConditionRefs(1, 1, tables, 'conditions')).not.toThrow();
+    expect(() => requirePageConditionRefs(2, 2, tables, 'conditions')).not.toThrow();
+  });
+
+  it('ignores whichever id is undefined — that condition kind was not set', () => {
+    expect(() => requirePageConditionRefs(undefined, undefined, tables, 'conditions')).not.toThrow();
+    expect(() => requirePageConditionRefs(1, undefined, tables, 'conditions')).not.toThrow();
+    expect(() => requirePageConditionRefs(undefined, 1, tables, 'conditions')).not.toThrow();
+  });
+
+  it('refuses an item id past the end of Items.json', () => {
+    expect(() => requirePageConditionRefs(9, undefined, tables, 'conditions')).toThrow(
+      DatabaseRefError
+    );
+  });
+
+  it('refuses an actor id past the end of Actors.json', () => {
+    expect(() => requirePageConditionRefs(undefined, 9, tables, 'conditions')).toThrow(
+      DatabaseRefError
+    );
+  });
+
+  it('names the subject and explains the silent-false failure, not a crash', () => {
+    let message = '';
+    try {
+      requirePageConditionRefs(9, undefined, tables, "page 1's conditions");
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("page 1's conditions");
+    expect(message).toContain('Items.json');
+    expect(message).toContain('permanently false');
+  });
+
+  it('makes no claim about a table that could not be read', () => {
+    expect(() => requirePageConditionRefs(999, 999, {}, 'conditions')).not.toThrow();
   });
 });

@@ -154,7 +154,8 @@ export function highestId(table: (DatabaseRow | null)[]): number {
   return Math.max(0, table.length - 1);
 }
 
-function exists(table: (DatabaseRow | null)[] | undefined, id: number): boolean {
+/** Exported for `requirePageConditionRefs`, which checks the same shape outside a command list. */
+export function exists(table: (DatabaseRow | null)[] | undefined, id: number): boolean {
   if (table === undefined) return true; // not loaded — no claim either way
   return id >= 0 && id < table.length && table[id] !== null && table[id] !== undefined;
 }
@@ -339,6 +340,47 @@ function checkGoods(
     }
     const kindName = ['item', 'weapon', 'armor'][kind];
     requireRow(tables, db, dataId, index, 'shop_processing', `a goods row stocking ${kindName} ${dataId}`);
+  }
+}
+
+/**
+ * Refuse a page's `itemId` / `actorId` condition when it names a row that is
+ * not there.
+ *
+ * Same guard-then-do-nothing shape as `requireRow`, just outside a command
+ * list: `Game_Event.meetsConditions` reads `$dataItems[c.itemId]` and
+ * `$gameActors.actor(c.actorId)` straight into a truthiness/membership check,
+ * so a bad id does not fail the page load — it makes the condition
+ * permanently false. For a single-page event that is a page that silently
+ * never shows; for a second page gating new behaviour, it is a page that
+ * silently never takes over from the first.
+ *
+ * `itemId` / `actorId` are `undefined` when that condition kind was not set —
+ * the caller passes exactly what `resolvePageConditions` marked `*Valid`.
+ */
+export function requirePageConditionRefs(
+  itemId: number | undefined,
+  actorId: number | undefined,
+  tables: DatabaseTables,
+  subject: string
+): void {
+  if (itemId !== undefined && !exists(tables.items, itemId)) {
+    const table = tables.items!;
+    throw new DatabaseRefError(
+      `${subject} names item ${itemId}, which is not in Items.json — that file holds ` +
+        `${rowCount(table)} row(s), ids 1-${highestId(table)}. Game_Event.meetsConditions reads ` +
+        '$dataItems[itemId] straight into a truthiness check, so a bad id does not error — it ' +
+        'makes the condition permanently false.'
+    );
+  }
+  if (actorId !== undefined && !exists(tables.actors, actorId)) {
+    const table = tables.actors!;
+    throw new DatabaseRefError(
+      `${subject} names actor ${actorId}, which is not in Actors.json — that file holds ` +
+        `${rowCount(table)} row(s), ids 1-${highestId(table)}. Game_Event.meetsConditions calls ` +
+        '$gameActors.actor(actorId) and checks party membership, so a bad id is the same silent ' +
+        'always-false condition.'
+    );
   }
 }
 
