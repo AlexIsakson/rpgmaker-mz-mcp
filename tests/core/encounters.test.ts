@@ -9,6 +9,7 @@ import {
   type TroopRow,
 } from '../../src/core/encounters.js';
 import { paintRegionRect, paintRegionTiles } from '../../src/core/regions.js';
+import { surveyArrival, describeArrival, collectTransferArrivals, newGameArrival } from '../../src/core/arrival.js';
 import { tileIndex } from '../../src/core/map-layers.js';
 import { TILE_ID_A3, makeAutotileId } from '../../src/core/autotile.js';
 import { PASSAGE_BIT, FLAG_STAR } from '../../src/core/map-grid.js';
@@ -68,8 +69,21 @@ const split = () => makeMap(Array.from({ length: 6 }, () => '...#....'));
 
 const open = () => makeMap(Array.from({ length: 6 }, () => '.'.repeat(8)));
 
-const plan = (map: MapData, rows: EncounterRowInput[], options = {}) =>
-  planEncounters(map, FLAGS, rows, { troops: TROOPS, ...options });
+/** The reachable grid the tools build, so the tests exercise the same path. */
+const reach = (map: MapData, starts: { x: number; y: number }[] = []) =>
+  surveyArrival(map, FLAGS, starts.map((s) => ({ ...s, source: 'given' as const }))).reachable;
+
+const plan = (
+  map: MapData,
+  rows: EncounterRowInput[],
+  options: { start?: { x: number; y: number }; encounterStep?: number } = {}
+) => {
+  const { start, ...rest } = options;
+  return planEncounters(map, reach(map, start ? [start] : []), rows, {
+    troops: TROOPS,
+    ...rest,
+  });
+};
 
 describe('planEncounters — what gets written', () => {
   it('writes the engine field order and defaults weight to 1', () => {
@@ -175,7 +189,7 @@ describe('planEncounters — reachability, which is the half a tile view cannot 
     map.data[tileIndex(map.width, map.height, 4, 2, 1)] = WALL;
     paintRegionTiles(map, [{ x: 4, y: 2, regionId: 5 }]);
 
-    const survey = surveyEncounterRegions(map, FLAGS);
+    const survey = surveyEncounterRegions(map, reach(map));
     expect(survey.get(5)).toEqual({ regionId: 5, tiles: 1, reachable: 0 });
 
     let message = '';
@@ -192,7 +206,7 @@ describe('planEncounters — reachability, which is the half a tile view cannot 
     const map = split();
     // Region 2 sits east of the wall; the player starts west of it.
     paintRegionRect(map, { x: 5, y: 1, width: 2, height: 3 }, 2);
-    expect(surveyEncounterRegions(map, FLAGS, { x: 0, y: 1 }).get(2)).toEqual({
+    expect(surveyEncounterRegions(map, reach(map, [{ x: 0, y: 1 }])).get(2)).toEqual({
       regionId: 2,
       tiles: 6,
       reachable: 0,
@@ -295,14 +309,15 @@ describe('planEncounters — the odds, which are per zone and not per row', () =
 
 describe('planEncounters — degrading rather than guessing', () => {
   it('takes an id on trust and says so when Troops.json is unreadable', () => {
-    const result = planEncounters(open(), FLAGS, [{ troopId: 42 }], { troops: undefined });
+    const map = open();
+    const result = planEncounters(map, reach(map), [{ troopId: 42 }], { troops: undefined });
     expect(result.rows[0].troopId).toBe(42);
     expect(result.notes.join(' ')).toContain('could not be read');
   });
 
   it('refuses a name when there is nothing to look it up in', () => {
     expect(() =>
-      planEncounters(open(), FLAGS, [{ troopName: 'Crow*2' }], { troops: undefined })
+      planEncounters(open(), reach(open()), [{ troopName: 'Crow*2' }], { troops: undefined })
     ).toThrow(/could not be read/);
   });
 

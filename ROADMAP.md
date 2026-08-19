@@ -2336,13 +2336,81 @@ and points at `paint_regions`; with an everywhere-row added it is accepted, and 
 `reachableGrid` was split out of `analyseWalkability` for this, so the encounter check and the
 walkability report cannot disagree about which area is the player's.
 
-**Still open.** `checkEncounterSource` has no way to be told where the player arrives, so it
-assumes the largest walkable area — the assumption `analyseWalkability`'s own documentation says
-is wrong on an interior, where a room's wall tops out-number the room. A designation-2 battle
-inside a small room could be refused for a region that is perfectly reachable from where the
-player actually starts. That is P5-38. Nothing here chooses *which* troop suits a floor's depth
-either; total member exp is derivable (`newdata` runs 20, 20, 30, 30, 100 across its five
-troops) but the ordering is P5-17's to make.
+**Still open.** ~~`checkEncounterSource` has no way to be told where the player arrives, so it
+assumes the largest walkable area.~~ *Fixed by P5-38* — see
+[The largest area is not where the player is](#the-largest-area-is-not-where-the-player-is).
+Nothing here chooses *which* troop suits a floor's depth; total member exp is derivable
+(`newdata` runs 20, 20, 30, 30, 100 across its five troops) but the ordering is P5-17's to make.
+
+### The largest area is not where the player is
+
+Every reachability question in the repo so far has answered "where is the player" with "the
+biggest connected blob". `analyseWalkability` has always said in its own documentation that this
+is wrong on an interior — a room's wall tops are passable *along themselves* in the RTP tilesets,
+so the ring around a room out-numbers the room. That was an argument. `scripts/measure-arrival.mjs`
+makes it a count, over the **677 maps whose tileset carries real passage flags**:
+
+- **619 of 677 (91.4%) have more than one walkable area.** "Largest" is a real choice on almost
+  every map, not a formality.
+- **159 maps are transferred into, carrying 394 arrival points** — 2.5 per map, which is why
+  `surveyArrival` takes a list and unions the result instead of picking one.
+- **36 of those 394 (9.1%), on 20 maps, land outside the largest area.** And when the guess is
+  wrong it is not wrong by a little: `Wicked Heart` map 25 has a largest area of 627 tiles
+  against 65 reachable from where the player lands; map 59 is 516 against 11; map 19 is 142
+  against 24.
+- **24 of the 394 land on a tile the player cannot stand on at all.** Those contribute nothing
+  rather than dragging a whole area in. (Refusing them outright is P5-36.)
+- **Events are not a usable stand-in.** Of 2031 events, 1278 sit outside the largest area and
+  **992 of those stand on an impassable tile**, because doors, signs and clutter are events too.
+  142 maps have no event in their largest area at all. The cheap local signal is the wrong one.
+
+**What the engine says.** `Game_Interpreter.command201` is the only route on to a map besides the
+new game position:
+
+```js
+command201: if (params[0] === 0) { mapId = params[1]; x = params[2]; y = params[3]; }
+            $gamePlayer.reserveTransfer(mapId, x, y, params[4], params[5]);
+```
+
+so a literal transfer names the exact tile, and `DataManager.setupNewGame` uses `System.json`'s
+`startMapId` / `startX` / `startY` for the first one. `src/core/arrival.ts` collects both,
+`reachableFromAny` in `walkability.ts` unions the areas they land in from a single area survey,
+and `surveyArrival` reports what it assumed. `add_event_commands`, `set_map_encounters` and
+`get_map_encounters` all take `startX`/`startY` to override it, and all three print the arrival
+line, so a refusal always says where its belief came from.
+
+**Two limits, stated because nothing on disk settles them.** A transfer at designation 1 reads
+its destination from variables and cannot be resolved from a file — 0 of the 766 transfers
+measured in P5-35 use it, so nothing is missed today. And vehicles move the player without a
+transfer: `Game_Player.getOffVehicle` can set them down on a shore no `command201` names. A
+derived arrival is a strong default, not a proof.
+
+**The two checks now agree.** That was the point of the task. Driven over stdio MCP against
+`Wicked Heart` map 8, with region 9 painted into the 104-tile area walled off from the main one
+and both calls given `startX: 27, startY: 1`: `set_map_encounters` reports `region 9 — 6
+tile(s) — Rat1 71.4%, Crab2 28.6%`, and `add_event_commands` reports `2 of 2 row(s) can be
+picked`. Before this, the battle side used the largest area, said `1 of 2`, and warned about a
+region that was perfectly reachable from where the player really was.
+
+**What the sweep turned up in the user's own project.** Map 32 of `Wicked Heart` carries
+`201 [0,59,0,49,0,0]` — a transfer to map 59 at (0, 49). That tile is passable down, left and
+up but **not right**, so `Game_CharacterBase.canPass` blocks every attempt to leave column 0 and
+the player can walk 11 tiles of a 13x50 map. The derivation is right and the map is wrong. This
+is a class P5-36 does not cover: it checks that a landing square is *inside* the target map, and
+P5-36 will add that it can be *stood on*, but neither catches a tile you can stand on and never
+leave. Added as P5-39.
+
+Because that failure mode is real, `describeArrival` warns when a **derived** arrival reaches
+less than half the largest area, naming both numbers and pointing at `check_map_walkability`. A
+start the caller *gave* gets the comparison without the diagnosis — they chose the tile, so a
+small area is a decision rather than a symptom. The half is **stated, not measured**: nothing on
+disk settles where the line goes, and it is set where it catches 11-of-516 rather than where it
+splits hairs.
+
+One cost worth naming: `loadArrivalPoints` reads every map in the project, because a transfer
+*into* a map lives on whichever other map holds the door and there is no index of them. Measured
+at 14 ms for `Wicked Heart`'s 64 maps and 147 ms for the 293 sample maps, so `add_event_commands`
+derives only when a `sameAsRandomEncounter` battle is actually present.
 
 ### Tool ergonomics, from building a town by hand
 

@@ -250,6 +250,63 @@ export function reachableGrid(
   );
 }
 
+export interface MultiStartReach {
+  /** Tiles reachable from at least one usable start, as `grid[y][x]`. */
+  grid: boolean[][];
+  /** Starts that landed on a tile the player can occupy. */
+  used: { x: number; y: number }[];
+  /** Starts on a tile the player cannot stand on — they contribute nothing. */
+  stranded: { x: number; y: number }[];
+  /** How many separate areas the usable starts landed in. */
+  areas: number;
+}
+
+/**
+ * Tiles reachable from **any** of several starts.
+ *
+ * A map is not entered from one place. `Game_Player.reserveTransfer` can aim at
+ * a different tile from every other map in the project, and two of them can sit
+ * in areas that are not connected to each other — so the set of tiles the
+ * player can ever occupy is the union of the areas the arrivals land in, not
+ * any single one of them. Measured across the projects on this machine: 159
+ * maps are transferred into at all, and they carry 394 arrival points between
+ * them, so more than two per map is the normal case.
+ *
+ * One area survey serves every start, so the cost does not grow with the number
+ * of arrivals.
+ */
+export function reachableFromAny(
+  map: MapData,
+  flags: number[],
+  starts: readonly { x: number; y: number }[]
+): MultiStartReach {
+  const { areas, standable } = surveyAreas(map, flags, {});
+  const grid = Array.from({ length: map.height }, () => new Array<boolean>(map.width).fill(false));
+  const used: { x: number; y: number }[] = [];
+  const stranded: { x: number; y: number }[] = [];
+  const claimed = new Set<(typeof areas)[number]>();
+
+  for (const start of starts) {
+    const inside =
+      start.x >= 0 && start.y >= 0 && start.x < map.width && start.y < map.height;
+    if (!inside || !standable[start.y][start.x]) {
+      stranded.push(start);
+      continue;
+    }
+    used.push(start);
+    const area = areas.find((a) => a.seen[start.y][start.x]);
+    if (area) claimed.add(area);
+  }
+
+  for (const area of claimed) {
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width; x++) if (area.seen[y][x]) grid[y][x] = true;
+    }
+  }
+
+  return { grid, used, stranded, areas: claimed.size };
+}
+
 export function analyseWalkability(
   map: MapData,
   flags: number[],

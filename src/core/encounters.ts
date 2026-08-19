@@ -1,5 +1,5 @@
 import type { MapData } from '../schemas/map.js';
-import { reachableGrid } from './walkability.js';
+
 import { readRegion, REGION_ID_MAX } from './regions.js';
 
 /**
@@ -38,9 +38,9 @@ import { readRegion, REGION_ID_MAX } from './regions.js';
  * nothing says so.** `meetsEncounterConditions` compares against
  * `Game_Player.regionId()` — the id under the *player*. So a `regionSet` naming
  * ids that are unpainted, or painted only on impassable tiles, or painted only
- * on tiles walled off from the player's area, is dead weight that looks correct
- * in the editor. This is why the module floods the map with `reachableGrid`
- * before accepting a row, and refuses rather than warns.
+ * on tiles walled off from where the player arrives, is dead weight that looks
+ * correct in the editor. This is why every check here runs against the
+ * `Reachable` grid `arrival.ts` derives, and refuses rather than warns.
  *
  * **3. An empty troop is a battle won on the first frame.** `executeEncounter`
  * guards on `$dataTroops[troopId]`, which is truthy for a row with no members;
@@ -74,6 +74,15 @@ import { readRegion, REGION_ID_MAX } from './regions.js';
  */
 
 export class EncounterError extends Error {}
+
+/**
+ * Which tiles the player can occupy, as `grid[y][x]`.
+ *
+ * Supplied rather than derived here: `arrival.ts` works it out from where the
+ * project actually transfers the player, and one answer has to serve the
+ * refusal, the zone table and whatever the caller reports back.
+ */
+export type Reachable = readonly (readonly boolean[])[];
 
 /**
  * `Math.randomInt(n)` is `Math.floor(n * Math.random())`, so at n = 0 the count
@@ -146,18 +155,8 @@ export interface EncounterPlan {
 
 const ordinal = (index: number) => `row ${index + 1}`;
 
-/**
- * Reachable tiles per region id, counting bare ground as id 0.
- *
- * One flood serves both questions the plan asks — which zones exist, and
- * whether a scoped row has anywhere to fire — so they cannot disagree.
- */
-function zoneTiles(
-  map: MapData,
-  flags: number[],
-  start?: { x: number; y: number }
-): Map<number, number> {
-  const reachable = reachableGrid(map, flags, start ? { start } : {});
+/** Reachable tiles per region id, counting bare ground as id 0. */
+function zoneTiles(map: MapData, reachable: Reachable): Map<number, number> {
   const out = new Map<number, number>();
   for (let y = 0; y < map.height; y++) {
     for (let x = 0; x < map.width; x++) {
@@ -176,10 +175,8 @@ function zoneTiles(
  */
 export function surveyEncounterRegions(
   map: MapData,
-  flags: number[],
-  start?: { x: number; y: number }
+  reachable: Reachable
 ): Map<number, RegionReach> {
-  const reachable = reachableGrid(map, flags, start ? { start } : {});
   const out = new Map<number, RegionReach>();
 
   for (let y = 0; y < map.height; y++) {
@@ -341,19 +338,20 @@ function checkRegionSet(
  * Turn a caller's rows into an `encounterList` the player would actually meet,
  * or refuse and say which engine guard the row would have died on.
  *
- * `start` is where the player arrives; without it the largest walkable area
- * stands in, exactly as `analyseWalkability` does. `troops` may be undefined
- * when Troops.json is unreadable — names then cannot be resolved at all, and
- * ids are taken on trust rather than checked against nothing.
+ * `reachable` is which tiles the player can occupy — `surveyArrival` in
+ * `arrival.ts` works it out from where the project transfers them, and this
+ * module takes it rather than re-deriving it so that one answer serves the
+ * refusal, the zone table and whatever the caller reports. `troops` may be
+ * undefined when Troops.json is unreadable — names then cannot be resolved at
+ * all, and ids are taken on trust rather than checked against nothing.
  */
 export function planEncounters(
   map: MapData,
-  flags: number[],
+  reachable: Reachable,
   inputs: readonly EncounterRowInput[],
   options: {
     encounterStep?: number;
     troops?: readonly (TroopRow | null)[];
-    start?: { x: number; y: number };
   } = {}
 ): EncounterPlan {
   const encounterStep = options.encounterStep ?? ENCOUNTER_STEP_DEFAULT;
@@ -374,7 +372,7 @@ export function planEncounters(
     return { rows: [], encounterStep, troopNames: [], zones: [], notes };
   }
 
-  const regions = surveyEncounterRegions(map, flags, options.start);
+  const regions = surveyEncounterRegions(map, reachable);
   const rows: EncounterRow[] = [];
   const troopNames: (string | null)[] = [];
 
@@ -418,7 +416,7 @@ export function planEncounters(
   // The zone table. weightSum is recomputed under the player's feet, so each
   // region the player can reach gets its own denominator; a row scoped nowhere
   // the player can reach appears in none of them, which is the refusal below.
-  const tiles = zoneTiles(map, flags, options.start);
+  const tiles = zoneTiles(map, reachable);
   const zones: EncounterZone[] = [...tiles.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([regionId, count]) => {

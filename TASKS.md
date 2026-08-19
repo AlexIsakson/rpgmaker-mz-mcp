@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 10 / 38**
+**Progress: 11 / 39**
 
 ---
 
@@ -203,7 +203,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   See [Weight means nothing on its own](ROADMAP.md#weight-means-nothing-on-its-own).
   Turned up P5-38.
 
-- [ ] **P5-38 — Let the encounter check be told where the player arrives**
+- [x] **P5-38 — Let the encounter check be told where the player arrives**
   *(turned up by P5-37.)* `checkEncounterSource`, reached through `add_event_commands`, has no
   start argument, so `reachableRegions` falls back to the largest walkable area — the exact
   assumption `analyseWalkability`'s own docs call wrong on an interior, where a room's passable
@@ -212,6 +212,36 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   starts. `set_map_encounters` already takes `startX`/`startY`; the event path does not.
   *Done when:* the battle-side check can be given a start, and agrees with `set_map_encounters`
   when both are given the same one.
+  *Done:* `add_event_commands` takes `startX`/`startY`, and — more usefully — nothing has to pass
+  them, because `src/core/arrival.ts` derives the arrival tiles from the project: every literal
+  Transfer Player aimed at the map, plus `System.json`'s new game position. `reachableFromAny`
+  unions the areas they land in from one area survey, since a map is entered from more than one
+  door. The new `scripts/measure-arrival.mjs` turned the old assumption from an argument into a
+  count: over the **677 maps with real passage flags, 619 (91.4%) have more than one walkable
+  area**, **159 are transferred into with 394 arrival points**, and **36 of those (9.1%), on 20
+  maps, land outside the largest area** — `Wicked Heart` map 25 is 627 tiles against 65, map 59
+  is 516 against 11. Events are not a usable stand-in: 992 of the 1278 events outside the largest
+  area stand on impassable tiles, because doors and clutter are events. The two checks now agree
+  — given the same start on map 8, `set_map_encounters` and `add_event_commands` both see region
+  9's 6 reachable tiles and the battle side reports `2 of 2 row(s) can be picked` where it used
+  to say `1 of 2`. Since a derived arrival can be badly restrictive when a map is broken,
+  `describeArrival` warns when it reaches under half the largest area, and a caller-given start
+  gets the comparison without the diagnosis. See
+  [The largest area is not where the player is](ROADMAP.md#the-largest-area-is-not-where-the-player-is).
+  Turned up P5-39.
+
+- [ ] **P5-39 — Refuse a transfer the player can never walk out of**
+  *(turned up by P5-38.)* The arrival sweep found `Wicked Heart` map 32 carrying
+  `201 [0,59,0,49,0,0]` — a transfer to map 59 at (0, 49). That tile is passable down, left and
+  up but **not right**, so `Game_CharacterBase.canPass` blocks every attempt to leave column 0
+  and the player can walk 11 tiles of a 13x50 map. This is a third class: P5-34 checks the
+  landing square is inside the map, P5-36 will check it can be stood on, and neither catches a
+  tile you can stand on and never leave. `reachableFromAny` already computes the answer — the
+  area the landing tile reaches — so this is a threshold and a message, not new reasoning. The
+  hard part is what the threshold should be, and the corpus has 36 outside-largest arrivals to
+  calibrate against.
+  *Done when:* a transfer whose landing tile reaches only a fraction of the target map is
+  refused or warned about, saying how many tiles the player would be able to walk.
 
 - [ ] **P5-36 — Refuse a transfer that lands somewhere the player cannot stand**
   *(turned up by P5-34.)* P5-34 checks the landing square is *inside* the target map, which is
@@ -222,6 +252,9 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   than new reasoning — it needs the target's tileset flags, which the current check deliberately
   does not read.
   *Done when:* a transfer onto an unstandable tile is refused or warned about, saying which.
+  *Note:* P5-38 measured the population — **24 of the 394 arrival points on this machine land on
+  a tile the player cannot stand on**, so this is not hypothetical. The neighbouring class, a
+  tile they can stand on but never leave, is P5-39.
 
 - [ ] **P5-29 — Write page conditions**
   *(turned up by P5-03.)* Switch page conditions are the **most common** way real event logic

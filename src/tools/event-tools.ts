@@ -19,6 +19,8 @@ import {
   DesignationError,
 } from '../core/designation.js';
 import { surveyEncounterRegions } from '../core/encounters.js';
+import { describeArrival, type ArrivalSurvey } from '../core/arrival.js';
+import { resolveArrival } from './encounter-tools.js';
 import { TilesetReader } from '../core/tileset-reader.js';
 import {
   assignIndents,
@@ -100,15 +102,16 @@ async function loadDatabaseTables(dataPath: string): Promise<DatabaseTables> {
  *
  * Not simply what z=5 holds: `meetsEncounterConditions` tests the region under
  * the *player*, so an id painted only on walls, or only on floor cut off from
- * where the player is, gates a row exactly as hard as an id that was never
- * painted. `surveyEncounterRegions` floods the map with the same reachability
- * rule `check_map_walkability` uses, and only ids with a reachable tile count.
+ * where they arrive, gates a row exactly as hard as an id that was never
+ * painted. The reachable set comes from `surveyArrival`, so this agrees with
+ * `set_map_encounters` given the same start — and derives the same one when
+ * neither is given.
  *
  * A map whose data array is short of six planes reports no regions, which is
  * what `Game_Map.regionId` answers for it too.
  */
-function reachableRegions(mapData: MapData, flags: number[]): Set<number> {
-  const survey = surveyEncounterRegions(mapData, flags);
+function reachableRegions(mapData: MapData, arrival: ArrivalSurvey): Set<number> {
+  const survey = surveyEncounterRegions(mapData, arrival.reachable);
   return new Set([...survey.values()].filter((r) => r.reachable > 0).map((r) => r.regionId));
 }
 
@@ -384,7 +387,9 @@ whether the numbers after it are values or variable ids:
   this map's encounter table). Exactly one — the others would be written and
   never read. sameAsRandomEncounter is refused on a map whose encounterList
   cannot produce a troop, because makeEncounterTroopId then returns 0 and the
-  battle silently does not happen.
+  battle silently does not happen. That check needs to know where the player
+  can stand: it derives the arrival tiles from every Transfer Player aimed at
+  this map plus the new game start, and startX/startY overrides that.
 - transfer: mapId/x/y (direct), or mapVariableId/xVariableId/yVariableId — all
   three together, since the engine has one flag covering all three numbers.
   The *VariableName forms allocate the way switchName does.
@@ -412,10 +417,25 @@ An unbalanced list is refused, naming which block was left open and where.
       pageIndex: z.number().int().min(0).default(0).describe('Page index (0-based)'),
       commands: z.array(z.record(z.unknown())).describe('Array of command objects with "type" field'),
       append: z.boolean().default(true).describe('If true, append to existing commands. If false, replace all commands.'),
+      startX: z.number().int().min(0).optional()
+        .describe(
+          'X of a tile the player is known to reach on this map. Only read by the ' +
+          'sameAsRandomEncounter check, which has to know where the player can stand before it ' +
+          'can say a region-scoped encounter row is dead. Without it the tile is derived from ' +
+          'every Transfer Player in the project aimed at this map, plus the new game start; ' +
+          'give it when that derivation would be wrong or when nothing transfers here yet.'
+        ),
+      startY: z.number().int().min(0).optional().describe('Y of that tile'),
     },
-    async ({ mapId, eventId, pageIndex, commands, append }) => {
+    async ({ mapId, eventId, pageIndex, commands, append, startX, startY }) => {
       try {
         const project = requireProject();
+        if ((startX === undefined) !== (startY === undefined)) {
+          return {
+            content: [{ type: 'text' as const, text: 'Give both startX and startY, or neither.' }],
+            isError: true,
+          };
+        }
         const mapData = await readMap(project.dataPath, mapId);
 
         if (eventId >= mapData.events.length || !mapData.events[eventId]) {
@@ -555,12 +575,21 @@ An unbalanced list is refused, naming which block was left open and where.
           const troopRows = fromEncounters
             ? ((await loadDatabaseTables(project.dataPath)).troops ?? [])
             : [];
-          const regions = fromEncounters
-            ? reachableRegions(
+          // Only derived when a designation-2 battle is actually present: it
+          // reads every map in the project to find what transfers here, which
+          // is 14 ms for 64 maps and not worth paying on an ordinary write.
+          const arrival = fromEncounters
+            ? await resolveArrival(
+                project.dataPath,
+                mapId,
                 mapData,
-                (await TilesetReader.get(project.dataPath, mapData.tilesetId)).flags
+                (await TilesetReader.get(project.dataPath, mapData.tilesetId)).flags,
+                startX,
+                startY
               )
-            : new Set<number>();
+            : undefined;
+          const regions = arrival ? reachableRegions(mapData, arrival) : new Set<number>();
+          if (arrival) notes.push(describeArrival(arrival));
 
           for (let i = 0; i < resolved.length; i++) {
             const cmd = resolved[i];

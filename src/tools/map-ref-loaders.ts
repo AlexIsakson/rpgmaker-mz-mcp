@@ -20,6 +20,14 @@ import path from 'node:path';
 import { FileHandler } from '../core/file-handler.js';
 import { requireCharacterSheet, type MapRefInventory, type MapSize } from '../core/map-refs.js';
 import type { MapData } from '../schemas/map.js';
+import {
+  collectTransferArrivals,
+  newGameArrival,
+  dedupeArrivals,
+  type ArrivalPoint,
+  type CommandSource,
+  type RawCommand,
+} from '../core/arrival.js';
 
 const MAP_FILE = /^Map(\d{3,})\.json$/;
 
@@ -118,4 +126,75 @@ export async function loadTransferInventory(
   const mapIds = await loadMapIds(dataPath);
   const wanted = [...targets].filter((id) => mapIds === undefined || mapIds.has(id));
   return { mapIds, mapSizes: await loadMapSizes(dataPath, wanted) };
+}
+
+/**
+ * Every tile something on disk transfers the player to on `mapId`, plus the new
+ * game start when it is there.
+ *
+ * Reads every map in the project, because a transfer aimed *at* a map lives on
+ * whichever other map holds the door — there is no index of them. Measured
+ * cost: 14 ms for `Wicked Heart`'s 64 maps, 147 ms for the 293 sample maps, so
+ * this is called only where the answer changes a decision rather than on every
+ * write.
+ *
+ * Degrades the same way the rest of this file does: a map that will not parse
+ * is skipped, and an empty result means "nothing known", which
+ * `surveyArrival` reports as an assumption rather than as a fact.
+ */
+export async function loadArrivalPoints(
+  dataPath: string,
+  mapId: number
+): Promise<ArrivalPoint[]> {
+  const sources: CommandSource[] = [];
+
+  const ids = await loadMapIds(dataPath);
+  await Promise.all(
+    [...(ids ?? [])].map(async (id) => {
+      try {
+        const file = `Map${String(id).padStart(3, '0')}.json`;
+        const map = (await FileHandler.readJsonRaw(path.join(dataPath, file))) as MapData;
+        for (const event of map?.events ?? []) {
+          for (const page of event?.pages ?? []) {
+            sources.push({ mapId: id, list: page.list as RawCommand[] | undefined });
+          }
+        }
+      } catch {
+        // an unreadable map contributes no arrivals, rather than failing the lot
+      }
+    })
+  );
+
+  // Common events and troop battle pages transfer too, and neither belongs to a
+  // map, so their arrivals are reported without one.
+  for (const file of ['CommonEvents.json', 'Troops.json']) {
+    try {
+      const raw = await FileHandler.readJsonRaw(path.join(dataPath, file));
+      if (!Array.isArray(raw)) continue;
+      for (const row of raw) {
+        if (!row) continue;
+        if (Array.isArray(row.list)) sources.push({ list: row.list as RawCommand[] });
+        for (const page of row.pages ?? []) {
+          if (Array.isArray(page?.list)) sources.push({ list: page.list as RawCommand[] });
+        }
+      }
+    } catch {
+      // same rule
+    }
+  }
+
+  const points = collectTransferArrivals(sources, mapId);
+
+  try {
+    const system = (await FileHandler.readJsonRaw(path.join(dataPath, 'System.json'))) as Record<
+      string,
+      unknown
+    >;
+    const start = newGameArrival(system, mapId);
+    if (start) points.unshift(start);
+  } catch {
+    // same rule
+  }
+
+  return dedupeArrivals(points);
 }

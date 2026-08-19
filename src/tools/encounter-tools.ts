@@ -15,6 +15,13 @@ import {
   type TroopRow,
 } from '../core/encounters.js';
 import { REGION_ID_MAX } from '../core/regions.js';
+import {
+  surveyArrival,
+  describeArrival,
+  type ArrivalPoint,
+  type ArrivalSurvey,
+} from '../core/arrival.js';
+import { loadArrivalPoints } from './map-ref-loaders.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename } from './map-tools.js';
 import type { MapData } from '../schemas/map.js';
@@ -30,6 +37,29 @@ async function readTroops(dataPath: string): Promise<(TroopRow | null)[] | undef
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Where the player can be on this map: the given tile if there is one,
+ * otherwise every tile the project transfers them to.
+ *
+ * An explicit start replaces the derivation rather than adding to it — a caller
+ * who names a tile is answering the question, and quietly unioning it with
+ * every door in the project would make their answer weaker than it is.
+ */
+export async function resolveArrival(
+  dataPath: string,
+  mapId: number,
+  mapData: MapData,
+  flags: number[],
+  startX?: number,
+  startY?: number
+): Promise<ArrivalSurvey> {
+  const points: ArrivalPoint[] =
+    startX !== undefined && startY !== undefined
+      ? [{ x: startX, y: startY, source: 'given' }]
+      : await loadArrivalPoints(dataPath, mapId);
+  return surveyArrival(mapData, flags, points);
 }
 
 export function registerEncounterTools(server: McpServer): void {
@@ -114,15 +144,22 @@ export function registerEncounterTools(server: McpServer): void {
         const mapData = (await FileHandler.readJsonRaw(mapPath)) as MapData;
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
         const troops = await readTroops(project.dataPath);
+        const arrival = await resolveArrival(
+          project.dataPath,
+          mapId,
+          mapData,
+          tileset.flags,
+          startX,
+          startY
+        );
 
         const plan = planEncounters(
           mapData,
-          tileset.flags,
+          arrival.reachable,
           encounters as EncounterRowInput[],
           {
             encounterStep: encounterStep ?? mapData.encounterStep ?? ENCOUNTER_STEP_DEFAULT,
             troops,
-            start: startX !== undefined ? { x: startX, y: startY! } : undefined,
           }
         );
 
@@ -135,6 +172,7 @@ export function registerEncounterTools(server: McpServer): void {
 
         const lines = [
           `Map ${mapId}, tileset ${mapData.tilesetId} "${tileset.name}"`,
+          describeArrival(arrival),
           '',
           renderEncounterPlan(plan, mapId),
         ];
@@ -142,11 +180,7 @@ export function registerEncounterTools(server: McpServer): void {
         // Painted but unused regions are not an error — the plane also drives
         // Get Location Info — but a caller who just painted one and expected it
         // to gate an encounter should be told it is not gating anything.
-        const regions = surveyEncounterRegions(
-          mapData,
-          tileset.flags,
-          startX !== undefined ? { x: startX, y: startY! } : undefined
-        );
+        const regions = surveyEncounterRegions(mapData, arrival.reachable);
         const scoped = new Set(plan.rows.flatMap((row) => row.regionSet));
         const unused = [...regions.keys()].filter((id) => !scoped.has(id)).sort((a, b) => a - b);
         if (unused.length > 0 && plan.rows.length > 0) {
@@ -221,19 +255,28 @@ export function registerEncounterTools(server: McpServer): void {
 
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
         const troops = await readTroops(project.dataPath);
-        const start = startX !== undefined ? { x: startX, y: startY! } : undefined;
+        const arrival = await resolveArrival(
+          project.dataPath,
+          mapId,
+          mapData,
+          tileset.flags,
+          startX,
+          startY
+        );
 
         // Re-planning the stored rows is the read: the same refusals that stop
         // a bad table being written are what "this row can never fire" means
         // for one that is already there.
         try {
-          const plan = planEncounters(mapData, tileset.flags, list, {
+          const plan = planEncounters(mapData, arrival.reachable, list, {
             encounterStep: mapData.encounterStep,
             troops,
-            start,
           });
           return {
-            content: [{ type: 'text' as const, text: renderEncounterPlan(plan, mapId) }],
+            content: [{
+              type: 'text' as const,
+              text: `${describeArrival(arrival)}\n\n${renderEncounterPlan(plan, mapId)}`,
+            }],
           };
         } catch (error) {
           if (error instanceof EncounterError) {
@@ -242,7 +285,7 @@ export function registerEncounterTools(server: McpServer): void {
                 type: 'text' as const,
                 text:
                   `Map ${mapId} has ${list.length} encounter row(s), and the table is not ` +
-                  `usable as it stands:\n\n${error.message}`,
+                  `usable as it stands:\n\n${describeArrival(arrival)}\n\n${error.message}`,
               }],
             };
           }
