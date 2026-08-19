@@ -208,6 +208,95 @@ export const COMMAND_CODES: Record<string, number> = {
 };
 
 /**
+ * `command122`'s `params[4]` onward — shaped entirely by `operand`
+ * (`params[3]`), from `Game_Interpreter.prototype.command122` /
+ * `gameDataOperand` (byte-identical v1.4.4 through v1.9.0):
+ *
+ * ```js
+ * switch (operand) {
+ *   case 0: value = params[4]; break;                                   // Constant
+ *   case 1: value = $gameVariables.value(params[4]); break;             // Variable
+ *   case 2: value = params[4]; randomMax = params[5] - params[4] + 1;   // Random
+ *           randomMax = Math.max(randomMax, 1); break;
+ *   case 3: value = this.gameDataOperand(params[4], params[5], params[6]); break; // Game Data
+ *   case 4: value = eval(params[4]); break;                             // Script
+ * }
+ * ```
+ *
+ * Every operand but Constant used to collapse onto the same single `value`
+ * field, which is how Random broke: `params[5]` was never emitted, so
+ * `randomMax` computed `undefined - value + 1`, which is `NaN`, and every
+ * variable in range was set to `NaN`. Each operand now has its own field(s)
+ * and is refused by name if they are missing, rather than emitting a
+ * `params` array command122 reads as a silently wrong value.
+ */
+function controlVariableOperand(cmd: Record<string, unknown>, operand: number): unknown[] {
+  switch (operand) {
+    case 0: // Constant
+      return [(cmd.value as number) || 0];
+
+    case 1: { // Variable — $gameVariables.value(params[4])
+      const sourceVariableId = cmd.sourceVariableId;
+      if (typeof sourceVariableId !== 'number') {
+        throw new Error(
+          'control_variables with operand 1 (Variable) needs sourceVariableId — the id of the ' +
+            'variable command122 reads the new value from.'
+        );
+      }
+      return [sourceVariableId];
+    }
+
+    case 2: { // Random — params[4] is the low end, params[5] the high end
+      const min = (cmd.value as number) || 0;
+      const max = cmd.randomMax;
+      if (typeof max !== 'number') {
+        throw new Error(
+          'control_variables with operand 2 (Random) needs randomMax — command122 computes ' +
+            '`randomMax = params[5] - params[4] + 1`, and a missing params[5] makes that NaN, ' +
+            'setting every variable in range to NaN. value is the low end, randomMax the high ' +
+            'end, both inclusive.'
+        );
+      }
+      return [min, max];
+    }
+
+    case 3: { // Game Data — gameDataOperand(type, param1, param2)
+      const gameDataType = cmd.gameDataType;
+      if (typeof gameDataType !== 'number') {
+        throw new Error(
+          'control_variables with operand 3 (Game Data) needs gameDataType — see ' +
+            'Game_Interpreter.gameDataOperand for what each type reads: 0 item, 1 weapon, ' +
+            '2 armor, 3 actor, 4 enemy, 5 character, 6 party, 7 other, 8 last action. ' +
+            'gameDataParam1/gameDataParam2 refine it (an actor id and a stat, a map id, and so ' +
+            'on) and default to 0.'
+        );
+      }
+      const param1 = (cmd.gameDataParam1 as number) || 0;
+      const param2 = (cmd.gameDataParam2 as number) || 0;
+      return [gameDataType, param1, param2];
+    }
+
+    case 4: { // Script — eval(params[4])
+      const script = cmd.script;
+      if (typeof script !== 'string' || script.trim() === '') {
+        throw new Error(
+          'control_variables with operand 4 (Script) needs a non-empty script string — ' +
+            'command122 evals it verbatim as the new value.'
+        );
+      }
+      return [script];
+    }
+
+    default:
+      throw new Error(
+        `control_variables operand ${operand} is not 0-4 (Constant, Variable, Random, Game ` +
+          'Data, Script) — command122 has no case for it, so every variable in range would ' +
+          'silently be set to 0.'
+      );
+  }
+}
+
+/**
  * Convert human-readable command to RPG Maker MZ event commands.
  */
 export function convertCommand(cmd: {
@@ -267,9 +356,12 @@ export function convertCommand(cmd: {
       const endId = (cmd.endId as number) || startId;
       const operationType = (cmd.operationType as number) || 0;
       const operand = (cmd.operand as number) || 0;
-      const value = (cmd.value as number) || 0;
       return [
-        { code: 122, indent: 0, parameters: [startId, endId, operationType, operand, value] },
+        {
+          code: 122,
+          indent: 0,
+          parameters: [startId, endId, operationType, operand, ...controlVariableOperand(cmd, operand)],
+        },
       ];
     }
 

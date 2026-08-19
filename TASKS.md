@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 14 / 39**
+**Progress: 15 / 39**
 
 ---
 
@@ -298,13 +298,22 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   condition. See
   [Making a page respond to a flag](ROADMAP.md#making-a-page-respond-to-a-flag).
 
-- [ ] **P5-30 — Fix the random operand on `control_variables`**
+- [x] **P5-30 — Fix the random operand on `control_variables`**
   *(turned up by P5-03.)* `convertCommand` emits 5 parameters for code 122. `command122`
   operand 2 (Random) reads `params[5]` as the top of the range: `randomMax = params[5] -
   params[4] + 1` is `NaN`, `Math.max(NaN, 1)` is `NaN`, and the variable is set to `NaN`. Same
   class of bug as the conditional branch P5-03 fixed, in the same converter.
   *Done when:* a random assignment emits the range top, and operands 3 (game data) and 4
   (script) either work or are refused by name.
+  *Done:* `controlVariableOperand` (`src/schemas/event.ts`) gives every operand its own field(s)
+  — `sourceVariableId` (1 Variable), `value`/`randomMax` (2 Random), `gameDataType`/
+  `gameDataParam1`/`gameDataParam2` (3 Game Data), `script` (4 Script) — and refuses by name,
+  citing the exact engine computation, when a required one is missing. An operand outside 0-4 is
+  refused too, since the engine's `value` silently stays `0` for an unmatched case. Verified
+  over stdio MCP: Random wrote the full six-parameter shape (`randomMax` computed as `6`, not
+  `NaN`), Game Data and Script wrote their seven/five-parameter shapes, and the same Random
+  command with `randomMax` left off was refused before anything was written. See
+  [Every control_variables operand gets its own field](ROADMAP.md#every-control_variables-operand-gets-its-own-field).
 
 - [x] **P5-26 — Check the material in the generators that paint one**
   *(turned up by P5-01.)* `fill_map_region`, `paint_tiles` and `generate_town` all consult

@@ -1740,12 +1740,12 @@ written JSON is `121 [1,1,0]`, `111 [0,1,0]` and `111 [1,1,0,3,1]` — the param
 
 **Still open here:** switch page conditions were the largest single count in the measurement (62)
 and no tool wrote one at all, outside the generators that build their own pages — now closed, see
-[Making a page respond to a flag](#making-a-page-respond-to-a-flag). `control_variables` with
-`operand: 2` (random) emits five parameters where
-`command122` reads `params[5]` as the range top, giving `Math.randomInt(NaN)` — tracked as
-**P5-30**. The read side of a variable operand (`params[4]` on 122, `params[3]` on a 111 type 1)
-still takes an id rather than a name; the corpus shows 0 uses of either, so nothing argues for it
-yet.
+[Making a page respond to a flag](#making-a-page-respond-to-a-flag). `control_variables`'s five
+operands collapsing onto one `value` field (the Random one giving `Math.randomInt(NaN)`) is also
+now closed, see
+[Every control_variables operand gets its own field](#every-control_variables-operand-gets-its-own-field).
+The read side of a variable operand (`params[4]` on 122, `params[3]` on a 111 type 1) still takes
+an id rather than a name; the corpus shows 0 uses of either, so nothing argues for it yet.
 
 ### Indent is the gate
 
@@ -2571,6 +2571,67 @@ count `itemValid`/`actorValid` at all, so unlike the switch/variable numbers abo
 conditions are checked the same way" is an application of the codebase's established
 guard-then-do-nothing pattern to a new field, not a count-backed claim about how often either kind
 is used in the wild.
+
+### Every control_variables operand gets its own field
+
+P5-03's "still open" list named this one directly: `convertCommand` emitted five `params` for
+every `control_variables`, regardless of `operand` (`params[3]`). That is exactly right for
+operand 0 (Constant), which reads one value from `params[4]` — and silently wrong for the other
+four, which `command122` reads differently:
+
+```js
+switch (operand) {
+  case 0: value = params[4]; break;                                   // Constant
+  case 1: value = $gameVariables.value(params[4]); break;             // Variable
+  case 2: value = params[4]; randomMax = params[5] - params[4] + 1;   // Random
+          randomMax = Math.max(randomMax, 1); break;
+  case 3: value = this.gameDataOperand(params[4], params[5], params[6]); break; // Game Data
+  case 4: value = eval(params[4]); break;                             // Script
+}
+```
+
+Random (operand 2) is the one P5-03 measured and named: with only `params[4]` emitted,
+`randomMax = undefined - value + 1` is `NaN`, and every variable in the range is set to `NaN`.
+Game Data (operand 3) reads three params, not one — `params[6]` was never emitted at all, so
+`gameDataOperand`'s third argument was always `undefined`. Script (operand 4) happened to work by
+accident, since `eval(params[4])` on whatever `value` held would at least run, if not usefully.
+Variable (operand 1) also happened to work by accident — `$gameVariables.value(value)` reads
+`value` as if it were meant to be the source variable's id, which is what a caller relying on the
+old single-field shape would have had to know without being told.
+
+**The fix gives each operand its own field(s)**, in `controlVariableOperand`
+(`src/schemas/event.ts`), and refuses — by name, citing the exact engine computation — when a
+required one is missing, rather than emitting a `params` array `command122` reads as a silently
+wrong value:
+
+| operand | fields | params\[4..] |
+|---|---|---|
+| 0 Constant | `value` | `[value]` |
+| 1 Variable | `sourceVariableId` | `[sourceVariableId]` |
+| 2 Random | `value` (low), `randomMax` (high) | `[value, randomMax]` |
+| 3 Game Data | `gameDataType`, `gameDataParam1`/`gameDataParam2` (default 0) | `[type, param1, param2]` |
+| 4 Script | `script` (non-empty string) | `[script]` |
+
+`gameDataType`'s nine values (0 item … 8 last action) and what `gameDataParam1`/`gameDataParam2`
+mean for each are `Game_Interpreter.prototype.gameDataOperand`'s own nested switch — documented in
+the refusal message and the tool description, not re-validated field by field. An operand outside
+0-4 is refused too: the engine's `value` stays at its initial `0` for an unmatched case, which is a
+silent wrong answer of a different kind (0, not NaN) that nothing at runtime would explain.
+
+**Measured: nothing on disk uses operand 1, 2, 3 or 4 today.** `Wicked Heart`'s 2 `control_variables`
+commands (from `scripts/measure-flag-usage.mjs`, cited in
+[Naming a flag in a command list](#naming-a-flag-in-a-command-list)) are the only ones anywhere on
+this machine, and their operand was never separately counted — this fix closes a bug the corpus
+cannot confirm was ever hit, the same shape as the conditional-branch fix P5-03 already made in the
+same converter. `startId`/`endId` and `operationType` are untouched; only what fills `params[4]`
+onward changed.
+
+**Verified** by driving the real server over stdio MCP against a scratch project: a Random
+assignment (`value: 1, randomMax: 6`) wrote `[1,1,0,2,1,6]` — six parameters, both range ends
+present, `randomMax` computed as `6` rather than `NaN`; a Game Data assignment
+(`gameDataType: 7, gameDataParam1: 2` — Other, Gold) wrote `[2,2,0,3,7,2,0]`; a Script assignment
+wrote `[3,3,0,4,"$gameParty.gold()"]`; and the same Random command with `randomMax` left off was
+refused before anything was written, naming the exact computation that would have gone `NaN`.
 
 ### Tool ergonomics, from building a town by hand
 

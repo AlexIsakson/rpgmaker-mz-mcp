@@ -515,6 +515,15 @@ Supported command types:
 - transfer_player: { type: "transfer_player", mapId: 1, x: 5, y: 5 }  (the map must exist, the landing square must be inside it, and it must reach at least a quarter of the target map's largest walkable area — otherwise the transfer throws a LoadError, freezes the player, or strands them somewhere they can never walk out of)
 - control_switches: { type: "control_switches", startId: 1, value: 0 }  (0=ON, 1=OFF)
 - control_variables: { type: "control_variables", startId: 1, operationType: 0, operand: 0, value: 100 }
+  (operand picks what fills the variable, and each one needs its own field(s) — a random
+  assignment with only "value" and no "randomMax" used to silently set the variable to NaN:
+    0 Constant:  value
+    1 Variable:  sourceVariableId (copies another variable's current value)
+    2 Random:    value (low end) and randomMax (high end), both inclusive
+    3 Game Data: gameDataType (0 item, 1 weapon, 2 armor, 3 actor, 4 enemy, 5 character, 6
+                 party, 7 other, 8 last action), plus gameDataParam1/gameDataParam2 to refine it
+    4 Script:    script (a string, eval'd verbatim as the new value)
+  )
 - control_self_switch: { type: "control_self_switch", key: "A", value: 0 }
 - conditional_branch: { type: "conditional_branch", conditionType: 0, param1: 1, param2: 0 }
 
