@@ -25,6 +25,7 @@ import { mapFilename } from './map-tools.js';
 import { TilesetReader } from '../core/tileset-reader.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { checkGroundKinds, overlayKindsAmong } from '../core/ground-material.js';
+import { checkSheetsPresent, type SheetRequest } from '../core/tileset-sheets.js';
 import { applyWallShadows } from '../core/shadows.js';
 import type { MapData } from '../schemas/map.js';
 import { logger } from '../logger.js';
@@ -124,13 +125,32 @@ export function registerMapPaintTools(server: McpServer): void {
         const clippedHeight = Math.min(height, mapData.height - y);
         const advice: string[] = [];
 
+        const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
+
+        // A tileset slot is allowed to be empty, and a tile that addresses an
+        // empty one draws nothing while the map data insists it is there. This
+        // is cheaper to detect than the overlay check below — it needs the
+        // tileset's names, not its image — so it goes first.
+        const sheetRefusal = checkSheetsPresent(
+          autotileKind !== undefined
+            ? [{ kind: autotileKind, label: 'autotileKind' }]
+            : [{ tileId: tileId!, label: 'tileId' }],
+          tileset.tilesetNames,
+          tileset.name
+        );
+        if (sheetRefusal !== null) {
+          return {
+            content: [{ type: 'text' as const, text: sheetRefusal }],
+            isError: true,
+          };
+        }
+
         // Whether a material can go on layer 0, and whether it will show a
         // boundary, are properties of the tileset image — check them before
         // painting rather than leaving the caller to discover it in a render.
         // Shared with the generators, which paint far more in one call than
         // this does; see src/core/ground-material.ts.
         if (autotileKind !== undefined && isTileA2(resolvedTileId)) {
-          const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
           const check = checkGroundKinds(
             [{
               kind: autotileKind,
@@ -332,26 +352,55 @@ export function registerMapPaintTools(server: McpServer): void {
         // The whole batch is checked before any of it is written. A partial
         // application would be worse than a refusal: you could not tell from the
         // result which tiles had landed.
+        const tilesetForBatch = await TilesetReader.get(project.dataPath, mapData.tilesetId);
+
+        // A batch can name the same missing sheet hundreds of times — a prop
+        // pass is one tile id repeated — so each distinct value is reported
+        // once, labelled with the first entry that used it and with the
+        // argument that entry actually gave.
+        const firstUse = new Map<string, { request: SheetRequest }>();
+        tiles.forEach((t, index) => {
+          const key = t.autotileKind !== undefined ? `k${t.autotileKind}` : `t${t.tileId}`;
+          if (firstUse.has(key)) return;
+          firstUse.set(key, {
+            request: {
+              kind: t.autotileKind,
+              tileId: t.tileId,
+              label: `entry ${index} at (${t.x}, ${t.y})`,
+            },
+          });
+        });
+        const sheetRefusal = checkSheetsPresent(
+          [...firstUse.values()].map((e) => e.request),
+          tilesetForBatch.tilesetNames,
+          tilesetForBatch.name
+        );
+        if (sheetRefusal !== null) {
+          return {
+            content: [{ type: 'text' as const, text: sheetRefusal }],
+            isError: true,
+          };
+        }
+
         const groundKinds = new Set(
           resolved
             .filter((t) => t.layer === 0 && isTileA2(t.tileId))
             .map((t) => getAutotileKind(t.tileId))
         );
         if (groundKinds.size > 0 && !allowOverlayOnGround) {
-          const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
           // The judgement is shared (src/core/ground-material.ts); the remedy is
           // not. Here the fix is to move entries of the batch to another layer,
           // rather than to pick a different material.
           const overlayKinds = overlayKindsAmong(
             groundKinds,
-            await loadA2Materials(project.path, tileset.tilesetNames)
+            await loadA2Materials(project.path, tilesetForBatch.tilesetNames)
           );
           if (overlayKinds.length > 0) {
             return {
               content: [{
                 type: 'text' as const,
                 text:
-                  `A2 kind(s) ${overlayKinds.join(', ')} in "${tileset.name}" are overlay ` +
+                  `A2 kind(s) ${overlayKinds.join(', ')} in "${tilesetForBatch.name}" are overlay ` +
                   'materials or empty slots: their edge pieces are transparent, so on layer 0 ' +
                   'they show the map background, which renders black in game. Nothing was ' +
                   'written.\n\n' +

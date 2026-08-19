@@ -2058,6 +2058,81 @@ this touches what a material *looks* like, not what the passage flags say.
 it deliberately — floor and surround are different materials, so the boundary reads by colour
 whether or not either is seamless, and the note would fire on nearly every valid call.
 
+### A sheet that is not there
+
+The overlay check above answers *is this material safe on layer 0*. It cannot answer a question
+one level below it: **is there a sheet behind this material at all.** A tileset is nine image
+slots and a slot is allowed to be empty. When it is, a tile id addressing it is not an error the
+engine reports — `Tilemap.Layer` binds a blank bitmap and the tile draws nothing, while the map
+data goes on saying it is there. Every layer is affected, not just layer 0, and unlike an
+overlay there is no situation in which a caller wants it.
+
+**Which slot a tile belongs to is the engine's**, read off `Tilemap._addAutotile` and
+`Tilemap._addNormalTile` in `corescript/v1.9.0/rmmz_core.js`: A1 is set 0, A2 set 1, A3 set 2,
+A4 set 3, A5 set 4, and every other id is `5 + floor(tileId / 256)` — B, C, D, E. That last
+formula leaves **ids 1024-1535 addressing no slot at all**, between the E sheet and A5.
+
+**How often a slot is empty, measured.** Over the six tilesets a new project ships
+(`newdata/data/Tilesets.json`):
+
+| tileset | empty slots |
+|---|---|
+| `Overworld` | A3, A4, A5, D, E |
+| `Outside` | D, E |
+| `Inside` | A3, D, E |
+| `Dungeon` | A3, D, E |
+| `SF Outside` | D, E |
+| `SF Inside` | A3, D, E |
+
+So **four of the six have no A3**, which is where `place_building`'s `roofKind` and
+`generate_town`'s `roofKinds` live, and `Overworld` has neither A3 nor A4 — the range
+`generate_map_layout`'s `surroundKind` reaches into. Across the user's own projects the same
+slots are the thin ones: of 22 tilesets in `Wicked Heart`, `Foo` and `Learn`, **A3 is empty in
+16, D in 19 and E in 20**, against A2 in 3 and C in 3. A3/A4/D/E is where this bites.
+
+**Is a hand-made map ever like this?** Of the 293 sample maps — 441,000 non-empty tiles between
+them — 292 write only to slots their tileset fills. The single exception is `Map278`: 51 E-sheet
+tiles on tileset 2, `Outside`, which has no E. That is far more likely a tileset-index mismatch
+between the shipped sample and `newdata` than the editor permitting it, since the sample maps
+carry a bare `tilesetId` rather than the tileset itself — but the sample is one map, so it is
+recorded rather than explained away. Either way, 1 in 293 means refusing will not fight normal
+authoring. The same sweep found **0 tiles in the unaddressable 1024-1535 band**, so treating
+that range as a caller's arithmetic slip is safe.
+
+**Verified by PNG**, and it is the picture the task was raised on: `generate_map_layout` with
+`floorKind: 16, surroundKind: 98, seed: 7` on `Overworld` renders as an island of floor on pure
+black — the entire A4 surround is absent — while the tool reports *"Surround: A4 wall kind 98"*
+as a success. The same call on `Dungeon`, which has an A4 sheet, gives the dungeon the caller
+meant. Both renders are in the P5-31 commit's session.
+
+`src/core/tileset-sheets.ts` is the one place that decides, wired into `fill_map_region` (both
+`autotileKind` and `tileId`), `paint_tiles` (each distinct value in the batch, labelled with the
+first entry that used it), `generate_map_layout`, `generate_town`, `generate_interior` and
+`place_building`. **There is deliberately no override flag** — that is the difference from
+`allowOverlayOnGround`. An overlay on layer 0 at least draws something, so a caller can mean it;
+a tile from an absent sheet can never draw anything, on any layer, for any caller.
+
+Two things it deliberately does *not* check, and why:
+
+- **Derived kinds.** `place_building` and `generate_town` compute a wall as `roofKind + 8`.
+  A3 block rows alternate roof/wall, so a roof kind's paired wall is always on the same sheet as
+  the roof — checking the roof covers it, and checking the derivation separately would only
+  report the same missing sheet twice. The one case where the derivation leaves the families
+  entirely (`roofKinds: [120]` on `generate_town`, deriving wall kind 128) was checked over MCP
+  and is already refused by `planBuilding`: *"Wall kind 128 is outside the wall families — A3 is
+  48-79 and A4 is 80-127."*
+- **Read filters.** `decorate_dungeon` and `place_dungeon_stairs` take a `floorKind` to tell
+  floor from wall in a map that already exists. Nothing is painted with it, so an absent sheet
+  is not a defect there. Their prop placement was already safe: `collectProps` builds its
+  catalogue from `tilesetNames` and so cannot offer a prop from a sheet the tileset lacks —
+  the gap was only ever in the autotile kinds.
+
+**Still open here**, turned up while testing the derivation above: `generate_town` collects
+per-building refusals into a `failures` list and reports the call as a **success** even when the
+count is *"Buildings: 0 of 2 planned"*. A town with no buildings in it is not a town, and the
+result is a map that was written, cannot be told from a real one by its return status, and has
+to be read carefully to notice. Filed as P5-35.
+
 ### What the map points at
 
 `database-refs.ts` covered the ten tables a command list can name. Three references live

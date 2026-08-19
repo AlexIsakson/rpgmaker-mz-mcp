@@ -9,6 +9,7 @@ import { applyWallShadows } from '../core/shadows.js';
 import { TilesetReader } from '../core/tileset-reader.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { checkGroundKinds } from '../core/ground-material.js';
+import { checkSheetsPresent } from '../core/tileset-sheets.js';
 import { placeBuildingOnMap, BuildingPlacementError } from '../core/building-placement.js';
 import { planTown, renderTownAscii, TownError, TOWN_DEFAULTS } from '../core/towngen.js';
 import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
@@ -174,6 +175,22 @@ export function registerTowngenTools(server: McpServer): void {
             'A3 roof materials from this tileset, or use a tileset built on Outside_C.'
           );
         }
+        // A tileset slot is allowed to be empty, and a kind pointing at an empty
+        // one draws nothing at all. Four of the six shipped tilesets have no A3,
+        // which is where roofKinds and wallKind live, so this catches a whole
+        // town built out of invisible buildings before any of it is written.
+        const sheetRefusal = checkSheetsPresent(
+          [
+            { kind: groundKind, label: 'groundKind' },
+            { kind: roadKind, label: 'roadKind' },
+            { kind: wallKind, label: 'wallKind' },
+            ...(roofKinds ?? []).map((kind, i) => ({ kind, label: `roofKinds[${i}]` })),
+          ],
+          tileset.tilesetNames,
+          tileset.name
+        );
+        if (sheetRefusal !== null) return errorResult(sheetRefusal);
+
         // The ground covers every tile of layer 0 and the streets run across it.
         // groundKind went unchecked until now, which made this the largest
         // unguarded overlay paint in the server — bigger than the fill_map_region

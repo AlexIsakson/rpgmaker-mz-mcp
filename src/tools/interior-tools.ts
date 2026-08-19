@@ -27,6 +27,7 @@ import {
 } from '../core/interiorgen.js';
 import { isDoorEvent, setDoorDestination } from '../core/blueprint.js';
 import { checkGroundKinds } from '../core/ground-material.js';
+import { checkSheetsPresent } from '../core/tileset-sheets.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { addEvent } from '../core/building-placement.js';
 import { collectProps, findProps, propCells, type Prop } from '../core/props.js';
@@ -281,6 +282,20 @@ export function registerInteriorTools(server: McpServer): void {
 
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
         const catalogue = collectProps(tileset.tilesetNames);
+
+        // A tileset slot is allowed to be empty. The walls are A4 and the floor
+        // A2; `Overworld` has no A4 at all, so an interior generated on it would
+        // be a floor with no walls around it and no refusal to say why.
+        const sheetRefusal = checkSheetsPresent(
+          [
+            { kind: style.floorKind, label: 'floorKind' },
+            { kind: style.wallTopKind, label: 'wallTopKind' },
+            { kind: style.wallFaceKind, label: 'wallFaceKind' },
+          ],
+          tileset.tilesetNames,
+          tileset.name
+        );
+        if (sheetRefusal !== null) return errorResult(sheetRefusal);
 
         // The floor goes on layer 0 across the whole room, with nothing under
         // it. An overlay material here is a black room. Checked before the map

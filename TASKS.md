@@ -6,7 +6,7 @@ Work top to bottom; `/continue` takes the first unchecked box.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 15 / 39**
+**Progress: 16 / 40**
 
 ---
 
@@ -334,7 +334,7 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   [One place decides](ROADMAP.md#one-place-decides-whether-a-material-can-go-on-the-ground).
   Turned up P5-31.
 
-- [ ] **P5-31 — Refuse a material whose sheet the tileset does not have**
+- [x] **P5-31 — Refuse a material whose sheet the tileset does not have**
   *(turned up by P5-26.)* P5-26 covers A2, where the classifier can read the image. Nothing
   checks that a non-A2 kind has a sheet behind it at all. Of the 6 tilesets a new project ships,
   **`Overworld` has neither an A3 nor an A4 sheet, and `Inside`, `Dungeon` and `SF Inside` have
@@ -345,6 +345,31 @@ Small, self-contained, and each removes a papercut that currently misleads or bl
   it needs `tilesetNames[n] !== ''`, not an image.
   *Done when:* an autotile kind whose sheet is missing is refused, naming the kind, the sheet
   and the tileset, everywhere a kind can be passed.
+  *Done:* `src/core/tileset-sheets.ts` is the one place that decides, wired into
+  `fill_map_region` (kind *and* raw tileId), `paint_tiles`, `generate_map_layout`,
+  `generate_town`, `generate_interior` and `place_building`. The slot mapping is the engine's,
+  ported from `Tilemap._addAutotile` / `_addNormalTile` (v1.9.0). The task's premise held and
+  understated it: `Overworld` also has no **A5**, and **all six** shipped tilesets lack D and E,
+  so raw tile ids were exposed too — hence the tileId check. Across the user's 22 tilesets
+  **A3 is empty in 16, D in 19, E in 20**. Of 293 sample maps, 292 write only to slots their
+  tileset fills, and 0 of their 441,000 tiles fall in the unaddressable 1024-1535 band. No
+  override flag, deliberately: unlike an overlay, a tile from an absent sheet can never draw
+  anything. Verified by PNG both ways — the `Overworld` + kind 98 render is an island of floor
+  on black; the same seed on `Dungeon` is the dungeon the caller meant. Read-filter `floorKind`
+  arguments (`decorate_dungeon`, `place_dungeon_stairs`) are deliberately not checked, and props
+  were already safe via `collectProps`. See [A sheet that is not there](ROADMAP.md#a-sheet-that-is-not-there).
+  Turned up P5-35.
+
+- [ ] **P5-35 — A town with no buildings should not report success**
+  *(turned up by P5-31.)* `generate_town` collects per-building `BuildingPlacementError`s into a
+  `failures` list and reports the call as a success regardless of how many landed — measured
+  with `roofKinds: [120]` on `Dungeon`, which derives an out-of-family wall kind: every building
+  was refused, the tool printed *"Buildings: 0 of 2 planned"* and returned no error, having
+  written a map of bare ground and props. The refusals themselves are good; treating a town with
+  nothing in it as a completed town is not.
+  *Done when:* a town where no building was placed is a refusal that names why the first one
+  failed, and a partial placement says plainly how many were lost. Decide and state whether the
+  map should still be written when the count is 0.
 
 ## M2 — Make the generators compose
 

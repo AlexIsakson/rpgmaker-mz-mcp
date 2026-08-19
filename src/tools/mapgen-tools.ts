@@ -13,6 +13,7 @@ import {
 } from '../core/mapgen.js';
 import { getAutotileKind, TILE_ID_A2, TILE_ID_A3, TILE_ID_MAX } from '../core/autotile.js';
 import { checkGroundKinds } from '../core/ground-material.js';
+import { checkSheetsPresent } from '../core/tileset-sheets.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { TilesetReader } from '../core/tileset-reader.js';
 import { requireProject } from './project-tools.js';
@@ -131,6 +132,28 @@ export function registerMapgenTools(server: McpServer): void {
         // transparent-holes bug at the largest scale there is. Checked before
         // generating, so a refusal costs nothing.
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
+
+        // A tileset slot is allowed to be empty. `surroundKind` defaults into
+        // the A4 range and `Overworld` — one of the six a new project ships —
+        // has no A4 sheet, so the surround of every dungeon generated on it
+        // drew nothing while the tool reported success. Cheaper than the
+        // overlay check (names, not pixels), so it runs first.
+        const sheetRefusal = checkSheetsPresent(
+          [
+            { kind: floorKind, label: 'floorKind' },
+            { kind: surroundKind, label: 'surroundKind' },
+            { kind: wallFaceKind, label: 'wallFaceKind' },
+          ],
+          tileset.tilesetNames,
+          tileset.name
+        );
+        if (sheetRefusal !== null) {
+          return {
+            content: [{ type: 'text' as const, text: sheetRefusal }],
+            isError: true,
+          };
+        }
+
         const materials = await loadA2Materials(project.path, tileset.tilesetNames);
         const groundCheck = checkGroundKinds(
           [

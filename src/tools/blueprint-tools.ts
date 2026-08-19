@@ -5,6 +5,7 @@ import { FileHandler } from '../core/file-handler.js';
 import { TILE_LAYERS } from '../core/map-layers.js';
 import { applyWallShadows } from '../core/shadows.js';
 import { TilesetReader } from '../core/tileset-reader.js';
+import { checkSheetsPresent } from '../core/tileset-sheets.js';
 import {
   placeBuildingOnMap,
   BuildingPlacementError,
@@ -118,6 +119,24 @@ export function registerBlueprintTools(server: McpServer): void {
         }
         const mapData = (await FileHandler.readJsonRaw(mapPath)) as MapData;
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
+
+        // A tileset slot is allowed to be empty, and a kind addressing an empty
+        // one draws nothing. A3 — where roofKind and its paired wall live — is
+        // absent from four of the six tilesets a new project ships, so a
+        // building placed with an A3 roof on `Inside` or `Dungeon` used to come
+        // out invisible and be reported as placed. The derived wall
+        // (`roofKind + 8`) is on the same sheet as its roof, so checking the
+        // roof covers it.
+        const sheetRefusal = checkSheetsPresent(
+          [
+            { kind: roofKind, label: 'roofKind' },
+            { kind: wallKind, label: 'wallKind' },
+            { tileId: roofTopLeftTileId, label: 'roofTopLeftTileId' },
+          ],
+          tileset.tilesetNames,
+          tileset.name
+        );
+        if (sheetRefusal !== null) return errorResult(sheetRefusal);
 
         let result;
         try {
