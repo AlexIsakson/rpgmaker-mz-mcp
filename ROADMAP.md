@@ -2326,7 +2326,14 @@ untouched and should be — they add to a map by definition. But the same shape 
 down, measured while checking this: `decorate_dungeon` run **twice with the same seed** leaves
 **16 events** where the caller asked for 8 each time — 12 torches and 4 chests, none sharing a
 tile, because the second pass avoids what the first placed rather than recognising it. Seeded
-reproducibility means a re-run should be a no-op, not a doubling. Filed as P5-42.
+reproducibility means a re-run should arguably be a no-op rather than a doubling.
+
+**Deliberately not filed as a task**, and worth saying why, because the judgement is the useful
+part: `decorate_dungeon` is additive by contract and says so in its own description, so "run it
+twice, get twice the decoration" is defensible behaviour rather than a broken promise — which is
+exactly what separates it from the `generate_town` case above. It is recorded here so that
+whoever does decide to change it starts from the measurement instead of rediscovering it. The
+same question applies to `populate_map` and `place_dungeon_stairs`, which were not measured.
 
 ### What the map points at
 

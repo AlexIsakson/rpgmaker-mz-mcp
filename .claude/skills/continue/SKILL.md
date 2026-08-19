@@ -23,9 +23,14 @@ git -C . status --short && git -C . log --oneline -3
   Do not build on top of an unexplained diff.
 - **Behind the remote?** `git pull` before starting.
 
-Read TASKS.md and identify the first `- [ ]` task. State to the user which task you are taking
-and what "done" means for it, in two or three sentences. Then start — do not wait for approval
-unless the task is ambiguous or you disagree with its framing.
+Read TASKS.md and identify the first `- [ ]` task **in the planned sections** — everything above
+`## Found while working`. That trailing section is not part of the queue: take from it only when
+the plan's next task is blocked by one of its entries (say which, and why), or when the user names
+one by id.
+
+State to the user which task you are taking and what "done" means for it, in two or three
+sentences. Then start — do not wait for approval unless the task is ambiguous or you disagree
+with its framing.
 
 ## 2. Do the work
 
@@ -63,8 +68,22 @@ Three files, every time:
 1. **ROADMAP.md** — add or extend the section for this feature: what was measured, what the
    counts were, what is still open. This is the repo's long-form memory and the reason its claims
    hold up; a feature without its section is half done.
-2. **TASKS.md** — tick the checkbox, and update the `**Progress: n / 25**` line. If the work
-   turned up something new, add it as a task rather than leaving it in prose.
+2. **TASKS.md** — tick the checkbox and update whichever of the two progress lines the task
+   belonged to (`**Plan: n / 25**` or `**Found while working: n / m**`).
+
+   If the work turned up something new, it goes in **one of two places, and choosing between
+   them is part of the job**:
+
+   - **A task, appended to the `## Found while working` section at the end** — never next to the
+     task that found it. A discovered bug filed beside its parent inherits the parent's place at
+     the head of the queue and pre-empts the plan; that is how 15 of the first 19 commits went on
+     defects while the plan advanced 4 of 25. The bar is: **a player would notice, or a caller
+     would be misled.**
+   - **A ROADMAP paragraph where the measurement already is** — for everything smaller. Say
+     plainly that it was not filed and why. A tool behaving as its own description promises is
+     not a bug just because the behaviour is inconvenient.
+
+   Either way the measurement gets written down. What changes is whether it takes a turn.
 3. **CLAUDE.md** — only if a convention actually changed.
 
 ## 5. Commit and push

@@ -1,12 +1,21 @@
 # Phase 5 backlog
 
 The ordered list of what is left in **procedural map generation**. One task ≈ one commit.
-Work top to bottom; `/continue` takes the first unchecked box.
+Work top to bottom; `/continue` takes the first unchecked box **of the plan**. Anything it finds
+along the way goes to [Found while working](#found-while-working) at the end, not in front of the
+task after it.
 
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Progress: 19 / 42**
+**Plan: 4 / 25.** The Phase 5 features this backlog was written for.
+
+**Found while working: 15 / 16.** Defects turned up while doing the above, listed at the end.
+
+Two numbers, not one: 19 commits in, most of them went on defects rather than on the plan,
+and a single combined figure hid that. The discovered list is a byproduct of the verification
+CLAUDE.md demands — rendering the map and driving the real server — so it grows when the method
+is working, and it should not be read as the plan slipping.
 
 ---
 
@@ -441,18 +450,6 @@ architectural model into an inhabited place.
   [What the last generation left behind](ROADMAP.md#what-the-last-generation-left-behind).
   Turned up P5-42.
 
-- [ ] **P5-42 — Running a decoration pass twice should not double the decoration**
-  *(turned up by P5-41.)* `decorate_dungeon` run **twice with the same seed and the same
-  arguments** leaves **16 events where the caller asked for 8 each time** — 12 torches and 4
-  chests. No two share a tile, because the second pass avoids what the first placed rather than
-  recognising it as its own. Seeded generation is supposed to be reproducible, and a re-run of an
-  identical call is the most natural thing a caller does while tuning a parameter; it should be a
-  no-op, not an accumulation. Unlike P5-41 this is not a broken promise — the tool is additive by
-  contract and says so — which is why it is a separate task rather than part of that one. Applies
-  to the other additive passes too (`populate_map`, `place_dungeon_stairs`); check each.
-  *Done when:* running the same decoration call twice leaves the map as it was after the first,
-  or the tool says plainly what it is adding to and how much is already there.
-
 - [ ] **P5-05 — `generate_town` places a shop**
   `place_shop` needs a coordinate and `generate_town` builds the buildings; neither knows about
   the other, so a generated town has no merchant unless one is placed by hand. Pick a building,
@@ -470,17 +467,6 @@ architectural model into an inhabited place.
   *Done when:* a building can be entered from above, and the town planner uses both.
   *Note:* the samples say 98 of 107 doors are on the bottom row, so bottom stays the default —
   this adds an option, it does not change the norm.
-
-- [ ] **P5-27 — Generators mark their own regions**
-  *(turned up by P5-02.)* `paint_regions` can write z=5, but every caller has to work out the
-  coordinates itself — which is exactly the knowledge the generators already have and throw
-  away. `generate_map_layout` knows which tiles are floor and which are surround,
-  `generate_town` knows street from plot from doorway, and `lock_dungeon_floor` knows which
-  side of the chokepoint is which. Each could mark its areas as it builds them.
-  *Done when:* a generated map comes back with regions it did not have to be told about, and
-  the ids it used are named in the result.
-  *Note:* the other half of encounter zones is `encounterList`, which no tool writes at all —
-  that belongs with P5-17, and until it exists a regioned map has nothing to gate.
 
 ## M3 — Shape (visual review finding 7)
 
@@ -619,3 +605,27 @@ whole, no puzzle needs two flags, and there are no enemies anywhere.
 - Shape 47 is never emitted; its role for A2 is unconfirmed.
 - Caves are barely lockable — median best split 2.2%, a fact about the cave generator's blobby
   silhouette rather than about the locking tool. P5-09/P5-10 may move this.
+
+---
+
+## Found while working
+
+Defects and gaps turned up *while doing something else*, kept apart from the planned work
+above so that one number does not hide the other. `/continue` drains the plan first and only
+takes from here when a task above is blocked by one of these, or when you ask for it by id.
+
+The bar for landing here rather than in a ROADMAP paragraph: **a player would notice, or a
+caller would be misled.** Everything smaller is written up where it was measured and left
+there — see [What the last generation left behind](ROADMAP.md#what-the-last-generation-left-behind)
+for one that was deliberately not filed.
+
+- [ ] **P5-27 — Generators mark their own regions**
+  *(turned up by P5-02.)* `paint_regions` can write z=5, but every caller has to work out the
+  coordinates itself — which is exactly the knowledge the generators already have and throw
+  away. `generate_map_layout` knows which tiles are floor and which are surround,
+  `generate_town` knows street from plot from doorway, and `lock_dungeon_floor` knows which
+  side of the chokepoint is which. Each could mark its areas as it builds them.
+  *Done when:* a generated map comes back with regions it did not have to be told about, and
+  the ids it used are named in the result.
+  *Note:* the other half of encounter zones is `encounterList`, which no tool writes at all —
+  that belongs with P5-17, and until it exists a regioned map has nothing to gate.
