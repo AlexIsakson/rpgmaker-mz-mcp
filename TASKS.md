@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 14 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 15 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 16 / 18.** Defects turned up while doing the above, listed at the end.
 
@@ -716,11 +716,27 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   holding throughout, and over stdio MCP against a scratch copy of the user's `Foo` project,
   rendered and sent to the user. See [Rock formations, not studs](ROADMAP.md#rock-formations-not-studs).
 
-- [ ] **P5-15 — Something for a cave mouth to sit in**
+- [x] **P5-15 — Something for a cave mouth to sit in**
   The RTP entrance tile is doorway art drawn to sit against a cliff face. On the flat grass of a
   generated surface map it renders as a black rectangle in a field — the tile is correct and the
   cliff is missing. Generate the surround.
   *Done when:* an entrance placed on a generated surface map reads as an entrance in the PNG.
+  *Done:* `place_cave_mouth` (`src/core/cave-mouth.ts`, `src/tools/cave-mouth-tools.ts`) paints a
+  wall-top/wall-face cliff sized around whichever entrance object was asked for, then the object
+  on top — purely visual, no event, meant to be paired with `place_stairs`/`link_dungeon_floors`
+  with their own tile argument left out since the art is already there. The corpus only offers 5
+  maps placing a Cave/Mine Entrance at all, split three different ways, too thin to call any one
+  "the" technique, so this reuses the wall top/face `+8` pairing this server already trusts rather
+  than reproducing one of the three — a stated design, not a measured one, and says so. Rendering
+  "Entrance A" pixel by pixel (rather than trusting its name) turned up that it is the *same* kind
+  of dark silhouette as "Cave Entrance," just 1x1 — needing the identical backdrop, and is the
+  tool's default because it is the one already measured standable. Verified over stdio MCP against
+  a scratch copy of the user's `Foo` project: two cave mouths on flat grass rendered and sent to
+  the user, both reading as a doorway in rock; `check_map_walkability` confirmed the entrance tile
+  standable and reachable, with the report noting the capping wall-top row is walkable-but-isolated
+  along itself — the same already-documented fact `generate_interior`'s own rooms live with, not a
+  new bug. See
+  [A cliff for a cave mouth to sit in](ROADMAP.md#a-cliff-for-a-cave-mouth-to-sit-in).
 
 - [ ] **P5-16 — Something at the end of the dungeon**
   `link_dungeon_floors` deliberately leaves the deepest floor's far end clear and nothing ever

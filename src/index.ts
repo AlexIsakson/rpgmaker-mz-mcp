@@ -18,6 +18,7 @@ import { registerInteriorTools } from './tools/interior-tools.js';
 import { registerNpcTools } from './tools/npc-tools.js';
 import { registerDungeonDressingTools } from './tools/dungeon-dressing-tools.js';
 import { registerStairsTools } from './tools/stairs-tools.js';
+import { registerCaveMouthTools } from './tools/cave-mouth-tools.js';
 import { registerShopTools } from './tools/shop-tools.js';
 import { registerSwitchTools } from './tools/switch-tools.js';
 import { registerLockedDoorTools } from './tools/locked-door-tools.js';
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
   registerNpcTools(server);
   registerDungeonDressingTools(server);
   registerStairsTools(server);
+  registerCaveMouthTools(server);
   registerShopTools(server);
   registerSwitchTools(server);
   registerLockedDoorTools(server);

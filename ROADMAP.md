@@ -3824,6 +3824,61 @@ with `render-map.mjs` shows a mix of single tiles and small irregular clumps of 
 floor, sent to the user directly; `check_map_walkability` and the layout's own connectivity report
 both confirm nothing is sealed off.
 
+### A cliff for a cave mouth to sit in
+
+The RTP's "Entrance" objects — dark doorway silhouettes on the B and C sheets, "Entrance A"
+through "E", plus the taller "Cave Entrance" and "Mine Entrance" — are drawn with transparent
+edges, meant to be set into rock. `link_dungeon_floors`'s `entranceTile` argument could already
+paint one on the map outside a dungeon, but nothing painted the rock: alone on grass the tile
+renders as a dark shape floating in a field, because its transparent edges show whatever the
+layers beneath happen to hold. `place_cave_mouth` (`src/core/cave-mouth.ts`,
+`src/tools/cave-mouth-tools.ts`) is P5-15, the tool that paints the rock first.
+
+**The corpus does not settle a single technique for that rock, and says so rather than picking one
+and sounding confident.** Of the 293 sample maps, only 5 place a Cave or Mine Entrance object at
+all — 6 Cave and 4 Mine placements — and no two back it the same way: one map fills around it with
+plain A2 ground kinds, one paints raw A5 "Mountain" sheet tiles (not an autotile family, so nothing
+generic can shape them the way A2/A4 can), one builds a bespoke multi-layer A4 mountain mass unique
+to itself. Five maps split three ways is too thin to call any of them "the" convention. (The much
+more common "Entrance A" — 75 of the corpus's transfer events, already measured standable in
+["Stairs and entrances"](#stairs-and-entrances) — turned out, once actually rendered pixel by pixel
+rather than assumed from its name, to be the *same* kind of dark silhouette as "Cave Entrance,"
+just 1x1 instead of 1x2, so it needs the identical backdrop and is the tool's default precisely
+because it is the one already known to work.)
+
+**What it reuses instead is the wall top / wall face pairing this server already trusts for a
+building or a room.** `planCaveMouth` caps a small footprint with one row of wall top over a band
+of wall face — the entrance's own height plus one row of headroom by default — sized around
+whichever entrance object was asked for rather than fixed to one shape, so a 1x2 "Cave Entrance"
+gets a taller cliff than a 1x1 "Entrance A" without the caller doing the arithmetic.
+`cliffFaceKind` defaults to `cliffKind + 8`, the same pairing measured at 497 of 614 A3/A4 columns
+across the RTP and already cited in CLAUDE.md. This is a stated design, not a measured one: it
+looks like *a* rock formation because it reuses a convention this codebase already knows reads as
+rock, not because it reproduces any one of the three things the five hand-made maps actually did.
+
+**Purely visual, deliberately.** `place_cave_mouth` paints the cliff and the entrance object and
+writes no event — `link_dungeon_floors` and `place_stairs` already know how to wire a transfer to
+a tile, and both already accept "paint nothing, the art is already here" (their tile arguments are
+optional). Building a second way to write that event would duplicate what they do rather than
+reuse it, so the composition is: paint the cliff with this tool, then link with the other one and
+leave its own tile argument out.
+
+**The capping row of wall top is walkable but isolated, and that is the same already-documented
+fact `generate_interior`'s rooms live with, not a new bug.** A wall top's passage flags are
+directional — open toward more wall top, blocked toward whatever different material is on the
+other side of the edge — so a lone row surrounded by grass on three sides connects along itself but
+nowhere else, precisely the reason `generate_interior`'s own report already tells a caller to
+audit from the room's floor rather than its wall tops. `place_building` never hits this because its
+wall top sits under a roof and is never exposed; a cave mouth has no roof, so its report says so
+explicitly rather than leaving a caller to work out why `check_map_walkability` names a 3-tile
+pocket next to a `cliffKind` that looks, by every other measure, correctly placed.
+
+Verified over stdio MCP against a scratch copy of the user's `Foo` project: two cave mouths on
+flat grass, different `cliffKind`s (98 and 82), rendered with `render-map.mjs` and sent to the
+user — both read as a doorway set into rock rather than a hole in a field. `check_map_walkability`
+confirmed the entrance's own tile is standable and reachable from the open ground in front of it,
+with only the expected isolated wall-top ledge noted, nothing else cut off.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.
