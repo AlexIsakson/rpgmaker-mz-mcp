@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 15 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 16 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 16 / 18.** Defects turned up while doing the above, listed at the end.
 
@@ -738,11 +738,31 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   new bug. See
   [A cliff for a cave mouth to sit in](ROADMAP.md#a-cliff-for-a-cave-mouth-to-sit-in).
 
-- [ ] **P5-16 — Something at the end of the dungeon**
+- [x] **P5-16 — Something at the end of the dungeon**
   `link_dungeon_floors` deliberately leaves the deepest floor's far end clear and nothing ever
   fills it: no boss, no final lock, no set piece. Put the floor's climax there, reusing
   `lock_dungeon_floor`'s chokepoint reasoning.
   *Done when:* the deepest floor ends in something.
+  *Done:* `place_dungeon_climax` (`src/core/dungeon-climax.ts`,
+  `src/tools/dungeon-climax-tools.ts`). `planClimaxLock` (`src/core/chokepoint.ts`) reuses
+  `findChokepoints` but answers a different question than `lock_dungeon_floor`'s "fairest split" —
+  the tightest chamber that still contains the far end `link_dungeon_floors` already chose;
+  `planFromChokepoint` was pulled out of `planFloorLock` so both share the near/opener/reward
+  logic rather than duplicating it. `guardKind: 'boss'` answers all three named gaps at once: a
+  guard event blocks the chokepoint until beaten (the commands are hand-written — `301`, `601`,
+  self-switch, `604` — checked against `walkCommands`, not a restatement of the emitter), reusing
+  every guard `checkDatabaseRefs` already gives `add_event_commands` (troop-name resolution, an
+  unknown name refused rather than allocated, an empty troop refused before it is written).
+  Without a troop it falls back to the same item/switch vault `lock_dungeon_floor` writes, targeted
+  at the tight final chamber instead of an arbitrary split. Guard sprite defaults to `$BigMonster1`
+  — stated, not measured: 0 of 293 sample maps put any RTP monster sheet on an event. Verified over
+  stdio MCP against a scratch copy of the user's `Foo` project: a two-floor dungeon, the climax
+  landing on the exact tile `link_dungeon_floors` named as the far end (11 of 313 tiles, 3.5%,
+  behind the chokepoint), rendered and sent to the user. Found while verifying and fixed rather
+  than filed: `lock_dungeon_floor`'s own report claimed check_map_walkability would show a sealed
+  door's far side as cut off — it does not, since events are never treated as blocking there; both
+  tools' wording now says what the check actually does. See
+  [Something at the end of the dungeon](ROADMAP.md#something-at-the-end-of-the-dungeon).
 
 ## M5 — Game logic
 

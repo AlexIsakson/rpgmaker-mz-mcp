@@ -3879,6 +3879,85 @@ user — both read as a doorway set into rock rather than a hole in a field. `ch
 confirmed the entrance's own tile is standable and reachable from the open ground in front of it,
 with only the expected isolated wall-top ledge noted, nothing else cut off.
 
+### Something at the end of the dungeon
+
+`link_dungeon_floors` always found the deepest floor's far end — the tile furthest from the way
+in, by the same fringe-BFS diameter search `place_stairs` uses — and always left it clear, saying
+only that it was "left clear for whatever the dungeon is for." Nothing ever filled it in. P5-16 is
+`place_dungeon_climax` (`src/core/dungeon-climax.ts`, `src/tools/dungeon-climax-tools.ts`), which
+does.
+
+**The chokepoint reasoning is reused, not reinvented, and reused for a genuinely different
+question.** `lock_dungeon_floor` already had `findChokepoints` picking the *fairest* split — the
+door with the most even near/far sizes, because a three-tile vault behind an arbitrary door is
+barely a vault. `place_dungeon_climax` wants the opposite: not a fair split anywhere on the floor,
+but the *tightest* room that still contains one particular tile — the far end `link_dungeon_floors`
+already chose. `planClimaxLock` (`src/core/chokepoint.ts`) is the four-line difference: filter
+`findChokepoints`'s candidates to the ones that put the target tile on their far side, then take
+the smallest far side rather than the most even one. The rest — which near tile the opener goes on,
+which far tiles a reward can use — was already general enough to reuse outright, so it was pulled
+out of `planFloorLock` into a shared `planFromChokepoint` rather than copied. A test in
+`chokepoint.test.ts` builds a floor with two candidate doors on purpose and checks the two
+functions genuinely disagree: `planFloorLock` takes the fairer one, `planClimaxLock` takes the one
+against the target with a far side under half the size.
+
+**Three gaps, one mechanism.** The task named them separately — no boss, no final lock, no set
+piece — but `guardKind: 'boss'` answers all three at once. A boss guard
+(`climaxGuardEvent`/`climaxGuardPages`) stands directly on the chokepoint tile the same way a
+locked door does, blocks it (`priorityType: 1`) until beaten, and the self-switch that opens the
+way through is set only inside an `if_win` (`601`) arm — an escape or a loss leaves `_branch` at 1
+or 2, `601` skips its body either way, and the guard is left standing exactly as it was. `canLose`
+defaults false, matching the two armless battles the corpus's own block-structure measurement
+(`command-nesting.ts`) already found, and there is no `if_lose` arm here for the same reason that
+module refuses one on an unarmed battle. The commands are written by hand — `301`, `601`, the
+self-switch one indent in, the corpus's own blank-line-before-closer, `604` — rather than run
+through `add_event_commands`'s block pipeline, because there is exactly one shape here, not an
+arbitrary caller-supplied list. `tests/core/dungeon-climax.test.ts` checks the win/escape/loss/
+missing-troop behaviour against `walkCommands`, the same interpreter port P5-28 built, not against
+a restatement of the emitter.
+
+**The troop gets every guard P5-33/P5-34/P5-35 already built**, because `place_dungeon_climax`
+calls `checkDatabaseRefs` directly rather than re-deriving any of it: `troopName` resolves against
+Troops.json the same way `add_event_commands` resolves one, an unknown name is refused rather than
+allocated (a troop is content, not a slot), and an empty troop — the "won before it begins" failure
+P5-33 found in 87 of `Wicked Heart`'s 100 troop rows — is refused here too, before anything is
+written.
+
+**guardKind without a troop falls back to the same item/switch vault `lock_dungeon_floor` already
+writes**, so a caller who wants no combat still gets a real ending: a key or a lever on the near
+side, a locked door on the chokepoint, and the same `rejectSealingSlots` check on the opener that
+`lock_dungeon_floor` runs. What differs is only the target the door is chosen around and the
+framing of the reward (`rewardBand` defaults to `[0.85, 1]`, tighter than `lock_dungeon_floor`'s
+`[0.75, 1]` — the floor's single best find rather than one of several, a judgement stated as such
+rather than measured, since nothing in a project says what a dungeon's climax should be worth).
+
+**The guard's sprite has nothing in the corpus to measure — 0 of 293 sample maps put any RTP
+monster sheet (`Monster`, `SF_Monster`, `$BigMonster1`, `$BigMonster2`, `Evil`) on an event.**
+`$BigMonster1` is the default because the RTP ships it for exactly this (a `$`-prefixed sheet is
+one full-frame image rather than a grid of facings, the shape used for a single large creature),
+not because anything on disk does it that way — `characterName` overrides it, and a caller
+supplying their own sheet is not fighting a convention that does not exist.
+
+**Verified over stdio MCP** against a scratch copy of the user's `Foo` project: two linked dungeon
+floors, `link_dungeon_floors` leaving map 3's far end at (15, 18) clear, then
+`place_dungeon_climax` with `guardKind: 'boss'` and `troopName: 'Treant'` finding the chokepoint at
+(18, 20) — 11 of 313 floor tiles (3.5%) behind it, exactly the tight final chamber the far end sits
+in — resolving the troop name to id 4, and placing the reward chest at (15, 18), the identical tile
+`link_dungeon_floors` had named as the far end. Rendered with `render-map.mjs`: the guard (a horned
+`$BigMonster1` figure) stands beside the chest in the dead-end alcove, reading as a boss guarding a
+find rather than a sprite dropped at random. The `guardKind: 'item'` path was verified the same way
+on a fresh copy — key, sign, chest, all placed and none sealing the near side.
+
+**Found while verifying, and fixed rather than filed**: `lock_dungeon_floor`'s own report claimed
+"check_map_walkability will report the far side as cut off" once a locked door's tile is
+load-bearing. It does not — `analyseWalkability`'s own comment says events standing on tiles are
+not treated as blocking, which the render-and-check verification above confirmed directly rather
+than by reading the comment. `place_dungeon_climax`'s report would have repeated the same wrong
+claim for a guard, so both were corrected to say what `check_map_walkability` actually does: report
+the floor connected either way, because it does not model events at all. One sentence in each of
+two tool outputs — not filed, because it was a stale claim caught and fixed in the same pass that
+found it, not a defect needing its own investigation.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

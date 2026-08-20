@@ -36,7 +36,7 @@ function errorResult(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
 
-const REWARD_DATABASE: Record<GoodsKind, string> = {
+export const REWARD_DATABASE: Record<GoodsKind, string> = {
   item: 'Items.json',
   weapon: 'Weapons.json',
   armor: 'Armors.json',
@@ -52,7 +52,7 @@ const GAIN_COMMANDS: Record<number, GoodsKind> = { 126: 'item', 127: 'weapon', 1
  * Change Items that takes something away (a door consuming its key) is not a
  * reward and must not stop the same entry being used as one.
  */
-function rewardsAlreadyOnMap(mapData: MapData): { kind: GoodsKind; dataId: number }[] {
+export function rewardsAlreadyOnMap(mapData: MapData): { kind: GoodsKind; dataId: number }[] {
   const found: { kind: GoodsKind; dataId: number }[] = [];
   for (const event of mapData.events.filter((e): e is Event => e !== null)) {
     for (const page of event.pages) {
@@ -69,8 +69,14 @@ function rewardsAlreadyOnMap(mapData: MapData): { kind: GoodsKind; dataId: numbe
   return found;
 }
 
-/** Where the player comes into this map, taken from its own events. */
-function findEntrance(mapData: MapData): { slot: Slot; from: string } | null {
+/**
+ * Where the player comes into this map, taken from its own events.
+ *
+ * Shared with `place_dungeon_climax`, which needs the same "which tile did the
+ * player walk in on" answer this does — a stair or interior exit is a transfer
+ * page, and the tile it stands on is where the other side lands you.
+ */
+export function findEntrance(mapData: MapData): { slot: Slot; from: string } | null {
   for (const event of mapData.events.filter((e): e is Event => e !== null)) {
     for (const page of event.pages) {
       // A stair or interior exit is a transfer page: the tile it stands on is
@@ -570,8 +576,10 @@ export function registerFloorLockTools(server: McpServer): void {
           lines.push(
             '',
             'Note: the door tile itself is load-bearing for connectivity, which is the point — ' +
-            'until it is opened, the far side is unreachable. That is the intended state, not a ' +
-            'walkability bug, and check_map_walkability will report the far side as cut off.'
+            'until it is opened, the far side is unreachable in game. That is the intended ' +
+            'state, not a walkability bug — but check_map_walkability will not show it: events ' +
+            'standing on tiles are not treated as blocking there, so it reports the whole floor ' +
+            'connected either way.'
           );
         }
 

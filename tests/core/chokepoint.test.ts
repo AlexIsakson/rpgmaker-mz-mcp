@@ -4,6 +4,7 @@ import {
   reachableFrom,
   findChokepoints,
   planFloorLock,
+  planClimaxLock,
 } from '../../src/core/chokepoint.js';
 
 /**
@@ -222,6 +223,55 @@ describe('planFloorLock', () => {
   it('is deterministic', () => {
     const once = planFloorLock(floor, { entrance: { x: 1, y: 1 }, minSideFraction: 0.1 });
     const twice = planFloorLock(floor, { entrance: { x: 1, y: 1 }, minSideFraction: 0.1 });
+    expect(once).toEqual(twice);
+  });
+});
+
+describe('planClimaxLock', () => {
+  // entrance room (9 tiles) -- corridor A (4,2) -- mid room (9 tiles) --
+  // corridor B (8,2) -- final room (6 tiles). Both corridors isolate the
+  // final room from the entrance; A is the fairer split (min side 9 vs the
+  // rest), B is the tighter one (min side 6, right against the target).
+  const floor = grid([
+    '############',
+    '#...#...#..#',
+    '#..........#',
+    '#...#...#..#',
+    '############',
+  ]);
+  const entrance = { x: 2, y: 2 };
+  const target = { x: 9, y: 2 };
+
+  it('picks the tight door around the target, not the fairest split', () => {
+    const climax = planClimaxLock(floor, { entrance, target, minSideFraction: 0.05 })!;
+    expect(climax).not.toBeNull();
+    expect(`${climax.door.x},${climax.door.y}`).toBe('8,2');
+    expect(climax.door.farSize).toBe(6); // just the final room
+
+    // planFloorLock, asked the same question without a target, takes the more
+    // even split instead — a door nearer the middle, with a far side several
+    // times the size of the climax's tight final chamber.
+    const fairest = planFloorLock(floor, { entrance, minSideFraction: 0.05 })!;
+    expect(fairest.door.farSize).toBeGreaterThan(climax.door.farSize * 2);
+  });
+
+  it('always puts the target on the far side of the door it returns', () => {
+    const climax = planClimaxLock(floor, { entrance, target, minSideFraction: 0.05 })!;
+    const farKeys = climax.far.map((s) => `${s.x},${s.y}`);
+    expect(farKeys).toContain(`${target.x},${target.y}`);
+  });
+
+  it('returns null when nothing separates the target from the entrance', () => {
+    // A ring: every tile has a way round, so no chokepoint isolates anything.
+    const ring = grid(['#####', '#...#', '#.#.#', '#...#', '#####']);
+    expect(
+      planClimaxLock(ring, { entrance: { x: 1, y: 1 }, target: { x: 3, y: 3 } })
+    ).toBeNull();
+  });
+
+  it('is deterministic', () => {
+    const once = planClimaxLock(floor, { entrance, target, minSideFraction: 0.05 });
+    const twice = planClimaxLock(floor, { entrance, target, minSideFraction: 0.05 });
     expect(once).toEqual(twice);
   });
 });

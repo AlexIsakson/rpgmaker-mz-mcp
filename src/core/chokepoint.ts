@@ -259,15 +259,31 @@ export function planFloorLock(
 ): FloorLockPlan | null {
   const chokepoints = findChokepoints(floor, options);
   if (chokepoints.length === 0) return null;
+  return planFromChokepoint(floor, options.entrance, options.blocked, chokepoints[0]);
+}
 
-  const door = chokepoints[0];
-  const nearSet = reachableFrom(floor, options.entrance, door);
+/**
+ * The rest of `planFloorLock`, given a door that has already been chosen.
+ *
+ * Split out so a caller that needs a *different* door than "the most even
+ * split" — `place_dungeon_climax` wants the tightest chokepoint that still
+ * isolates one particular tile, not the fairest one — can reuse everything
+ * past that choice: which near tile the opener goes on, and which far tiles a
+ * reward can use.
+ */
+export function planFromChokepoint(
+  floor: boolean[][],
+  entrance: Slot,
+  blockedSlots: Slot[] | undefined,
+  door: Chokepoint
+): FloorLockPlan | null {
+  const nearSet = reachableFrom(floor, entrance, door);
   const near: Slot[] = [...nearSet].map((cell) => {
     const [x, y] = cell.split(',').map(Number);
     return { x, y };
   });
 
-  const blocked = new Set((options.blocked ?? []).map((s) => key(s.x, s.y)));
+  const blocked = new Set((blockedSlots ?? []).map((s) => key(s.x, s.y)));
   const height = floor.length;
   const width = floor[0]?.length ?? 0;
   const floorNeighbours = (x: number, y: number) =>
@@ -279,9 +295,7 @@ export function planFloorLock(
 
   const distance = (s: Slot) => Math.abs(s.x - door.x) + Math.abs(s.y - door.y);
   const usable = near.filter(
-    (s) =>
-      !blocked.has(key(s.x, s.y)) &&
-      !(s.x === options.entrance.x && s.y === options.entrance.y)
+    (s) => !blocked.has(key(s.x, s.y)) && !(s.x === entrance.x && s.y === entrance.y)
   );
   if (usable.length === 0) return null;
 
@@ -309,4 +323,34 @@ export function planFloorLock(
   );
 
   return { door, near, far, opener, rewardSpots };
+}
+
+/**
+ * The tightest door that still puts one particular tile behind it.
+ *
+ * `planFloorLock` picks the *most even* split, which is the right question for
+ * an arbitrary vault — a door with three tiles behind it is barely a door. It is
+ * the wrong question for `place_dungeon_climax`, which already knows which tile
+ * matters: the floor's far end, the one `link_dungeon_floors` leaves clear.
+ * What that call wants is the *smallest* chamber that still contains it — the
+ * room right at the end of the dungeon, not a random half of the map.
+ *
+ * A chokepoint counts only if the target is on its far side — reachable from
+ * the entrance with the door itself blocked, but not without it. Among those,
+ * the smallest far side wins, which is what makes the room tight rather than
+ * sweeping in half the dungeon along the way.
+ */
+export function planClimaxLock(
+  floor: boolean[][],
+  options: ChokepointOptions & { target: Slot }
+): FloorLockPlan | null {
+  const isolating = findChokepoints(floor, options).filter((cp) => {
+    if (cp.x === options.target.x && cp.y === options.target.y) return false;
+    const near = reachableFrom(floor, options.entrance, cp);
+    return !near.has(key(options.target.x, options.target.y));
+  });
+  if (isolating.length === 0) return null;
+
+  isolating.sort((a, b) => a.farSize - b.farSize || a.y - b.y || a.x - b.x);
+  return planFromChokepoint(floor, options.entrance, options.blocked, isolating[0]);
 }

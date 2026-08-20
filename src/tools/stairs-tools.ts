@@ -254,7 +254,7 @@ async function linkSides(
  * prop to seal. Running the two tools in the obvious order put a decorated
  * dungeon's entrance on a tile the player could not reach.
  */
-function floorMask(
+export function floorMask(
   entry: { data: MapData; flags: number[] },
   floorKind: number | undefined
 ): { floor: boolean[][]; basis: string; note: string | null } {
@@ -286,7 +286,7 @@ function floorMask(
   };
 }
 
-const eventSlots = (data: MapData): Slot[] =>
+export const eventSlots = (data: MapData): Slot[] =>
   data.events.filter((e): e is Event => e !== null).map((e) => ({ x: e.x, y: e.y }));
 
 export function registerStairsTools(server: McpServer): void {
