@@ -22,8 +22,8 @@ import { logger } from '../logger.js';
  * default tileset; a project with its own art gets told what was missing rather
  * than a silent failure.
  */
-const DEFAULT_UP_TILE = 'Stairs A (Up)';
-const DEFAULT_DOWN_TILE = 'Stairs A (Down)';
+export const DEFAULT_UP_TILE = 'Stairs A (Up)';
+export const DEFAULT_DOWN_TILE = 'Stairs A (Down)';
 
 function errorResult(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
@@ -73,8 +73,14 @@ class MapSession {
   }
 }
 
-/** Resolve a stair tile by name against one map's tileset. */
-function resolveStairProp(names: string[], tileName: string): Prop | null {
+/**
+ * Resolve a stair tile by name against one map's tileset.
+ *
+ * Shared with `generate_interior`'s second-storey option, which paints the
+ * same "Stairs A (Up/Down)" pair at the top and bottom of an interior
+ * staircase and wants the exact-name-first preference this already has.
+ */
+export function resolveStairProp(names: string[], tileName: string): Prop | null {
   const matches = findProps(collectProps(names), tileName);
   // Prefer the narrowest match: "Stairs A (Up)" over a substring hit on
   // something larger, and a 1x1 stair over a 1x3 ladder when both match.

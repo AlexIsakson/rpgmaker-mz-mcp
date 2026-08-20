@@ -20,10 +20,12 @@ import {
   planInterior,
   renderInteriorAscii,
   exitEvent,
+  reserveInteriorSlots,
   InteriorError,
   VOID_TILE,
   type Cell,
   type InteriorPlan,
+  type Slot,
 } from '../core/interiorgen.js';
 import { isDoorEvent, setDoorDestination } from '../core/blueprint.js';
 import { checkGroundKinds } from '../core/ground-material.js';
@@ -32,10 +34,18 @@ import { clearMap } from '../core/map-reset.js';
 import { loadA2Materials } from '../core/tileset-image.js';
 import { addEvent } from '../core/building-placement.js';
 import { collectProps, findProps, propCells, type Prop } from '../core/props.js';
+import { npcEvent, DEFAULT_NPC_SHEETS, charactersOnSheet } from '../core/npcgen.js';
+import { stairEvent } from '../core/stairs.js';
+import { shopCommands, describeGoods, type Goods } from '../core/shop.js';
+import { standableGrid } from '../core/walkability.js';
 import { requireProject } from './project-tools.js';
 import { mapFilename, createMapFile } from './map-tools.js';
+import { listCharacterSheets } from './npc-tools.js';
+import { loadPresetStock, SHOP_GREETINGS } from './shop-tools.js';
+import { resolveStairProp, DEFAULT_UP_TILE, DEFAULT_DOWN_TILE } from './stairs-tools.js';
 import type { MapData } from '../schemas/map.js';
 import type { Event } from '../schemas/event.js';
+import type { Tileset } from '../schemas/tileset.js';
 import { logger } from '../logger.js';
 
 const A2_KIND_MIN = getAutotileKind(TILE_ID_A2);
@@ -218,6 +228,40 @@ export function registerInteriorTools(server: McpServer): void {
           'Lay an overlay A2 material as the floor anyway. Refused by default because its ' +
           'transparent edges render as black across the whole room.'
         ),
+      shop: z.boolean().default(false)
+        .describe(
+          'Furnish the room as a shop: a keeper against a wall, stocked from the project ' +
+          'database the way place_shop already does. Uses one of the room\'s furniture slots, ' +
+          'so it comes out of furnitureCount rather than on top of it.'
+        ),
+      shopPreset: z.enum(['general', 'weapon', 'armor']).default('general')
+        .describe('What the shop deals in. Same presets as place_shop.'),
+      shopStockCount: z.number().int().min(1).max(40).default(6)
+        .describe('How many things the shop stocks'),
+      shopPriceBand: z.array(z.number().min(0).max(1)).length(2).optional()
+        .describe(
+          'Slice of the price range to stock, as two fractions of the tradeable entries sorted ' +
+          'by price. Defaults to [0, 0.5] — the cheaper half.'
+        ),
+      shopGreeting: z.string().optional()
+        .describe('What the keeper says before the window opens. Omit for the preset line.'),
+      shopSheets: z.array(z.string()).optional()
+        .describe(`Sprite sheets to draw the keeper from. Defaults to ${DEFAULT_NPC_SHEETS.join(', ')}.`),
+      secondStorey: z.boolean().default(false)
+        .describe(
+          'Also build an upper floor, as a second map joined by a staircase: place_stairs\' own ' +
+          'event page, painted at the top and the bottom, landing the player back on the same ' +
+          'tile they left from either way. Takes a second furniture slot, the same as shop.'
+        ),
+      secondStoreyTilesetId: z.number().int().positive().optional()
+        .describe('Tileset for the new upstairs map. Defaults to this room\'s own tileset.'),
+      secondStoreySeed: z.number().int().optional()
+        .describe('Seed for the upstairs room\'s shape and furniture. Defaults to seed + 1.'),
+      secondStoreyName: z.string().default('Upstairs').describe('Name for the new upstairs map'),
+      stairsUpTile: z.string().default(DEFAULT_UP_TILE)
+        .describe(`Tile painted where the stairs start. Defaults to "${DEFAULT_UP_TILE}".`),
+      stairsDownTile: z.string().default(DEFAULT_DOWN_TILE)
+        .describe(`Tile painted where they land upstairs. Defaults to "${DEFAULT_DOWN_TILE}".`),
       ...styleSchema(),
     },
     async (args) => {
@@ -257,6 +301,98 @@ export function registerInteriorTools(server: McpServer): void {
             `The room needs a ${plan.width}x${plan.height} map but map ${mapId} is ` +
             `${mapData.width}x${mapData.height}. A room is the floor plus a wall each side and ` +
             'three rows of front wall below it — resize the map, or use a smaller floor.'
+          );
+        }
+
+        const notes: string[] = [];
+
+        // --- shop and second storey: work out what is actually going to happen
+        // before anything is written, so a refusal never leaves a half-built room ---
+        let shopStock: { goods: Goods[]; names: Map<string, string> } | null = null;
+        let keeperSheet: string | null = null;
+        let keeperIndex = 0;
+        if (args.shop) {
+          const stock = await loadPresetStock(
+            project.dataPath, args.shopPreset, args.shopStockCount,
+            args.shopPriceBand as [number, number] | undefined
+          );
+          if (stock.refusal !== null) {
+            notes.push(`${stock.refusal} The room was built without a shop.`);
+          } else {
+            const available = await listCharacterSheets(project.path);
+            const wanted = args.shopSheets ?? DEFAULT_NPC_SHEETS;
+            const sheets = wanted.filter((s) => available.length === 0 || available.includes(s));
+            if (sheets.length === 0) {
+              notes.push(
+                `None of ${wanted.join(', ')} are in img/characters, so the room was built ` +
+                'without a shop. Use list_character_sheets to see what the project has, and ' +
+                'pass shopSheets.'
+              );
+            } else {
+              shopStock = stock;
+              keeperSheet = sheets[0];
+              keeperIndex = charactersOnSheet(keeperSheet) === 1 ? 0 : args.seed % 8;
+            }
+          }
+        }
+
+        // A missing sheet here is refused, not noted — unlike the shop's stock,
+        // which degrades to no shop, a wall or floor kind the tileset cannot draw
+        // leaves an upper floor that is broken rather than merely unfurnished, the
+        // same reasoning the ground floor's own checks below already act on.
+        let secondTileset: Tileset | null = null;
+        let upstairsPlan: InteriorPlan | null = null;
+        const secondTilesetId = args.secondStoreyTilesetId ?? mapData.tilesetId;
+        if (args.secondStorey) {
+          secondTileset = await TilesetReader.get(project.dataPath, secondTilesetId);
+
+          const upstairsSheetRefusal = checkSheetsPresent(
+            [
+              { kind: style.floorKind, label: 'floorKind (upstairs)' },
+              { kind: style.wallTopKind, label: 'wallTopKind (upstairs)' },
+              { kind: style.wallFaceKind, label: 'wallFaceKind (upstairs)' },
+            ],
+            secondTileset.tilesetNames,
+            secondTileset.name
+          );
+          if (upstairsSheetRefusal !== null) return errorResult(upstairsSheetRefusal);
+
+          const upstairsGroundCheck = checkGroundKinds(
+            [{ kind: style.floorKind, label: 'floorKind (upstairs)', layer: 0, coversMap: true }],
+            await loadA2Materials(project.path, secondTileset.tilesetNames),
+            secondTileset.name,
+            { allowOverlayOnGround: args.allowOverlayOnGround, reportUncheckable: true }
+          );
+          if (upstairsGroundCheck.refusal !== null) return errorResult(upstairsGroundCheck.refusal);
+          notes.push(...upstairsGroundCheck.notes);
+
+          try {
+            upstairsPlan = planInterior({
+              floorWidth: args.floorWidth,
+              floorHeight: args.floorHeight,
+              margin: args.margin,
+              doorOffsetX: null,
+              seed: args.secondStoreySeed ?? args.seed + 1,
+              cutCorners: args.cutCorners,
+            });
+          } catch (error) {
+            if (error instanceof InteriorError) return errorResult(`Upstairs room: ${error.message}`);
+            throw error;
+          }
+        }
+
+        const reserved = reserveInteriorSlots(plan.furnitureSlots, {
+          shop: shopStock !== null,
+          secondStorey: args.secondStorey,
+        });
+        if (reserved === null) {
+          const wants = [
+            shopStock !== null ? 'a shopkeeper' : null,
+            args.secondStorey ? 'a staircase' : null,
+          ].filter((s): s is string => s !== null);
+          return errorResult(
+            `This room has ${plan.furnitureSlots.length} tile(s) against a wall, not enough for ` +
+            `${wants.join(' and ')}. Make the room bigger, or turn one of them off.`
           );
         }
 
@@ -323,10 +459,114 @@ export function registerInteriorTools(server: McpServer): void {
         // src/core/map-reset.ts.
         clearMap(mapData, { events: true });
 
-        const result = buildInterior(mapData, plan, style, catalogue, outward);
+        // furnish() takes plan.furnitureSlots as given, so the shop and stairs
+        // tiles reserveInteriorSlots carved out are handed a copy with only what
+        // is left — cells and exit are untouched, since those come from the same
+        // plan either way.
+        const furnishPlan: InteriorPlan = { ...plan, furnitureSlots: reserved.remaining };
+        const result = buildInterior(mapData, furnishPlan, style, catalogue, outward);
+
+        let shopEventId: number | null = null;
+        if (shopStock !== null && reserved.shop && keeperSheet !== null) {
+          const greeting = args.shopGreeting ?? SHOP_GREETINGS[args.shopPreset];
+          const keeper = addEvent(mapData, (id) =>
+            npcEvent(id, reserved.shop!.x, reserved.shop!.y, 'Shop', {
+              characterName: keeperSheet!,
+              characterIndex: keeperIndex,
+              text: greeting,
+              movement: 'fixed',
+              commands: shopCommands(shopStock!.goods, false),
+            })
+          );
+          shopEventId = keeper.id;
+        }
+
+        // Paint a stair prop and report what it did to the tile's passability —
+        // the same two checks place_stairs makes, because a stair tile is not
+        // reliably standable and which ones are not varies per tileset.
+        const paintStairSide = (
+          data: MapData, names: string[], tileName: string, at: Slot, propLayer: number
+        ): void => {
+          const prop = resolveStairProp(names, tileName);
+          if (!prop) {
+            notes.push(
+              `"${tileName}" is not in this tileset, so no stair tile was painted at ` +
+              `(${at.x}, ${at.y}) — the link still works, it is just invisible.`
+            );
+            return;
+          }
+          const placements: Placement[] = propCells(prop).map((cell) => ({
+            x: at.x + cell.dx, y: at.y + cell.dy, tileId: cell.tileId,
+          }));
+          const painted = applyPlacements(readLayer(data, propLayer), placements, { computeShapes: false });
+          writeLayer(data, propLayer, painted.grid);
+        };
+
+        let interiorId: number | null = null;
+        let interiorMapPath = '';
+        let interiorMapData: MapData | null = null;
+        if (args.secondStorey && upstairsPlan && secondTileset && reserved.stairs) {
+          const stairsSlot = reserved.stairs;
+
+          interiorId = await createMapFile(project.dataPath, {
+            name: args.secondStoreyName,
+            width: upstairsPlan.width,
+            height: upstairsPlan.height,
+            tilesetId: secondTilesetId,
+            parentId: mapId,
+          });
+          interiorMapPath = path.join(project.dataPath, mapFilename(interiorId));
+          interiorMapData = (await FileHandler.readJsonRaw(interiorMapPath)) as MapData;
+
+          const secondCatalogue = collectProps(secondTileset.tilesetNames);
+          buildInterior(interiorMapData, upstairsPlan, style, secondCatalogue, {
+            mapId, x: stairsSlot.x, y: stairsSlot.y,
+          });
+
+          // The stairs-up event. Landing the player exactly back on this tile —
+          // not beside it — is deliberate: transferEventPage's own docs are why a
+          // down-stair can put the player straight onto the up-stair without
+          // bouncing them between floors, since a player-touch event does not
+          // re-fire on the tile a transfer lands them on.
+          addEvent(mapData, (id) =>
+            stairEvent(
+              id, stairsSlot.x, stairsSlot.y,
+              { mapId: interiorId!, x: upstairsPlan!.arrival.x, y: upstairsPlan!.arrival.y },
+              'StairsUp'
+            )
+          );
+
+          paintStairSide(mapData, tileset.tilesetNames, args.stairsUpTile, stairsSlot, style.propLayer);
+          paintStairSide(
+            interiorMapData, secondTileset.tilesetNames, args.stairsDownTile,
+            upstairsPlan.arrival, style.propLayer
+          );
+
+          // Checked after painting, on the real tiles: a stair prop can be
+          // impassable in its own right (measured on Inside and SF Outside), and
+          // since passage resolves top-down only the top tile's flags matter once
+          // one is painted.
+          const groundStandable = standableGrid(mapData, tileset.flags);
+          if (!groundStandable[stairsSlot.y]?.[stairsSlot.x]) {
+            notes.push(
+              `The stairs-up tile at (${stairsSlot.x}, ${stairsSlot.y}) is not standable, so this ` +
+              'link is dead. Some tilesets\' stair props are blocked from all four sides — pass a ' +
+              'different stairsUpTile, or check with check_map_walkability.'
+            );
+          }
+          const upstairsStandable = standableGrid(interiorMapData, secondTileset.flags);
+          if (!upstairsStandable[upstairsPlan.arrival.y]?.[upstairsPlan.arrival.x]) {
+            notes.push(
+              `The landing tile at (${upstairsPlan.arrival.x}, ${upstairsPlan.arrival.y}) upstairs ` +
+              'is not standable, so this link is dead. Pass a different stairsDownTile, or check ' +
+              'with check_map_walkability.'
+            );
+          }
+        }
 
         await FileHandler.writeJson(mapPath, mapData);
         if (doorMap) await FileHandler.writeJson(doorMapPath, doorMap);
+        if (interiorMapData) await FileHandler.writeJson(interiorMapPath, interiorMapData);
         await project.getVersionSync().bump();
 
         logger.info(`Generated interior on map ${mapId} (${plan.width}x${plan.height})`);
@@ -353,7 +593,23 @@ export function registerInteriorTools(server: McpServer): void {
         if (result.missing.length > 0) {
           lines.push(`Not in this tileset, so skipped: ${result.missing.join(', ')}.`);
         }
-        lines.push(...groundCheck.notes);
+        if (shopEventId !== null) {
+          lines.push(
+            `Shop: event ${shopEventId} at (${reserved.shop!.x}, ${reserved.shop!.y}), ` +
+            `${shopStock!.goods.length} row(s) of ${args.shopPreset} stock.`,
+            ...describeGoods(shopStock!.goods, shopStock!.names).map((g) => `  ${g}`)
+          );
+        }
+        if (interiorId !== null && upstairsPlan) {
+          lines.push(
+            `Upstairs: map ${interiorId} "${args.secondStoreyName}" (${upstairsPlan.width}x` +
+            `${upstairsPlan.height}), reached by the stairs at (${reserved.stairs!.x}, ` +
+            `${reserved.stairs!.y}) here. check_map_walkability mapId=${interiorId} ` +
+            `startX=${upstairsPlan.arrival.x} startY=${upstairsPlan.arrival.y} audits it the same ` +
+            'way.'
+          );
+        }
+        lines.push(...groundCheck.notes, ...notes);
         lines.push(
           '',
           renderInteriorAscii(plan),

@@ -3688,6 +3688,76 @@ by `nearest`/`doorTiles`'s own logic and by `situationalLine`'s direction/distan
 any measurement, same as the vault's five theme tables — a caller who wants dialogue that matters
 still passes their own, which the tool description says outright.
 
+### A room that sells things or leads upstairs
+
+`generate_interior` built one room, varying only in which furniture props landed against its
+walls: no way to make it a shop, and no way to get from it to anywhere but back out the door it
+came in by. `place_stairs` already had everything a staircase needs; nothing in the interior
+generator reached for it. P5-13 is both, added to `generate_interior` rather than as new tools,
+because a shop and a second storey are things *this room* becomes, not separate objects placed
+onto it.
+
+**Both reuse existing pieces rather than inventing new ones**, which is the point of the task:
+
+- **The shop** is `loadPresetStock` and `shopCommands` — the exact functions `generate_town`
+  already calls to stock its own shop — wired to an `npcEvent` standing on one of the room's
+  `furnitureSlots`. A missing sprite sheet or an empty database degrades to a note and a shopless
+  room, matching `generate_town`'s own precedent for the identical failure, rather than refusing
+  outright: the room is still good even without a merchant in it.
+- **The second storey** reuses `buildInterior` twice rather than once. The upstairs room is an
+  ordinary `planInterior` room, built the ordinary way — its own front-wall doorway and
+  `exitEvent` are not special-cased, they are simply pointed at the ground floor instead of at an
+  outdoor door. The one new fact came from `stairs.ts`'s own documentation, not from new
+  reasoning: *"a down-stair can put the player straight onto the up-stair that leads back, ...
+  because a player-touch event does not re-fire on the tile a transfer lands them on."* That is
+  why the ground floor's stairs-up event and the upstairs room's landing tile are the *same*
+  coordinate on each side rather than the door-link convention's "one tile in front of" — a
+  staircase is one physical object touched from both ends, not two tiles either side of a
+  threshold.
+
+**A shopkeeper and a staircase both cost a furniture slot, and reserving them safely needed no new
+reasoning either.** `keepWalkable` already proves that *any prefix* of `furnitureSlots` can be
+taken without cutting the room in two — that is what lets `furnitureCount` shrink or grow freely.
+`reserveInteriorSlots` (`src/core/interiorgen.ts`) just takes the first one or two slots for the
+shop and the stairs before furniture gets the rest, and refuses by returning `null` — checked
+before anything is written — on the room too small to hold what was asked for. Measured with
+`planInterior`'s own defaults: a 7x5 room offers 15-17 furniture slots across five seeds and even
+the smallest legal room (3x2) offers 4, so the refusal exists for correctness rather than because
+it is expected to fire.
+
+**The stair art is painted with the same helper `place_stairs` uses**, now exported —
+`resolveStairProp` and the `DEFAULT_UP_TILE`/`DEFAULT_DOWN_TILE` names — rather than copied, and
+the same two things that can go wrong with it are handled the same way `place_stairs` already
+decided to handle them: a tile name the tileset does not have, and a stair prop that turns out to
+be impassable in its own right (measured in
+[Stairs and entrances](#stairs-and-entrances), `Inside`'s "Stairs C (Up)" and `SF Outside`'s
+"Stairs A (Up)" are blocked from all four sides). Both are
+notes, not refusals, matching `place_stairs`'s own precedent: the transfer event works with or
+without the art.
+
+**Verified over stdio MCP** against a scratch copy of the user's `Foo` project (never the
+original), on its `Inside` tileset: a shop stocked with 6 general-goods rows, a keeper standing at
+(5, 7), stairs at (9, 5) leading to a second map created on the fly, and a landing on that map
+whose own `exitEvent` leads back to that exact tile. `check_map_walkability` on both maps reports
+the area reachable from the real arrival tile equal to the largest connected area — the whole room,
+on both floors, in one piece. Rendered with `render-map.mjs`: the shopkeeper's sprite is visible
+and standing clear of the furniture, the painted stair tile shows correctly under the render
+script's own "invisible event" debug marker (a magenta box drawn for any event with no character
+sprite, not an error — a stair event is meant to be invisible in play), and the upstairs room is
+fully furnished and connected. One thing the render also showed, worth recording rather than
+mistaking for a bug: `Foo`'s own `Inside_B.png` is not RTP-standard art, so the tile the catalogue
+labels `"Stairs A (Up)"` on that particular sheet is a section of a building fascia, not a
+staircase — a property of that project's custom art meeting a catalogue measured against the
+RTP's own label files, not something this task's code gets wrong. The rendered PNGs were sent to
+the user directly.
+
+**Turned up P5-42.** Calling `generate_interior` a second time with `secondStorey` on a room that
+already has one does not reuse or overwrite the previous upstairs map — `createMapFile` always
+allocates a fresh id, so the old one is orphaned: still on disk, still in `MapInfos`, no longer
+reachable from anywhere. The same class of defect as
+[What the last generation left behind](#what-the-last-generation-left-behind), which is why it is
+filed rather than folded into this task — see `TASKS.md`.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

@@ -8,9 +8,9 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 12 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 13 / 25.** The Phase 5 features this backlog was written for.
 
-**Found while working: 16 / 17.** Defects turned up while doing the above, listed at the end.
+**Found while working: 16 / 18.** Defects turned up while doing the above, listed at the end.
 
 Two numbers, not one: most commits so far went on defects rather than on the plan,
 and a single combined figure hid that. The discovered list is a byproduct of the verification
@@ -669,10 +669,31 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   direction/distance to the shop, and a second, door-less map's `populate_map` gave 5 more. See
   [Dialogue that knows where it stands](ROADMAP.md#dialogue-that-knows-where-it-stands).
 
-- [ ] **P5-13 — Interiors worth entering**
+- [x] **P5-13 — Interiors worth entering**
   A room is one rectangle varying only in furniture: no shop interiors, no upper floors. Stairs up
   would be `place_stairs`, which exists — nothing generates the floor above.
   *Done when:* an interior can be a shop or have a second storey.
+  *Done:* both added to `generate_interior` by reusing existing pieces rather than inventing new
+  ones. The shop is `loadPresetStock`/`shopCommands` — what `generate_town` already calls — wired
+  to an `npcEvent`. The second storey is `buildInterior` called twice: the upstairs room is an
+  ordinary `planInterior` room whose own front-wall doorway is pointed at the ground floor instead
+  of an outdoor door, landing the player on the *same* tile on each side rather than one-tile-
+  offset the way a door link does — because `stairs.ts`'s own docs say a player-touch event does
+  not re-fire on the tile a transfer lands them on, so a paired staircase is one object touched
+  from both ends. `reserveInteriorSlots` (`src/core/interiorgen.ts`) carves a shopkeeper's and a
+  staircase's tile out of `furnitureSlots` before furniture gets the rest, safe for the same reason
+  `keepWalkable` already proved any prefix of that list keeps the room whole; refuses by name on a
+  room too small to hold what was asked for, which measured out to effectively never (a 7x5 room
+  offers 15-17 slots, the smallest legal room offers 4). The stair art reuses `place_stairs`'s own
+  `resolveStairProp` and tile names, now exported, with the same two things that can go wrong
+  handled the same way it already decided: a missing tile name and an impassable stair prop are
+  both notes, not refusals. Verified over stdio MCP against a scratch copy of the user's `Foo`
+  project: a stocked shop with a keeper, a staircase to a second map built on the fly, and
+  `check_map_walkability` reporting the whole room reachable on both floors. Rendered with
+  `render-map.mjs` and sent to the user — the stair tile paints correctly under the render
+  script's own debug marker for an invisible event. See
+  [A room that sells things or leads upstairs](ROADMAP.md#a-room-that-sells-things-or-leads-upstairs).
+  Turned up P5-42.
 
 - [ ] **P5-14 — Pillars in clumps**
   Single-tile pillars read as studs rather than rock formations. The obstacle is that the
@@ -808,3 +829,17 @@ for one that was deliberately not filed.
   not enough — over the ground minus the buildings and minus the **solid** rows of a frame prop,
   the top row being the one the player walks under. **0 of 12 seeds after**, with 25-40 props
   still placed per town.
+
+- [ ] **P5-42 — Regenerating a second storey orphans the last one**
+  *(turned up by P5-13.)* `generate_interior`'s `secondStorey` option creates a new map with
+  `createMapFile` every time it runs. Call it twice on the same room and the second run's
+  staircase overwrites the first's, but the first upstairs map is not deleted or reused — it
+  stays on disk and in `MapInfos`, reachable from nowhere. Verified by calling `generate_interior`
+  twice on the same map with `secondStorey: true`: the ground floor's stairs event now points at
+  map 5 and map 3, the first upstairs room, is still there with its furniture and its own exit
+  event, just unlinked. The same class of defect as
+  [What the last generation left behind](ROADMAP.md#what-the-last-generation-left-behind), which
+  is why this is filed rather than folded into P5-13.
+  *Done when:* regenerating a second storey on the same room replaces the previous upstairs map
+  rather than abandoning it, or the tool says plainly that it left the old one behind and names
+  its id.

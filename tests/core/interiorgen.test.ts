@@ -4,6 +4,7 @@ import {
   renderInteriorAscii,
   exitEventPage,
   exitEvent,
+  reserveInteriorSlots,
   InteriorError,
   VOID_TILE,
   WALL_FACE_ROWS,
@@ -427,5 +428,45 @@ describe('a door and its room together', () => {
     expect(plan.arrival.x).toBe(way.x);
     // and the way out is below the way in, so leaving means walking back down
     expect(way.y).toBeGreaterThan(plan.arrival.y);
+  });
+});
+
+describe('reserveInteriorSlots', () => {
+  const slots = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }];
+
+  it('takes nothing when neither was asked for', () => {
+    const r = reserveInteriorSlots(slots, { shop: false, secondStorey: false });
+    expect(r).toEqual({ shop: null, stairs: null, remaining: slots });
+  });
+
+  it('gives the shop the first slot and leaves the rest for furniture', () => {
+    const r = reserveInteriorSlots(slots, { shop: true, secondStorey: false });
+    expect(r!.shop).toEqual(slots[0]);
+    expect(r!.stairs).toBeNull();
+    expect(r!.remaining).toEqual(slots.slice(1));
+  });
+
+  it('gives the stairs the first slot when there is no shop', () => {
+    const r = reserveInteriorSlots(slots, { shop: false, secondStorey: true });
+    expect(r!.stairs).toEqual(slots[0]);
+    expect(r!.remaining).toEqual(slots.slice(1));
+  });
+
+  it('gives the shop and the stairs different tiles, in a fixed order', () => {
+    const r = reserveInteriorSlots(slots, { shop: true, secondStorey: true });
+    expect(r!.shop).toEqual(slots[0]);
+    expect(r!.stairs).toEqual(slots[1]);
+    expect(r!.remaining).toEqual(slots.slice(2));
+  });
+
+  it('refuses by returning null rather than reusing a tile', () => {
+    const one = [slots[0]];
+    expect(reserveInteriorSlots(one, { shop: true, secondStorey: true })).toBeNull();
+    // one slot is still enough for either alone
+    expect(reserveInteriorSlots(one, { shop: true, secondStorey: false })).not.toBeNull();
+  });
+
+  it('refuses on an empty room rather than crashing', () => {
+    expect(reserveInteriorSlots([], { shop: true, secondStorey: false })).toBeNull();
   });
 });

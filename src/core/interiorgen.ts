@@ -381,6 +381,41 @@ export function planInterior(options: InteriorOptions): InteriorPlan {
   };
 }
 
+export interface ReservedInteriorSlots {
+  /** Where a shopkeeper should stand, or null if none was asked for. */
+  shop: Slot | null;
+  /** Where the stairs to a second storey should stand, or null. */
+  stairs: Slot | null;
+  /** What is left for ordinary furniture, in the same order the plan gave them. */
+  remaining: Slot[];
+}
+
+/**
+ * Carve a shopkeeper's tile and a staircase's tile out of a room's furniture
+ * slots, before the rest go to furniture.
+ *
+ * Safe for the same reason `furnish` taking any *prefix* of `furnitureSlots`
+ * is safe: `keepWalkable` already proved every prefix keeps the room whole, so
+ * reserving the first one or two costs nothing to re-check here — a shopkeeper
+ * or a staircase blocks its tile exactly like a piece of furniture would, and
+ * the guarantee does not care which one-tile thing is standing there.
+ *
+ * Returns null when the room has fewer wall-adjacent tiles than were asked
+ * for, so the caller can refuse by name rather than silently place nothing.
+ */
+export function reserveInteriorSlots(
+  furnitureSlots: Slot[],
+  options: { shop: boolean; secondStorey: boolean }
+): ReservedInteriorSlots | null {
+  const wanted = (options.shop ? 1 : 0) + (options.secondStorey ? 1 : 0);
+  if (furnitureSlots.length < wanted) return null;
+
+  let i = 0;
+  const shop = options.shop ? furnitureSlots[i++] : null;
+  const stairs = options.secondStorey ? furnitureSlots[i++] : null;
+  return { shop, stairs, remaining: furnitureSlots.slice(i) };
+}
+
 /**
  * Drop any slot that would cut the room in two.
  *
