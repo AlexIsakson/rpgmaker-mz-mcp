@@ -3631,6 +3631,63 @@ present, `randomMax` computed as `6` rather than `NaN`; a Game Data assignment
 wrote `[3,3,0,4,"$gameParty.gold()"]`; and the same Random command with `randomMax` left off was
 refused before anything was written, naming the exact computation that would have gone `NaN`.
 
+### Dialogue that knows where it stands
+
+`npcEventPage` wraps and boxes text correctly — `dialogueCommands` breaks on word boundaries
+and opens a new message box every four lines, because a window measures text in pixels and MZ's
+own limit is unknowable without a font. What flowed through that machinery was one of eight fixed
+sentences, cycled by index (`DEFAULT_NPC_DIALOGUE`), identical for every project and every seed —
+"Morning. Cold one today." says the same thing whether the NPC stands in the market or against
+the tree line. P5-12 is the task for making these worth the box they appear in.
+
+**There is no corpus of RPG Maker NPC dialogue to count, so this is written, not measured** — the
+same position [`vault.ts`](src/core/vault.ts)'s `THEME_COPY` is in, and marked the same way. What
+is real is the geometry: `situationalLine` (`src/core/npcgen.ts`) picks an opening from one of two
+six-line pools — one for a street tile, one for open ground, decided from real placement rather
+than guessed — and appends a clause naming a landmark's actual direction and distance, using the
+same `describeDirection`/`describeDistance` `hintText` already uses for a vault's key. Two NPCs in
+different spots get different text because the clause is computed from their coordinates, not
+picked from a bigger fixed list; the opening is chosen by `(seed + i) % 6`, the same reproducible-
+without-an-rng pattern `(seed + i) % 8` already used for sprite index, so a regenerated town says
+the same things.
+
+`describeDirection`/`describeDistance` moved out of `vault.ts` into a new
+[`src/core/geometry.ts`](src/core/geometry.ts) so `npcgen.ts` could reuse them without a cycle —
+`vault.ts` already imports `dialogueCommands` from `npcgen.ts`, so the reverse import would have
+been circular. `vault.ts` re-exports both names, so nothing importing them from there needed to
+change; their tests moved to `geometry.test.ts` with them.
+
+**Wired into both callers, with different landmarks because they know different things:**
+
+- `generate_town` passes `onStreet` from `plan.roadMask[y][x]` — the same mask the ground fill
+  already paints roads from — and a landmark on the shop's keeper tile, set once the keeper is
+  placed and only for the townsfolk placed after. A town with `shop: false`, or one where the
+  keeper was refused every tile beside its door, gets no landmark and the opening line alone.
+  `place` is the map's own name from `MapInfos.json` (`create_map` requires one, so this is a
+  real name almost always) falling back to the tileset's name for a map nobody titled.
+- `populate_map` has no plan, so no street/ground distinction and no shop — but an arbitrary map
+  reliably has doors, found the same way `reservedTiles` already finds them (`isDoorEvent`), and
+  the nearest one per NPC becomes its landmark. `place` falls back the same way.
+- A caller-supplied `dialogue`/`npcDialogue` array is untouched: cycled by index exactly as
+  before, because it is content someone wrote on purpose and nothing here should second-guess it.
+  `DEFAULT_NPC_DIALOGUE` had no other caller once the generated default stopped using it, so it
+  was deleted rather than kept as an unused export.
+
+**Verified over stdio MCP** against a copy of the user's `Foo` project in the scratchpad (never
+the original — see the project's standing rule on that). A 44x46 `generate_town` at seed 7, 8
+townsfolk and a shop: all 8 lines are distinct, name the map ("Riverside") its `create_map` call
+gave it, and the direction/distance clauses check out against the actual coordinates — the
+villager at (3, 27) against a shop at (17, 22) reads "some way to the east" for a Manhattan
+distance of 19 (≤ 20) and a horizontal delta more than twice the vertical one, which is exactly
+`describeDirection`/`describeDistance`'s own rule. `populate_map` on a second, door-less 20x15
+map produced 5 more distinct lines naming "Wayside Cottage"; the door-landmark branch is covered
+by `nearest`/`doorTiles`'s own logic and by `situationalLine`'s direction/distance tests in
+`geometry.test.ts`, not by a run with a door on hand.
+
+**Not filed further.** The line pools are twelve sentences total, written rather than drawn from
+any measurement, same as the vault's five theme tables — a caller who wants dialogue that matters
+still passes their own, which the tool description says outright.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.
@@ -3651,7 +3708,8 @@ That is the honest measure of what is missing:
 - ~~The shadow (z=4) plane has no tool at all.~~ *Fixed:* `apply_wall_shadows`, and
   `place_building` runs it. ~~The region plane (z=5) still has none.~~ *Fixed:*
   `paint_regions` — see [The region plane](#the-region-plane--the-sixth-layer).
-- A1 (water, waterfalls) is not supported, so a generated map can have no water.
+- ~~A1 (water, waterfalls) is not supported, so a generated map can have no water.~~ *Fixed:*
+  `src/core/water-autotile.ts` — see [The third table](#the-third-table).
 
 ### Still open
 
@@ -3666,7 +3724,10 @@ That is the honest measure of what is missing:
   [Levers](#levers--the-thing-that-sets-a-switch) does the same for the flag side. What is
   still missing is everything past *one* opener and *one* door: nothing chains two steps
   together, nothing tracks a quest's state as a whole, and no puzzle needs two flags at once.
-  Gated NPCs, enemies and NPCs who say more than one placeholder line are all still absent too.
+  Gated NPCs and enemies are still absent too. Townsfolk now say something that varies with
+  where they stand — see
+  [Dialogue that knows where it stands](#dialogue-that-knows-where-it-stands) — but it is still
+  generated placeholder, not writing for a particular game.
   [Locking a generated floor](#locking-a-generated-floor) is the first tool that places a quest
   without being told where — but it locks a door and leaves the far side empty, so what is
   behind the lock is a chest with better loot in it — see

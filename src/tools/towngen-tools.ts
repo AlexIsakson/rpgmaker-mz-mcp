@@ -25,10 +25,11 @@ import {
   npcEvent,
   planNpcPlacement,
   charactersOnSheet,
+  situationalLine,
   MOVE_TYPES,
   DEFAULT_NPC_SHEETS,
-  DEFAULT_NPC_DIALOGUE,
   type MoveType,
+  type DialogueLandmark,
 } from '../core/npcgen.js';
 import { standableGrid, canPass, type Direction } from '../core/walkability.js';
 import { censusMap, clearMap, describeKeptContent } from '../core/map-reset.js';
@@ -38,7 +39,7 @@ import { shopCommands, describeGoods } from '../core/shop.js';
 import { ROOF_SET_NAMES, A3_KIND_MIN, A4_KIND_MAX } from '../core/blueprint.js';
 import { collectProps, findProps, propCells, propPart, PropError, type Prop } from '../core/props.js';
 import { requireProject } from './project-tools.js';
-import { mapFilename } from './map-tools.js';
+import { mapFilename, readMapInfos } from './map-tools.js';
 import { MapRefError } from '../core/map-refs.js';
 import { requireProjectSheets } from './map-ref-loaders.js';
 import type { MapData } from '../schemas/map.js';
@@ -207,8 +208,10 @@ export function registerTowngenTools(server: McpServer): void {
         ),
       npcDialogue: z.array(z.string()).optional()
         .describe(
-          'Lines to give them, cycled. The built-in default is obvious placeholder text — pass ' +
-          'your own for anything that matters.'
+          'Lines to give them, cycled. Omit to generate small talk from where each NPC actually ' +
+          "stands — the map's name, street or open ground, and a real direction/distance to the " +
+          'shop if the town has one — which is still placeholder in the sense that it was not ' +
+          'written for this project. Pass your own for anything that matters.'
         ),
       npcMovement: z.enum(MOVE_TYPES as unknown as [string, ...string[]]).default('fixed')
         .describe(
@@ -266,6 +269,12 @@ export function registerTowngenTools(server: McpServer): void {
           tilesetNames: tileset.tilesetNames,
           tilesetName: tileset.name,
         };
+
+        // What a townsperson calls the place: create_map requires a name, so
+        // this is real most of the time — falling back to the tileset's own
+        // name only for a map nobody bothered to title.
+        const mapInfos = await readMapInfos(project.dataPath);
+        const placeName = mapInfos[mapId]?.name || tileset.name;
 
         // --- roofs ---
         if (roofSets && roofKinds) {
@@ -535,6 +544,9 @@ export function registerTowngenTools(server: McpServer): void {
         const missingSheets: string[] = [];
         let shopLine: string | null = null;
         let shopStock: string[] = [];
+        // Set once the keeper is placed, so the townsfolk placed after can
+        // point travellers toward a shop that is real rather than assumed.
+        let shopLandmark: DialogueLandmark | null = null;
 
         const wantsPeople = args.npcCount > 0 || args.shop;
         const wanted = args.npcSheets ?? DEFAULT_NPC_SHEETS;
@@ -611,6 +623,7 @@ export function registerTowngenTools(server: McpServer): void {
                       commands: shopCommands(stock.goods, false),
                     })
                   );
+                  shopLandmark = { label: 'The shop', at };
                   const b = shopPlan.building.rect;
                   shopLine =
                     `Shop: event ${keeper.id} at (${at.x}, ${at.y}), beside the door of the ` +
@@ -633,16 +646,29 @@ export function registerTowngenTools(server: McpServer): void {
             npcRejected = placement.rejected;
             npcRanOut = placement.ranOut;
 
-            const dialogue = args.npcDialogue ?? DEFAULT_NPC_DIALOGUE;
+            // A caller-supplied dialogue array is content they wrote on
+            // purpose and is cycled as-is. Nobody gave one: build a line per
+            // NPC from where it actually stands — on the street or off it,
+            // and how far from the shop, if the town has one — the way
+            // vault.ts's hintText derives its lead sentence from a real
+            // placement rather than picking from a fixed set of sentences.
+            const dialogue = args.npcDialogue ?? null;
             for (let i = 0; i < placement.placed.length; i++) {
               const slot = placement.placed[i];
               const sheet = sheets[i % sheets.length];
               const index = charactersOnSheet(sheet) === 1 ? 0 : (seed + i) % 8;
+              const text = dialogue
+                ? (dialogue.length > 0 ? dialogue[i % dialogue.length] : '')
+                : situationalLine(seed + i, slot, {
+                    place: placeName,
+                    onStreet: plan.roadMask[slot.y]?.[slot.x] ?? false,
+                    landmark: shopLandmark,
+                  });
               addEvent(mapData, (id) =>
                 npcEvent(id, slot.x, slot.y, `${args.npcNamePrefix} ${i + 1}`, {
                   characterName: sheet,
                   characterIndex: index,
-                  text: dialogue.length > 0 ? dialogue[i % dialogue.length] : '',
+                  text,
                   movement: args.npcMovement as MoveType,
                 })
               );
@@ -738,8 +764,11 @@ export function registerTowngenTools(server: McpServer): void {
         if (npcs > 0 && !args.npcDialogue) {
           lines.push(
             '',
-            'The townsfolk speak the built-in placeholder lines. Pass npcDialogue to give them ' +
-            'something worth reading.'
+            `The townsfolk speak generated small talk — "${placeName}", street or ground, and ` +
+            (shopLandmark
+              ? 'a real direction and distance to the shop. '
+              : 'no shop to point toward. ') +
+            'Pass npcDialogue for anything that matters.'
           );
         }
         if (npcs > 0 && args.npcMovement === 'random') {

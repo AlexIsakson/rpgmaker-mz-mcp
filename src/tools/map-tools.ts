@@ -16,7 +16,7 @@ function refusal(error: unknown) {
   };
 }
 
-async function readMapInfos(dataPath: string): Promise<(MapInfo | null)[]> {
+export async function readMapInfos(dataPath: string): Promise<(MapInfo | null)[]> {
   return (await FileHandler.readJsonRaw(path.join(dataPath, 'MapInfos.json'))) as (MapInfo | null)[];
 }
 

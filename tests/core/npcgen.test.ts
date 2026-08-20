@@ -12,6 +12,7 @@ import {
   NpcError,
   MESSAGE_LINES_PER_BOX,
   DEFAULT_WRAP_WIDTH,
+  situationalLine,
   type Slot,
 } from '../../src/core/npcgen.js';
 
@@ -411,5 +412,63 @@ describe('planNpcPlacement allow list', () => {
   it('considers everything reachable when no list is given', () => {
     const result = planNpcPlacement(open, { count: 30, seed: 1 });
     expect(result.placed.length).toBeGreaterThan(4);
+  });
+});
+
+describe('situationalLine', () => {
+  const place = 'Riverside';
+
+  it('names the place it was given', () => {
+    const line = situationalLine(0, { x: 5, y: 5 }, { place, onStreet: true });
+    expect(line).toContain(place);
+  });
+
+  it('draws from a different pool on the street than off it', () => {
+    const street = new Set<string>();
+    const ground = new Set<string>();
+    for (let i = 0; i < 12; i++) {
+      street.add(situationalLine(i, { x: 0, y: 0 }, { place, onStreet: true }));
+      ground.add(situationalLine(i, { x: 0, y: 0 }, { place, onStreet: false }));
+    }
+    // Every one of the 6 openings in each pool gets a turn over 12 picks...
+    expect(street.size).toBe(6);
+    expect(ground.size).toBe(6);
+    // ...and the two pools do not share a line.
+    for (const line of street) expect(ground.has(line)).toBe(false);
+  });
+
+  it('two NPCs in different spots do not say the same thing', () => {
+    const landmark = { label: 'The shop', at: { x: 20, y: 20 } };
+    const a = situationalLine(0, { x: 5, y: 5 }, { place, onStreet: true, landmark });
+    const b = situationalLine(1, { x: 5, y: 30 }, { place, onStreet: true, landmark });
+    expect(a).not.toBe(b);
+  });
+
+  it('names a real direction and distance, not an invented one', () => {
+    const landmark = { label: 'The well', at: { x: 30, y: 5 } };
+    const line = situationalLine(0, { x: 5, y: 5 }, { place, onStreet: false, landmark });
+    expect(line).toContain('The well is a long way to the east');
+  });
+
+  it('drops the landmark clause when it is right where the NPC stands', () => {
+    const landmark = { label: 'The shop', at: { x: 5, y: 5 } };
+    const line = situationalLine(0, { x: 5, y: 5 }, { place, onStreet: false, landmark });
+    expect(line).not.toContain('shop');
+  });
+
+  it('is reproducible: same pick, same line', () => {
+    const landmark = { label: 'The shop', at: { x: 20, y: 5 } };
+    const a = situationalLine(4, { x: 5, y: 5 }, { place, onStreet: true, landmark });
+    const b = situationalLine(4, { x: 5, y: 5 }, { place, onStreet: true, landmark });
+    expect(a).toBe(b);
+  });
+
+  it('still wraps once fed through dialogueCommands', () => {
+    const landmark = { label: 'The shop', at: { x: 60, y: 5 } };
+    const line = situationalLine(0, { x: 5, y: 5 }, { place: 'Riverside', onStreet: true, landmark });
+    const commands = dialogueCommands(line);
+    for (const c of commands) {
+      if (c.code === 401) expect(String(c.parameters[0]).length).toBeLessThanOrEqual(DEFAULT_WRAP_WIDTH);
+    }
   });
 });

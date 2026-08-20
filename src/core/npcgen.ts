@@ -1,4 +1,5 @@
 import { makeRng } from './mapgen.js';
+import { describeDirection, describeDistance, type Point } from './geometry.js';
 import type { Event, EventCommand, EventPage } from '../schemas/event.js';
 
 /**
@@ -416,19 +417,72 @@ export function planNpcPlacement(
  */
 export const DEFAULT_NPC_SHEETS = ['People1', 'People2', 'People3', 'People4'];
 
+// --- situational dialogue ----------------------------------------------------
+
 /**
- * Obvious placeholder lines. Generated dialogue is scaffolding — it exists so
- * the town is populated and every NPC is wired up, not because it is worth
- * reading. Pass `dialogue` to say something. P5-12 is the task for making these
- * worth the box they appear in.
+ * Small talk that differs by where the NPC actually stands, the way
+ * vault.ts's `hintText` differs by where the key actually went: an opening
+ * line, plus — when a landmark is worth mentioning — a clause naming its real
+ * direction and distance from `describeDirection`/`describeDistance`, not an
+ * invented one.
+ *
+ * The lines themselves are written, not measured: there is no corpus of RPG
+ * Maker NPC dialogue to count the way a fixed placeholder set would need.
+ * What is real is the geometry — two NPCs standing in different spots, or a
+ * town with no shop, produce different text because the clause is computed
+ * from their actual coordinates, not picked from a fixed set of sentences.
+ * `dialogueCommands`/callers keep a caller-supplied `dialogue` array cycled
+ * by index instead — that is content someone wrote on purpose, and nothing
+ * here should second-guess it.
  */
-export const DEFAULT_NPC_DIALOGUE = [
-  'Morning. Cold one today.',
-  'Mind the road past the bridge — it floods.',
-  "I've lived here all my life and I still get lost.",
-  'The shop opens late on market days.',
-  'You look like you have somewhere to be.',
-  'Rain again tomorrow, they reckon.',
-  'Careful out past the treeline.',
-  'Nothing ever happens here. Suits me.',
+export interface DialogueLandmark {
+  /** What to call it, capitalised as it should open a sentence: "The shop". */
+  label: string;
+  at: Point;
+}
+
+export interface SituationalContext {
+  /** What to call where the NPC stands: the map's own name, or its tileset's. */
+  place: string;
+  /** True for an NPC planted on a street tile rather than open ground. */
+  onStreet: boolean;
+  /** A real landmark to point travellers toward, if the caller has one. */
+  landmark?: DialogueLandmark | null;
+}
+
+const STREET_OPENINGS = [
+  'Busy corner, this stretch of {place}.',
+  "Mind the carts — this road through {place} doesn't stay empty long.",
+  'Lived by this street in {place} for years now.',
+  'You get to know everyone, standing out here in {place}.',
+  "This road's the quickest way across {place}, if you're headed anywhere.",
+  'Watch your step — this street floods in {place} when it rains.',
 ];
+
+const GROUND_OPENINGS = [
+  'Quiet corner of {place}, this one.',
+  'Not much passes through here, off the road in {place}.',
+  'Lived in {place} my whole life, mostly right around here.',
+  'You get some peace, this far from the street in {place}.',
+  'This patch of {place} is mine, more or less.',
+  'Not much happens on this side of {place}, and that suits me.',
+];
+
+/**
+ * `pick` chooses the opening deterministically rather than through an rng
+ * argument, the same way callers already choose a sprite index with
+ * `(seed + i) % 8` — reproducible without threading a generator through here.
+ */
+export function situationalLine(pick: number, from: Point, context: SituationalContext): string {
+  const pool = context.onStreet ? STREET_OPENINGS : GROUND_OPENINGS;
+  const index = ((pick % pool.length) + pool.length) % pool.length;
+  const opening = pool[index].replace('{place}', context.place);
+
+  const landmark = context.landmark;
+  if (!landmark) return opening;
+
+  const direction = describeDirection(from, landmark.at);
+  if (direction === 'right here') return opening;
+  const distance = describeDistance(from, landmark.at);
+  return `${opening} ${landmark.label} is ${distance} to the ${direction}, if you're headed that way.`;
+}

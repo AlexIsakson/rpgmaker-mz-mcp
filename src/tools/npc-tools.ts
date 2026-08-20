@@ -13,17 +13,18 @@ import {
   charactersOnSheet,
   isBigCharacterSheet,
   isObjectCharacterSheet,
+  situationalLine,
   NpcError,
   MOVE_TYPES,
   NPC_TRIGGERS,
   type MoveType,
   type NpcTrigger,
   type Slot,
+  type DialogueLandmark,
   DEFAULT_NPC_SHEETS as DEFAULT_SHEETS,
-  DEFAULT_NPC_DIALOGUE as DEFAULT_DIALOGUE,
 } from '../core/npcgen.js';
 import { requireProject } from './project-tools.js';
-import { mapFilename } from './map-tools.js';
+import { mapFilename, readMapInfos } from './map-tools.js';
 import type { MapData } from '../schemas/map.js';
 import type { Event } from '../schemas/event.js';
 import { logger } from '../logger.js';
@@ -50,6 +51,27 @@ function reservedTiles(mapData: MapData): Slot[] {
     if (isDoorEvent(event as Event)) reserved.push({ x: event.x, y: event.y + 1 });
   }
   return reserved;
+}
+
+/** Every door already on the map — the one landmark an arbitrary map reliably has. */
+function doorTiles(mapData: MapData): Slot[] {
+  return mapData.events
+    .filter((e): e is Event => e !== null && isDoorEvent(e as Event))
+    .map((e) => ({ x: e.x, y: e.y }));
+}
+
+/** The closest of a set of points, by Manhattan distance — null if there are none. */
+function nearest(from: Slot, points: Slot[]): Slot | null {
+  let best: Slot | null = null;
+  let bestDist = Infinity;
+  for (const p of points) {
+    const dist = Math.abs(p.x - from.x) + Math.abs(p.y - from.y);
+    if (dist < bestDist) {
+      best = p;
+      bestDist = dist;
+    }
+  }
+  return best;
 }
 
 export function registerNpcTools(server: McpServer): void {
@@ -219,8 +241,10 @@ export function registerNpcTools(server: McpServer): void {
         ),
       dialogue: z.array(z.string()).optional()
         .describe(
-          'Lines to give them, cycled. The built-in default is obvious placeholder text — ' +
-          'pass your own for anything that matters.'
+          "Lines to give them, cycled. Omit to generate small talk from the map's name and a " +
+          'real direction/distance to the nearest door, if there is one — still placeholder in ' +
+          'the sense that it was not written for this project. Pass your own for anything that ' +
+          'matters.'
         ),
       movement: z.enum(MOVE_TYPES as unknown as [string, ...string[]]).default('fixed')
         .describe(
@@ -249,6 +273,11 @@ export function registerNpcTools(server: McpServer): void {
         }
         const mapData = (await FileHandler.readJsonRaw(mapPath)) as MapData;
         const tileset = await TilesetReader.get(project.dataPath, mapData.tilesetId);
+        const mapInfos = await readMapInfos(project.dataPath);
+        const placeName = mapInfos[mapId]?.name || tileset.name;
+        // The one landmark an arbitrary map reliably has — generate_town's
+        // NPCs get the shop instead, which this scatter has no notion of.
+        const doors = doorTiles(mapData);
 
         const available = await listCharacterSheets(project.path);
         const wanted = args.characterSheets ?? DEFAULT_SHEETS;
@@ -288,18 +317,29 @@ export function registerNpcTools(server: McpServer): void {
           canStep,
         });
 
-        const dialogue = args.dialogue ?? DEFAULT_DIALOGUE;
+        const dialogue = args.dialogue ?? null;
         const placed: string[] = [];
 
         for (let i = 0; i < placement.placed.length; i++) {
           const slot = placement.placed[i];
           const sheet = sheets[i % sheets.length];
           const index = charactersOnSheet(sheet) === 1 ? 0 : (seed + i) % 8;
+          const doorLandmark: DialogueLandmark | null = (() => {
+            const at = nearest(slot, doors);
+            return at ? { label: 'The door', at } : null;
+          })();
+          const text = dialogue
+            ? (dialogue.length > 0 ? dialogue[i % dialogue.length] : '')
+            : situationalLine(seed + i, slot, {
+                place: placeName,
+                onStreet: false,
+                landmark: doorLandmark,
+              });
           const event = addEvent(mapData, (id) =>
             npcEvent(id, slot.x, slot.y, `${args.namePrefix} ${i + 1}`, {
               characterName: sheet,
               characterIndex: index,
-              text: dialogue.length > 0 ? dialogue[i % dialogue.length] : '',
+              text,
               trigger: args.trigger as NpcTrigger,
               movement: args.movement as MoveType,
             })
@@ -336,8 +376,9 @@ export function registerNpcTools(server: McpServer): void {
         if (!args.dialogue) {
           lines.push(
             '',
-            'The dialogue is the built-in placeholder set. Pass `dialogue` to give them ' +
-            'something worth reading.'
+            `The dialogue is generated small talk — "${placeName}"` +
+            (doors.length > 0 ? ' and a real direction/distance to the nearest door. ' : '. ') +
+            'Pass `dialogue` for anything that matters.'
           );
         }
         if (args.movement === 'random') {

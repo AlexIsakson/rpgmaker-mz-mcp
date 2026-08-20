@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 11 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 12 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 16 / 17.** Defects turned up while doing the above, listed at the end.
 
@@ -648,12 +648,26 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   all in one connected area and the 150 water tiles impassable.
   See [The third table](ROADMAP.md#the-third-table).
 
-- [ ] **P5-12 — NPCs who say something worth reading**
+- [x] **P5-12 — NPCs who say something worth reading**
   The wrapping machinery is good — `dialogueCommands` breaks on word boundaries and starts a new
   box every four lines because the engine measures text in pixels. What flows through it is a
   placeholder, identical for every NPC. Give dialogue that varies with where the NPC stands and
   what the map is, the way `src/core/vault.ts` generates an inscription from real placement.
   *Done when:* two NPCs in a generated town do not say the same thing, and long lines still wrap.
+  *Done:* `situationalLine` (`src/core/npcgen.ts`) picks an opening from a street or ground pool
+  and appends a clause naming a real landmark's direction and distance, using
+  `describeDirection`/`describeDistance` — pulled out of `vault.ts` into the new
+  `src/core/geometry.ts` so `npcgen.ts` could reuse them without a circular import.
+  `generate_town` points townsfolk at the shop, using `plan.roadMask` for street/ground and the
+  map's own `MapInfos` name for "the place"; `populate_map` points at the nearest door and the
+  same map name, having no plan to draw a street distinction from. Written, not measured — there
+  is no corpus of RPG Maker NPC dialogue to count — and marked as such, the same way `vault.ts`'s
+  `THEME_COPY` is. A caller-supplied `dialogue`/`npcDialogue` array still cycles by index
+  untouched; `DEFAULT_NPC_DIALOGUE` had no other caller once the generated default stopped using
+  it and was deleted. Verified over stdio MCP against a scratch copy of the user's `Foo` project:
+  8 townsfolk in a generated town gave 8 distinct lines naming the map and the real
+  direction/distance to the shop, and a second, door-less map's `populate_map` gave 5 more. See
+  [Dialogue that knows where it stands](ROADMAP.md#dialogue-that-knows-where-it-stands).
 
 - [ ] **P5-13 — Interiors worth entering**
   A room is one rectangle varying only in furniture: no shop interiors, no upper floors. Stairs up
