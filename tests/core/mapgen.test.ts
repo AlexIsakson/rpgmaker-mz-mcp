@@ -7,6 +7,7 @@ import {
   layoutStats,
   renderLayoutAscii,
   floodFill,
+  growClump,
 } from '../../src/core/mapgen.js';
 import { getAutotileKind, getAutotileShape, SHAPE_FULL } from '../../src/core/autotile.js';
 
@@ -348,6 +349,38 @@ function shapeMetrics(layout: { width: number; height: number; floor: boolean[][
 
 const median = (values: number[]) => values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
+/** Same regions `shapeMetrics` counts, but their tile counts rather than a total. */
+function islandSizes(floor: boolean[][]): number[] {
+  const h = floor.length;
+  const w = floor[0]?.length ?? 0;
+  const seen = Array.from({ length: h }, () => new Array<boolean>(w).fill(false));
+  const sizes: number[] = [];
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (floor[y][x] || seen[y][x]) continue;
+      const stack = [[x, y]];
+      seen[y][x] = true;
+      let touchesBorder = false;
+      let size = 0;
+      while (stack.length > 0) {
+        const [cx, cy] = stack.pop()!;
+        size++;
+        if (cx === 0 || cy === 0 || cx === w - 1 || cy === h - 1) touchesBorder = true;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h || seen[ny][nx] || floor[ny][nx]) continue;
+          seen[ny][nx] = true;
+          stack.push([nx, ny]);
+        }
+      }
+      if (!touchesBorder) sizes.push(size);
+    }
+  }
+  return sizes;
+}
+
 describe('layout shape, against the hand-made maps', () => {
   const SEEDS = Array.from({ length: 30 }, (_, i) => i + 1);
 
@@ -431,5 +464,102 @@ describe('layout shape, against the hand-made maps', () => {
       .toEqual(generateCave({ width: 30, height: 20, seed: 12 }));
     expect(generateDungeon({ width: 30, height: 20, seed: 12 }))
       .toEqual(generateDungeon({ width: 30, height: 20, seed: 12 }));
+  });
+
+  describe('pillars in clumps', () => {
+    // scripts/measure-cave-islands.mjs, over the 55 dungeon-tileset sample
+    // maps: of 271 hand-made interior islands sized 1-4, 210 (77.5%) are a
+    // single tile and 61 (22.5%) are 2-4 — the corpus this is measured
+    // against, cited on CaveOptions.pillarClumpChance.
+
+    it('produces some multi-tile islands, not only single-tile studs', () => {
+      const sizes = SEEDS.flatMap((seed) =>
+        islandSizes(generateCave({ width: 40, height: 30, seed }).floor));
+      expect(sizes.some((s) => s > 1)).toBe(true);
+      // still mostly single tiles — clumping is the minority case by design
+      expect(sizes.some((s) => s === 1)).toBe(true);
+    });
+
+    it('grows fewer multi-tile islands when clumping is turned off', () => {
+      // Not "every island is size 1": two single-tile pillars can still land
+      // next to each other by chance and flood-fill together, on or off. What
+      // the flag controls is *intentional* growth, so the single-tile share
+      // should rise when it is disabled, not hit 100% — measured at 58.4%
+      // (default) against 73.4% (off) over the same 30 seeds.
+      const fractionSingle = (sizes: number[]) => sizes.filter((s) => s === 1).length / sizes.length;
+      const on = fractionSingle(SEEDS.flatMap((seed) =>
+        islandSizes(generateCave({ width: 40, height: 30, seed }).floor)));
+      const off = fractionSingle(SEEDS.flatMap((seed) =>
+        islandSizes(generateCave({ width: 40, height: 30, seed, pillarClumpChance: 0 }).floor)));
+      expect(off).toBeGreaterThan(on);
+    });
+
+    it('stays fully connected under maximum clump pressure', () => {
+      // pillarClumpChance 1 forces every accepted pillar to attempt a 2-4
+      // tile clump rather than a single tile, and pillarDensity near its max
+      // pushes as many attempts as possible through the neck of the cave —
+      // the configuration most likely to expose a clump that was tested
+      // tile-by-tile instead of as one unit, the exact bug the task named.
+      for (const seed of Array.from({ length: 40 }, (_, i) => i + 1)) {
+        const stats = layoutStats(generateCave({
+          width: 40, height: 30, seed, pillarDensity: 0.2, pillarClumpChance: 1,
+        }));
+        expect(stats.fullyConnected, `seed ${seed}`).toBe(true);
+      }
+    });
+  });
+});
+
+describe('growClump', () => {
+  it('always includes the seed, and only eligible cells', () => {
+    const eligible = new Set(['1,1', '2,1', '1,2', '0,1']);
+    const isEligible = (x: number, y: number) => eligible.has(`${x},${y}`);
+    const clump = growClump({ x: 1, y: 1 }, 10, isEligible, makeRng(1));
+    expect(clump).toContainEqual({ x: 1, y: 1 });
+    for (const c of clump) expect(isEligible(c.x, c.y)).toBe(true);
+  });
+
+  it('returns nothing for an ineligible seed', () => {
+    expect(growClump({ x: 0, y: 0 }, 3, () => false, makeRng(1))).toEqual([]);
+  });
+
+  it('never exceeds the requested size', () => {
+    const clump = growClump({ x: 5, y: 5 }, 4, () => true, makeRng(3));
+    expect(clump.length).toBe(4);
+  });
+
+  it('stops rather than looping forever when the frontier runs dry', () => {
+    // A single isolated eligible cell: nothing to grow into.
+    const isEligible = (x: number, y: number) => x === 0 && y === 0;
+    expect(growClump({ x: 0, y: 0 }, 10, isEligible, makeRng(1))).toEqual([{ x: 0, y: 0 }]);
+  });
+
+  it('never revisits a cell in a tight space reachable two ways', () => {
+    // A 2-wide, 3-tall pocket: once both cells of a row are chosen, the next
+    // row's cells are each reachable from two different chosen neighbours —
+    // exactly the case where forgetting to dedupe the frontier would add one
+    // cell twice and grow past `size`.
+    const isEligible = (x: number, y: number) => x >= 0 && x < 2 && y >= 0 && y < 3;
+    const clump = growClump({ x: 0, y: 0 }, 6, isEligible, makeRng(2));
+    const keys = clump.map((c) => `${c.x},${c.y}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(clump.length).toBe(6); // the whole 2x3 pocket
+  });
+
+  it('produces a 4-connected shape', () => {
+    const clump = growClump({ x: 0, y: 0 }, 5, () => true, makeRng(9));
+    const keys = new Set(clump.map((c) => `${c.x},${c.y}`));
+    for (const c of clump) {
+      if (c.x === 0 && c.y === 0) continue;
+      const hasNeighbour = ([[1, 0], [-1, 0], [0, 1], [0, -1]] as const)
+        .some(([dx, dy]) => keys.has(`${c.x + dx},${c.y + dy}`));
+      expect(hasNeighbour).toBe(true);
+    }
+  });
+
+  it('is deterministic for a seeded rng', () => {
+    const a = growClump({ x: 0, y: 0 }, 6, () => true, makeRng(4));
+    const b = growClump({ x: 0, y: 0 }, 6, () => true, makeRng(4));
+    expect(a).toEqual(b);
   });
 });

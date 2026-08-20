@@ -3758,6 +3758,72 @@ reachable from anywhere. The same class of defect as
 [What the last generation left behind](#what-the-last-generation-left-behind), which is why it is
 filed rather than folded into this task — see `TASKS.md`.
 
+### Rock formations, not studs
+
+`addPillars` (`src/core/mapgen.ts`) carves solid clumps into a cave's open space — the pass
+[Layout shape](#layout-shape) added to give a cave something to walk around, since nothing in the
+cellular automata puts structure *inside* the outline they carve. Every clump was exactly one
+tile. A lone solid tile in the middle of open floor reads as a stray stud, not a boulder or a
+rock formation, and hand-made maps do not draw it that way.
+
+**Measured, for the first time, how big a hand-made "interior island" actually is** — the
+`shapeMetrics` in `tests/core/mapgen.test.ts` already counted them, never sized them.
+`scripts/measure-cave-islands.mjs` sizes every one across the same 55 dungeon-tileset sample maps
+[Layout shape](#layout-shape) was tuned against, using `standableGrid` — the same function
+`check_map_walkability` uses — so "solid" means what the engine's passage flags say rather than
+what layer 0's material happens to be:
+
+| | |
+|---|---|
+| interior islands measured | 434, across 46 of 55 maps |
+| single-tile | 210 (48.4%) |
+| size 2-4 | 61 (14.1%) |
+| size overall | median 2, p90 18, max 245 |
+
+Just under half of hand-made islands really are one tile — the generator was not wrong to place
+single tiles, only wrong to place *nothing else*. The long tail (81 islands of 11+, up to 245) is
+almost certainly separate hand-drawn chambers rather than pillars, so the clump size this pass
+grows into is capped at 2-4: within that band specifically, 271 hand-made islands split 210 single
+against 61 multi (22.5%), which is where `pillarClumpChance`'s default of 0.225 comes from —
+stated as "not tuned to reproduce that split exactly" in the option's own doc, since a mapper
+hand-placing a rock formation is a different process from a seeded pass over candidate tiles, and
+the number is there to be honest about its source rather than to claim precision it does not have.
+
+**The clump is grown and tested as one placement, which is the mechanism the task actually
+asked for.** The old sweep carved a candidate tile, flood-filled, and moved to the next — correct
+for one tile at a time, but not for a group: two cells that are each individually safe to remove
+can still seal a neck once both are gone, the same joint-pinch case
+[dungeon dressing](#dungeon-dressing)'s `rejectSealingSlots` already had to account for among scatter
+props. `growClump` (exported, pure, unit-tested on its own — respects an injected eligibility
+predicate, never revisits a cell, stops at the requested size or when the frontier runs dry, and
+grows a 4-connected but irregular shape rather than a stamped rectangle) builds the candidate
+clump first; `addPillars` carves every cell of it, runs the flood fill *once*, and puts the whole
+clump back if the count comes up short. Verified with a grid held at maximum pressure —
+`pillarClumpChance: 1`, `pillarDensity` at its schema max of 0.2 — across 40 seeds, and
+`layoutStats(...).fullyConnected` holds every time.
+
+**`pillarDensity` still means the same thing.** It was already "pillars as a fraction of open
+tiles," i.e. a tile budget, not a pillar-count budget; growing some of that budget into clumps
+instead of singles changes how the tiles are grouped, not the total carved, so an existing caller
+passing `pillarDensity` sees the same coverage. What does move, because grouping several tiles
+into fewer, larger islands necessarily produces fewer distinct islands for the same tile count, is
+the *island count* the `layout shape` table already reports — median 8 over the original 40x30 /
+30-seed sweep, against 10 there before this task. Both are inside the hand-made [0, 21] range the
+existing test already asserts, so nothing needed retuning; the measurement is recorded here rather
+than edited into that earlier table, which describes the tuning step that produced it, not this
+one.
+
+**Not exposed as a tool parameter**, matching `pillarClearance`'s own precedent: `pillarDensity` is
+the only cave pillar knob `generate_map_layout` surfaces, and `pillarClumpChance` joins
+`pillarClearance` as a structural default a caller can reach through `CaveOptions` in code but not
+through the MCP schema — one more number to reason about for a shape decision the corpus already
+settles reasonably well.
+
+Verified over stdio MCP against a scratch copy of the user's `Foo` project: a 40x30 cave rendered
+with `render-map.mjs` shows a mix of single tiles and small irregular clumps of 2-4 among the open
+floor, sent to the user directly; `check_map_walkability` and the layout's own connectivity report
+both confirm nothing is sealed off.
+
 ### Tool ergonomics, from building a town by hand
 
 A 40x30 town assembled through the tools took **526 calls**, roughly 440 of them 1x1 rectangles.

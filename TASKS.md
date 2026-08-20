@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 13 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 14 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 16 / 18.** Defects turned up while doing the above, listed at the end.
 
@@ -695,11 +695,26 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   [A room that sells things or leads upstairs](ROADMAP.md#a-room-that-sells-things-or-leads-upstairs).
   Turned up P5-42.
 
-- [ ] **P5-14 — Pillars in clumps**
+- [x] **P5-14 — Pillars in clumps**
   Single-tile pillars read as studs rather than rock formations. The obstacle is that the
   placement sweep's "cannot seal the map" guarantee is per-tile; a multi-tile clump has to be
   tested as a unit, so the sweep gets reworked.
   *Done when:* clumped pillars appear and `check_map_walkability` still reports one connected area.
+  *Done:* `growClump` (`src/core/mapgen.ts`) grows a 4-connected but irregular shape from a seed,
+  respecting an injected eligibility predicate; `addPillars` carves the whole clump before running
+  one flood fill over it, rather than the old per-tile carve-and-check, so two cells that are each
+  individually safe to remove but jointly seal a neck are caught. New
+  `scripts/measure-cave-islands.mjs` sized what `shapeMetrics` had only ever counted: of 434
+  hand-made interior islands across 55 dungeon-tileset sample maps, 48.4% are a single tile —
+  the generator was not wrong to place singles, only wrong to place nothing else. Within the
+  1-4 tile band a clump can reach, the split is 210 single to 61 multi (22.5%), which is where
+  `pillarClumpChance`'s default came from. `pillarDensity` still means the same tile budget it
+  always did; grouping some of it into clumps means fewer, larger islands for the same coverage,
+  which moved the cave's median island count from 10 to 8 — still inside the hand-made [0, 21]
+  range the existing test asserts. Verified at maximum pressure (`pillarClumpChance: 1`,
+  `pillarDensity` at its schema max) across 40 seeds with `layoutStats(...).fullyConnected`
+  holding throughout, and over stdio MCP against a scratch copy of the user's `Foo` project,
+  rendered and sent to the user. See [Rock formations, not studs](ROADMAP.md#rock-formations-not-studs).
 
 - [ ] **P5-15 — Something for a cave mouth to sit in**
   The RTP entrance tile is doorway art drawn to sit against a cliff face. On the flat grass of a

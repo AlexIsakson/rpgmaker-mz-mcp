@@ -367,6 +367,18 @@ export interface CaveOptions {
   pillarClearance?: number;
   /** Pillars as a fraction of open tiles. 0 leaves the cave hollow. */
   pillarDensity?: number;
+  /**
+   * Chance a pillar grows into a 2-4 tile clump instead of staying one tile.
+   *
+   * Measured against `scripts/measure-cave-islands.mjs` over the same 55
+   * dungeon-tileset sample maps the shape table above cites: of the 271
+   * hand-made interior islands sized 1-4 (the range a clump can reach here),
+   * 210 are a single tile and 61 are 2-4 — 22.5%. Not tuned to reproduce that
+   * split exactly, since a mapper hand-placing a rock formation is a different
+   * process from a seeded pass over candidate tiles, but it is where the
+   * default below came from rather than a guess.
+   */
+  pillarClumpChance?: number;
 }
 
 /**
@@ -419,6 +431,7 @@ export function generateCave(options: CaveOptions): GeneratedLayout {
     smoothingSteps = 2,
     pillarClearance = 3,
     pillarDensity = 0.035,
+    pillarClumpChance = 0.225,
   } = options;
 
   const rng = makeRng(seed);
@@ -475,7 +488,7 @@ export function generateCave(options: CaveOptions): GeneratedLayout {
   }
 
   const cave = best ?? blankFloor(width, height);
-  addPillars(cave, rng, bestStart, pillarClearance, pillarDensity);
+  addPillars(cave, rng, bestStart, pillarClearance, pillarDensity, pillarClumpChance);
 
   return { width, height, floor: cave, rooms: [], start: bestStart };
 }
@@ -508,6 +521,58 @@ function distanceToWall(floor: boolean[][]): number[][] {
   return dist;
 }
 
+const PILLAR_STEPS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+/**
+ * Grow a connected clump of up to `size` tiles from a seed, by random
+ * 4-connected expansion — an Eden-growth walk rather than a fixed shape, so a
+ * clump reads as an irregular rock formation instead of a stamped square.
+ *
+ * `isEligible` is the caller's placement policy (in range, still open, far
+ * enough from a wall, not the start tile); this function only knows how to
+ * grow a connected shape out of whatever passes it. Separated from
+ * {@link addPillars} so the growth itself — respects eligibility, never
+ * revisits a cell, stops at `size` or when the frontier runs dry — can be
+ * tested without a real cave grid behind it.
+ *
+ * Returns an empty array if the seed itself is not eligible; otherwise always
+ * includes the seed, and may come back shorter than `size` if it runs out of
+ * eligible neighbours first.
+ */
+export function growClump(
+  seed: { x: number; y: number },
+  size: number,
+  isEligible: (x: number, y: number) => boolean,
+  rng: () => number
+): { x: number; y: number }[] {
+  if (!isEligible(seed.x, seed.y)) return [];
+
+  const key = (x: number, y: number) => `${x},${y}`;
+  const chosen: { x: number; y: number }[] = [seed];
+  const chosenSet = new Set([key(seed.x, seed.y)]);
+  const frontier: { x: number; y: number }[] = [];
+
+  const addFrontier = (x: number, y: number) => {
+    for (const [dx, dy] of PILLAR_STEPS) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (isEligible(nx, ny) && !chosenSet.has(key(nx, ny))) frontier.push({ x: nx, y: ny });
+    }
+  };
+  addFrontier(seed.x, seed.y);
+
+  while (chosen.length < size && frontier.length > 0) {
+    const i = Math.floor(rng() * frontier.length);
+    const next = frontier.splice(i, 1)[0];
+    if (chosenSet.has(key(next.x, next.y))) continue; // reached via two neighbours
+    chosen.push(next);
+    chosenSet.add(key(next.x, next.y));
+    addFrontier(next.x, next.y);
+  }
+
+  return chosen;
+}
+
 /**
  * Drop solid clumps into the middle of open space.
  *
@@ -516,9 +581,20 @@ function distanceToWall(floor: boolean[][]): number[][] {
  * with nothing to navigate around": across 40 seeds the old defaults produced a
  * median of 2 interior solid regions, where the hand-made maps carry 5.
  *
- * A pillar is only kept if the cave stays exactly as connected with it as
- * without — the same test NPC placement uses, for the same reason: a clump
- * dropped across a neck would seal off half the cave.
+ * **A pillar is only kept if the cave stays exactly as connected with it as
+ * without, and a multi-tile clump is tested as one placement rather than
+ * tile-by-tile.** The old sweep carved a single cell, flood-filled, and moved
+ * on — safe for one tile at a time, but not for a clump: two cells that are
+ * each individually safe to remove can still seal a neck once both are gone,
+ * the same way two harmless-alone scatter props can jointly pinch a corridor
+ * shut in `rejectSealingSlots`. So every cell of a clump is carved first, the
+ * flood fill runs once over the whole thing, and the whole clump is put back
+ * if the count comes up short — never partially placed.
+ *
+ * **Most pillars are still one tile**, which single-tile placement always was
+ * and the corpus does not argue with — see `pillarClumpChance` on
+ * {@link CaveOptions} for the measurement behind how often the rest grow into
+ * a small clump instead.
  *
  * Mutates `floor`.
  */
@@ -527,17 +603,22 @@ function addPillars(
   rng: () => number,
   start: { x: number; y: number },
   clearance: number,
-  density: number
+  density: number,
+  clumpChance: number
 ): void {
   const height = floor.length;
   const width = floor[0]?.length ?? 0;
   if (density <= 0 || clearance < 1) return;
 
   const dist = distanceToWall(floor);
+  const isEligible = (x: number, y: number): boolean =>
+    x > 0 && y > 0 && x < width - 1 && y < height - 1 &&
+    floor[y][x] && dist[y][x] >= clearance && !(x === start.x && y === start.y);
+
   const candidates: [number, number][] = [];
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
-      if (floor[y][x] && dist[y][x] >= clearance) candidates.push([x, y]);
+      if (isEligible(x, y)) candidates.push([x, y]);
     }
   }
 
@@ -553,13 +634,26 @@ function addPillars(
 
   for (const [x, y] of candidates) {
     if (placed >= wanted) break;
-    if (x === start.x && y === start.y) continue;
-    if (!floor[y][x]) continue; // already taken by a neighbouring pillar
+    if (!floor[y][x]) continue; // already taken by an earlier clump
 
-    floor[y][x] = false;
+    // 2-4 tiles on the roll, capped by whatever is left of the budget — never
+    // more than one tile over, since a clump is placed as a whole or not at all.
+    const size = rng() < clumpChance
+      ? Math.min(wanted - placed, 2 + Math.floor(rng() * 3))
+      : 1;
+    // growClump refuses an ineligible seed on its own terms; the check just
+    // above already guarantees this one is not, so this is belt and braces
+    // for growClump's general contract rather than something reachable here.
+    const clump = growClump({ x, y }, size, isEligible, rng);
+    if (clump.length === 0) continue;
+
+    for (const c of clump) floor[c.y][c.x] = false;
     const reachable = countOpen(floodFill(floor, start.x, start.y));
-    if (reachable === countOpen(floor)) placed++;
-    else floor[y][x] = true;
+    if (reachable === countOpen(floor)) {
+      placed += clump.length;
+    } else {
+      for (const c of clump) floor[c.y][c.x] = true;
+    }
   }
 }
 
