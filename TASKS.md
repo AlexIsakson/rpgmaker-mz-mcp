@@ -8,7 +8,7 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 10 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 11 / 25.** The Phase 5 features this backlog was written for.
 
 **Found while working: 16 / 17.** Defects turned up while doing the above, listed at the end.
 
@@ -613,11 +613,40 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
 
 ## M4 — Content depth
 
-- [ ] **P5-11 — A1 support: water and waterfalls**
+- [x] **P5-11 — A1 support: water and waterfalls**
   A1 is unsupported, so a generated map can have no water at all. Needs the third autotile table
   (`WATERFALL_AUTOTILE_TABLE`) alongside the floor and wall tables already ported, plus A1's
   animation frames.
   *Done when:* a lake and a waterfall can be painted and render correctly.
+  *Done:* `src/core/water-autotile.ts`. A1 is not a marginal sheet — **94,187 A1 tiles across the
+  293 sample maps**, more than any other autotile family, every one of which this server would
+  have written at shape 0.
+  A1 is two families and the engine splits them by arithmetic, not by art: `isWaterfallTile` is
+  kind 4-and-up-odd, so **5, 7, 9, 11, 13 and 15 take the waterfall table** and the rest are
+  floor-type — which `Tilemap.isFloorTypeAutotile` said all along, so `usesFloorAutotileTable`
+  was missing a clause. The corpus confirms both halves: the 92,550 non-waterfall tiles use **47
+  distinct shapes up to 46**, and the 1,637 waterfall tiles use **only 0, 1, 2 and 3**, which is
+  the table's length.
+  A waterfall's shape is two bits — no fall to the left, no fall to the right — and **vertical
+  neighbours play no part**, because the table has no shape for them; columns run a median of 2
+  tiles and up to 37, all one shape. The rule reproduces the mapper's own tile for **713 of 827
+  (86.2%)** on runs of 2+ and **645 of 810 (79.6%)** on one-tile falls, and every miss is the
+  same one — the mapper choosing the seamless middle where scenery already supplies the edge.
+  **The slot decides, not the name**, and the tool now says so: of 24 waterfall slots across the
+  four RTP A1 sheets **only 14 are called a waterfall**, so `World_A1` "Cloud" and `Outside_A1`
+  "Dead Tree" behave as falls. `describe_tileset_materials` lists every A1 kind with its table,
+  its animation and its name, and calls out the divergences on that sheet;
+  `scripts/build-a1-catalogue.mjs` bakes the names the way the prop catalogue does.
+  **The animation frames the task asked for do not exist to be written.** `_addAutotile` reads
+  `Tilemap.animationFrame` at render time; no map data encodes one, so a correct tile id animates
+  by itself.
+  `generate_map_layout` takes an A1 floor (a lava cave renders correctly) and **refuses an A1
+  waterfall kind**, naming why: every waterfall shape is left/right, so a layout filled with one
+  has no top or bottom edge and comes out a flat sheet of falling water.
+  Verified by PNG over stdio MCP — a ragged lake, a 4-wide fall with lips both sides and a 1-wide
+  fall at shape 3, and a lava cave — with `check_map_walkability` reporting 510 standable of 660
+  all in one connected area and the 150 water tiles impassable.
+  See [The third table](ROADMAP.md#the-third-table).
 
 - [ ] **P5-12 — NPCs who say something worth reading**
   The wrapping machinery is good — `dialogueCommands` breaks on word boundaries and starts a new

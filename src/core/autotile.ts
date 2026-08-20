@@ -18,8 +18,10 @@
  * what each shape means. tests/core/autotile.test.ts re-derives the mapping from
  * a copy of that table and checks all 256 neighbour configurations against it.
  *
- * Scope: floor-type autotiles only. Walls (A3/A4) use WALL_AUTOTILE_TABLE with
- * different rules and vertical pairing, and waterfalls use a third table.
+ * Scope: floor-type autotiles — A2 ground, A4 wall tops and A1 water. Walls
+ * (A3/A4 faces) use WALL_AUTOTILE_TABLE with different rules and vertical
+ * pairing, and waterfalls use a third table; see wall-autotile.ts and
+ * water-autotile.ts.
  */
 
 export const TILE_ID_A5 = 1536;
@@ -71,17 +73,39 @@ export function isTileA4WallTop(tileId: number): boolean {
   return Math.floor((getAutotileKind(tileId) - A4_KIND_MIN) / 8) % 2 === 0;
 }
 
+/** The A1 water family. Kinds 0-15. */
+export function isTileA1(tileId: number): boolean {
+  return tileId >= TILE_ID_A1 && tileId < TILE_ID_A2;
+}
+
+/**
+ * The A1 kinds the engine draws with WATERFALL_AUTOTILE_TABLE: kind 4 and up,
+ * odd. Restated here rather than imported so this module keeps no dependency on
+ * water-autotile.ts, which depends on it; the two are asserted equal in the
+ * tests.
+ */
+function isA1Waterfall(tileId: number): boolean {
+  if (!isTileA1(tileId)) return false;
+  const kind = getAutotileKind(tileId);
+  return kind >= 4 && kind % 2 === 1;
+}
+
 /**
  * Whether this tile's shape comes from FLOOR_AUTOTILE_TABLE.
  *
- * A2 ground and A4 wall tops both do. Missing the wall tops leaves them at
- * shape 0 — a field of centre pieces with no edges anywhere — which is what an
- * interior's walls looked like before this existed. A1 water follows the floor
- * table too for some kinds but has waterfall cases this module does not model,
- * so it stays out of scope and passes through untouched.
+ * A2 ground, A4 wall tops and **A1 water other than the waterfall slots** all
+ * do. That list is `Tilemap.isFloorTypeAutotile` in the corescript, verbatim.
+ * Missing the wall tops left them at shape 0 — a field of centre pieces with no
+ * edges anywhere — which is what an interior looked like before that was fixed,
+ * and A1 was in exactly the same state until P5-11: 92,550 non-waterfall A1
+ * tiles in the sample maps use 47 distinct shapes up to 46, so leaving them at
+ * shape 0 is not a subtle difference.
+ *
+ * Waterfalls are excluded because they have four shapes rather than 48 and
+ * belong to `refreshWaterfallShapes` in water-autotile.ts.
  */
 export function usesFloorAutotileTable(tileId: number): boolean {
-  return isTileA2(tileId) || isTileA4WallTop(tileId);
+  return isTileA2(tileId) || isTileA4WallTop(tileId) || (isTileA1(tileId) && !isA1Waterfall(tileId));
 }
 
 /** Mirrors Tilemap.isSameKindTile: autotiles match on kind, everything else exactly. */
@@ -218,7 +242,7 @@ function connectionsAt(
  * Recompute the shape of every floor-table autotile in a layer — A2 ground and
  * A4 wall tops — leaving its material unchanged. Everything else is passed
  * through untouched: A3/A4 wall faces follow WALL_AUTOTILE_TABLE and belong to
- * wall-autotile.ts, and waterfalls follow a third table nothing models yet.
+ * wall-autotile.ts, and waterfalls follow a third table in water-autotile.ts.
  *
  * `grid[y][x]` holds tile ids. Returns a new grid; the input is not modified.
  */

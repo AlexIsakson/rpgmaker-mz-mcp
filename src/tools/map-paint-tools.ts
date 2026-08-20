@@ -17,6 +17,12 @@ import {
   usesWallAutotileTable,
   isTileA3,
 } from '../core/wall-autotile.js';
+import {
+  fillWaterCells,
+  isTileA1,
+  isWaterfallKind,
+  A1_KIND_MAX,
+} from '../core/water-autotile.js';
 import { raggedRect, RAGGED_DEFAULTS } from '../core/ragged.js';
 import { makeRng } from '../core/mapgen.js';
 import { applyPlacements, type Placement } from '../core/tile-batch.js';
@@ -57,14 +63,19 @@ export function registerMapPaintTools(server: McpServer): void {
       y: z.number().int().min(0).describe('Top edge of the rectangle, in tiles'),
       width: z.number().int().positive().describe('Width in tiles'),
       height: z.number().int().positive().describe('Height in tiles'),
-      autotileKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX).optional()
+      autotileKind: z.number().int().min(0).max(AUTOTILE_KIND_MAX).optional()
         .describe(
-          `Autotile material. ${A2_KIND_MIN}-${A2_KIND_MAX} is the A2 ground family, ` +
+          `Autotile material. 0-${A1_KIND_MAX} is the A1 water family, ` +
+          `${A2_KIND_MIN}-${A2_KIND_MAX} the A2 ground family, ` +
           `${A2_KIND_MAX + 1}-79 the A3 building walls and roofs, 80-${AUTOTILE_KIND_MAX} A4 ` +
           'walls and wall tops; each sheet is 8 kinds wide, so kind = base + row * 8 + column. ' +
-          'Shapes are computed with the right table for the family. Which A2 kinds are opaque ' +
-          'ground, which are transparent overlays and which have a visible outline differs ' +
-          'between tilesets — call describe_tileset_materials rather than assuming a layout.'
+          'Shapes are computed with the right table for the family — A1 has two, because kinds ' +
+          '5, 7, 9, 11, 13 and 15 are waterfall slots with four shapes while the rest are water ' +
+          'with the usual 48. That split is the engine testing the slot, not the art, so a kind ' +
+          'the editor calls something else can still behave as a waterfall; ' +
+          'describe_tileset_materials names each A1 kind and says which table it takes. Which ' +
+          'A2 kinds are opaque ground, which are transparent overlays and which have a visible ' +
+          'outline differs between tilesets — ask the same tool rather than assuming a layout.'
         ),
       tileId: z.number().int().min(0).optional()
         .describe(
@@ -223,10 +234,17 @@ export function registerMapPaintTools(server: McpServer): void {
           }
         }
 
-        // Walls use a different table from floors, so dispatch on the family
-        // rather than treating every autotile as A2.
+        // Three families, three shape tables, so dispatch rather than treating
+        // every autotile as A2. A1 goes through fillWaterCells, which runs both
+        // the floor pass and the waterfall one — a lake needs the first and a
+        // fall the second, and painting either can change the shape of water
+        // already beside it.
         const isWall = usesWallAutotileTable(resolvedTileId);
-        const fill = isWall ? fillWallCells : fillCells;
+        const fill = isWall
+          ? fillWallCells
+          : isTileA1(resolvedTileId)
+            ? fillWaterCells
+            : fillCells;
 
         const paintCells = skipOccupied
           ? targetCells.filter((c) => (grid[c.y]?.[c.x] ?? 0) === 0)
@@ -277,11 +295,22 @@ export function registerMapPaintTools(server: McpServer): void {
             'block has proper edges. A building is a roof block sitting on a wall block; the ' +
             'A3 sheet pairs each roof with the wall 8 kinds below it.'
           );
+        } else if (isTileA1(resolvedTileId)) {
+          const kind = getAutotileKind(resolvedTileId);
+          lines.push(
+            isWaterfallKind(kind)
+              ? `Material: A1 waterfall kind ${kind}. Waterfall shapes were computed for the ` +
+                'area and the tiles around it. A fall has four shapes, not 48: only its left ' +
+                'and right neighbours matter, so it repeats unchanged down its column and its ' +
+                'animation runs vertically. Kinds 5, 7, 9, 11, 13 and 15 are waterfall slots ' +
+                'whatever the sheet calls them — describe_tileset_materials names them.'
+              : `Material: A1 water kind ${kind}. Floor autotile shapes were computed for the ` +
+                'area and the tiles around it, the same table A2 ground uses.'
+          );
         } else {
           lines.push(
             `Tile id ${resolvedTileId} is not an autotile this tool computes shapes for, so it ` +
-            'was written as-is. A1 water and waterfalls follow a third table and are not ' +
-            'supported yet; B/C/D/E object tiles have no shapes and are correct as written.'
+            'was written as-is. B/C/D/E object tiles have no shapes and are correct as written.'
           );
         }
         lines.push(...advice);
@@ -512,9 +541,9 @@ export function registerMapPaintTools(server: McpServer): void {
         lines.push(
           computeShapes
             ? 'Autotile shapes were computed once over the affected area, after every tile ' +
-              'landed. Both the ground and wall tables were run, so a batch touching each ' +
-              'family comes out right; A1 water follows a third table and passed through ' +
-              'untouched.'
+              'landed. All three tables were run — floor for A2 ground, A1 water and the A4 ' +
+              'wall tops, wall for the A3/A4 faces, waterfall for the A1 fall slots — so a batch ' +
+              'touching every family comes out right.'
             : 'Shapes were not computed — every tile was written exactly as given.'
         );
         lines.push('Use get_map_grid to see the result as a text grid.');

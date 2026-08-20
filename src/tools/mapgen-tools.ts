@@ -13,6 +13,7 @@ import {
 } from '../core/mapgen.js';
 import { getAutotileKind, TILE_ID_A2, TILE_ID_A3, TILE_ID_MAX } from '../core/autotile.js';
 import { checkGroundKinds } from '../core/ground-material.js';
+import { isWaterfallKind, A1_KIND_MAX } from '../core/water-autotile.js';
 import { checkSheetsPresent } from '../core/tileset-sheets.js';
 import { censusMap, clearMap, describeKeptContent, TOTAL_LAYERS } from '../core/map-reset.js';
 import { loadA2Materials } from '../core/tileset-image.js';
@@ -26,6 +27,14 @@ const A2_KIND_MIN = getAutotileKind(TILE_ID_A2);
 const A2_KIND_MAX = getAutotileKind(TILE_ID_A3) - 1;
 const AUTOTILE_KIND_MAX = getAutotileKind(TILE_ID_MAX) - 1;
 
+/** Which sheet a kind is on, for the result text. */
+function familyOf(kind: number): string {
+  if (kind <= A1_KIND_MAX) return isWaterfallKind(kind) ? 'A1 waterfall' : 'A1 water';
+  if (kind <= A2_KIND_MAX) return 'A2 ground';
+  if (kind < 80) return 'A3 wall';
+  return 'A4 wall';
+}
+
 const PREVIEW_LIMIT = 60;
 
 export function registerMapgenTools(server: McpServer): void {
@@ -38,12 +47,14 @@ export function registerMapgenTools(server: McpServer): void {
     {
       mapId: z.number().int().positive().describe('Map ID to fill'),
       style: z.enum(['dungeon', 'cave']).describe('Layout algorithm'),
-      floorKind: z.number().int().min(A2_KIND_MIN).max(A2_KIND_MAX)
+      floorKind: z.number().int().min(0).max(A2_KIND_MAX)
         .describe(
-          `A2 material for walkable floor (${A2_KIND_MIN}-${A2_KIND_MAX}). It is painted on ` +
-          'the given layer, so it wants an opaque *ground* material — an overlay has ' +
-          'transparent edge pieces that render black. Which kinds are which cannot be read ' +
-          'off the sheet column; call describe_tileset_materials.'
+          `Material for walkable floor. ${A2_KIND_MIN}-${A2_KIND_MAX} is A2 ground; ` +
+          `0-${A1_KIND_MAX} is A1 water, which makes the floor a lake or a lava flow rather ` +
+          'than something to walk on — passability comes from the tileset flags either way. ' +
+          'It is painted on the given layer, so it wants an opaque *ground* material — an ' +
+          'overlay has transparent edge pieces that render black. Which kinds are which cannot ' +
+          'be read off the sheet column; call describe_tileset_materials.'
         ),
       surroundKind: z.number().int().min(A2_KIND_MIN).max(AUTOTILE_KIND_MAX)
         .describe(
@@ -165,6 +176,27 @@ export function registerMapgenTools(server: McpServer): void {
           };
         }
 
+        // A waterfall has four shapes and they are all horizontal, so a whole
+        // layout painted in one would be a fall with no top, no bottom and no
+        // way to read where it ends. Refusing beats emitting it.
+        for (const [kind, label] of [[floorKind, 'floorKind'], [surroundKind, 'surroundKind']] as const) {
+          if (!isWaterfallKind(kind)) continue;
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `A1 kind ${kind} (${label}) is a waterfall slot, and a layout cannot be painted ` +
+                'in one. A waterfall has four shapes rather than 48 and all of them are ' +
+                'left/right, so it has no top or bottom edge to end a room or a cave with — ' +
+                'filling an area with it gives a flat sheet of falling water. Use a water kind ' +
+                'for the body and paint the fall itself with fill_map_region. ' +
+                'describe_tileset_materials says which A1 kinds are which; the waterfall slots ' +
+                'are always 5, 7, 9, 11, 13 and 15, whatever the sheet calls them.',
+            }],
+            isError: true,
+          };
+        }
+
         const materials = await loadA2Materials(project.path, tileset.tilesetNames);
         const groundCheck = checkGroundKinds(
           [
@@ -238,9 +270,8 @@ export function registerMapgenTools(server: McpServer): void {
 
         const lines = [
           `Generated a ${style} layout on map ${mapId} (${width}x${height}), layer ${layer}, seed ${seed}.`,
-          `Floor material: A2 kind ${floorKind}   Surround: ` +
-            `${surroundKind <= A2_KIND_MAX ? 'A2 ground' : surroundKind < 80 ? 'A3 wall' : 'A4 wall'} ` +
-            `kind ${surroundKind}`,
+          `Floor material: ${familyOf(floorKind)} kind ${floorKind}   ` +
+            `Surround: ${familyOf(surroundKind)} kind ${surroundKind}`,
           `Open tiles: ${stats.openTiles} of ${width * height}` +
             (style === 'dungeon' ? `   Rooms: ${layout.rooms.length}` : ''),
           `Suggested start position: (${layout.start.x}, ${layout.start.y})`,

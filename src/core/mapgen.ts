@@ -5,6 +5,7 @@ import {
   type Rect,
 } from './autotile.js';
 import { refreshWallShapes } from './wall-autotile.js';
+import { refreshWaterfallShapes } from './water-autotile.js';
 import { cutRoomCorners, CORPUS_CORNER_WEIGHTS } from './room-shape.js';
 
 /**
@@ -604,7 +605,10 @@ export function layoutToGrid(
     }
   }
 
-  return refreshWallShapes(refreshAutotileShapes(grid));
+  // The waterfall pass matters here even though a layout is floor and surround:
+  // a caller can name an A1 kind for either, and a lava fall as the surround of
+  // a cave is a reasonable thing to ask for.
+  return refreshWaterfallShapes(refreshWallShapes(refreshAutotileShapes(grid)));
 }
 
 /** Text preview of a layout — '.' open, '#' solid, '@' start. */

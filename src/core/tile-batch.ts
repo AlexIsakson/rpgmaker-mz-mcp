@@ -1,5 +1,6 @@
 import { refreshAutotileShapes, type Rect } from './autotile.js';
 import { refreshWallShapes } from './wall-autotile.js';
+import { refreshWaterfallShapes } from './water-autotile.js';
 
 /**
  * Writing many scattered tiles at once.
@@ -66,10 +67,9 @@ export interface BatchResult {
  * idempotent for everything else — so the result is identical to refreshing the
  * whole layer.
  *
- * Both shape tables are run. A layer can hold ground and wall autotiles at once,
- * and each pass ignores what the other owns, so running both is what makes a
- * mixed batch come out right. A1 water belongs to a third table and is passed
- * through untouched by both.
+ * All three shape tables are run. A layer can hold ground, wall and water
+ * autotiles at once, and each pass ignores what the others own, so running all
+ * three is what makes a mixed batch come out right.
  */
 export function applyPlacements(
   grid: number[][],
@@ -143,7 +143,14 @@ export function applyPlacements(
     height: bounds.height + 2,
   };
 
-  const shaped = refreshWallShapes(refreshAutotileShapes(next, { region }), { region });
+  // All three tables, because a batch can carry any family: A2 ground and A1
+  // water and the A4 wall tops through the floor pass, A3/A4 wall faces through
+  // the wall pass, and A1's waterfall slots through the third. Each pass leaves
+  // the families it does not own untouched, so the order does not matter.
+  const shaped = refreshWaterfallShapes(
+    refreshWallShapes(refreshAutotileShapes(next, { region }), { region }),
+    { region }
+  );
 
   return { grid: shaped, painted, skipped, outOfBounds, duplicates, overwritten, bounds };
 }
