@@ -53,7 +53,10 @@ describe('planInterior', () => {
   });
 
   it('lays the room out the way the sample interiors do', () => {
-    const plan = planInterior(options());
+    // Pinned to a rectangle: this is the layout every measurement at the top of
+    // interiorgen.ts describes, and the shaped room below is built by
+    // generalising it rather than by replacing it.
+    const plan = planInterior(options({ cutCorners: false }));
     const { x: rx, y: ry, width: rw } = plan.room;
 
     // a ring of wall top around the room
@@ -97,9 +100,11 @@ describe('planInterior', () => {
   });
 
   it('centres the doorway by default and honours an offset', () => {
-    expect(planInterior(options({ floorWidth: 7 })).arrival.x).toBe(2 + 3);
-    expect(planInterior(options({ floorWidth: 7, doorOffsetX: 0 })).arrival.x).toBe(2);
-    expect(planInterior(options({ floorWidth: 7, doorOffsetX: 6 })).arrival.x).toBe(2 + 6);
+    const rect = (over: Partial<InteriorOptions> = {}) =>
+      options({ floorWidth: 7, cutCorners: false, ...over });
+    expect(planInterior(rect()).arrival.x).toBe(2 + 3);
+    expect(planInterior(rect({ doorOffsetX: 0 })).arrival.x).toBe(2);
+    expect(planInterior(rect({ doorOffsetX: 6 })).arrival.x).toBe(2 + 6);
   });
 
   it('leaves every floor tile reachable from the doorway', () => {
@@ -123,12 +128,13 @@ describe('planInterior', () => {
       for (const slot of plan.furnitureSlots) {
         expect(slot.x, `seed ${seed}`).not.toBe(plan.arrival.x);
         expect(cellAt(plan, slot.x, slot.y)).toBe('floor');
-        const onEdge =
-          slot.x === plan.floor.x ||
-          slot.x === plan.floor.x + plan.floor.width - 1 ||
-          slot.y === plan.floor.y ||
-          slot.y === plan.floor.y + plan.floor.height - 1;
-        expect(onEdge).toBe(true);
+        // "Against a wall" is "has a neighbour that is not floor" — the floor
+        // rect's own perimeter when no corner is cut, and the concave corner
+        // as well when one is.
+        const touchesWall = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(
+          ([dx, dy]) => cellAt(plan, slot.x + dx, slot.y + dy) !== 'floor'
+        );
+        expect(touchesWall).toBe(true);
       }
     }
   });
@@ -146,6 +152,160 @@ describe('planInterior', () => {
 
   it('refuses a doorway outside the floor', () => {
     expect(() => planInterior(options({ floorWidth: 5, doorOffsetX: 5 }))).toThrow(/outside a 5-wide/);
+  });
+
+  // --- P5-10: rooms that are not boxes -------------------------------------
+
+  it('reproduces the old rectangle cell for cell when no corner is cut', () => {
+    // The wall builder was generalised to any silhouette. This is the assertion
+    // that the generalisation did not move a single tile of the shape every
+    // measurement in interiorgen.ts describes.
+    const plan = planInterior(
+      options({ floorWidth: 12, floorHeight: 8, margin: 2, cutCorners: false })
+    );
+    expect(renderInteriorAscii(plan)).toBe(
+      [
+        '                  ',
+        '                  ',
+        '  ##############  ',
+        '  #%%%%%%%%%%%%#  ',
+        '  #%%%%%%%%%%%%#  ',
+        '  #............#  ',
+        '  #............#  ',
+        '  #............#  ',
+        '  #............#  ',
+        '  #............#  ',
+        '  #............#  ',
+        '  #............#  ',
+        '  #............#  ',
+        '  #######.######  ',
+        '  %%%%%%%.%%%%%%  ',
+        '  %%%%%%%E%%%%%%  ',
+        '                  ',
+        '                  ',
+      ].join('\n')
+    );
+  });
+
+  it('shapes the room on some seeds and leaves it a box on others', () => {
+    // The corpus ratio, not "always cut": 106 of 191 hand-made room cores have
+    // no corner missing and 85 do.
+    let cut = 0;
+    let box = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const plan = planInterior(options({ floorWidth: 12, floorHeight: 8, seed }));
+      if (plan.cuts.length > 0) cut++;
+      else box++;
+    }
+    expect(cut).toBeGreaterThan(0);
+    expect(box).toBeGreaterThan(0);
+    // 85/191 = 44.5%; the draw is over the same weights, with tile rounding.
+    expect(cut / 200).toBeGreaterThan(0.3);
+    expect(cut / 200).toBeLessThan(0.6);
+  });
+
+  it('never cuts a corner when asked not to', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const plan = planInterior(options({ floorWidth: 12, floorHeight: 8, seed, cutCorners: false }));
+      expect(plan.cuts, `seed ${seed}`).toEqual([]);
+      expect(plan.floorMask.every((row) => row.every(Boolean))).toBe(true);
+    }
+  });
+
+  it('walls a shaped room with no void touching its floor', () => {
+    // The failure this rules out is a hole: a floor tile with the map
+    // background beside it renders as black, which is the bug class the
+    // material classifier exists for.
+    //
+    // The room proper, not the doorway channel — the channel's last tile is the
+    // way out and has void below it by design, in a rectangle just as much as
+    // in a shaped room.
+    for (let seed = 1; seed <= 100; seed++) {
+      const plan = planInterior(options({ floorWidth: 12, floorHeight: 8, seed }));
+      for (let dy = 0; dy < plan.floor.height; dy++) {
+        for (let dx = 0; dx < plan.floor.width; dx++) {
+          if (!plan.floorMask[dy][dx]) continue;
+          const x = plan.floor.x + dx;
+          const y = plan.floor.y + dy;
+          for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
+            expect(
+              cellAt(plan, x + ox, y + oy),
+              `seed ${seed}: void at ${x + ox},${y + oy} beside floor at ${x},${y}`
+            ).not.toBe('void');
+          }
+        }
+      }
+    }
+  });
+
+  it('walls both sides of the doorway channel down its whole length', () => {
+    // The channel is cut through the front wall; a shape that left it open to
+    // one side would show the map background down the edge of the doorway.
+    for (let seed = 1; seed <= 100; seed++) {
+      const plan = planInterior(options({ floorWidth: 12, floorHeight: 8, seed }));
+      for (let y = plan.arrival.y; y <= plan.exit.y; y++) {
+        for (const dx of [-1, 1]) {
+          expect(
+            cellAt(plan, plan.arrival.x + dx, y),
+            `seed ${seed}: ${plan.arrival.x + dx},${y} beside the channel`
+          ).not.toBe('void');
+        }
+      }
+    }
+  });
+
+  it('keeps every floor tile of a shaped room reachable, furniture and all', () => {
+    // The done-when of P5-10. Furniture is impassable, so the slots the plan
+    // offers have to be safe for any prefix the caller takes — not just the
+    // first one.
+    for (let seed = 1; seed <= 100; seed++) {
+      for (const [fw, fh] of [[7, 5], [12, 8], [16, 11]] as const) {
+        const plan = planInterior(options({ floorWidth: fw, floorHeight: fh, seed }));
+        const blocked = new Set(plan.furnitureSlots.map((s) => `${s.x},${s.y}`));
+        const floorCells: string[] = [];
+        for (let y = 0; y < plan.height; y++) {
+          for (let x = 0; x < plan.width; x++) {
+            if (cellAt(plan, x, y) === 'floor' && !blocked.has(`${x},${y}`)) floorCells.push(`${x},${y}`);
+          }
+        }
+        const seen = reachable(plan, plan.exit);
+        for (const key of floorCells) {
+          expect(seen.has(key), `seed ${seed} ${fw}x${fh}: ${key} cut off`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('puts the doorway where it reaches the front, and says so when asked otherwise', () => {
+    // A channel cut down a column that a corner took out would open into the
+    // void partway up the map rather than out of the front of the house.
+    for (let seed = 1; seed <= 100; seed++) {
+      const plan = planInterior(options({ floorWidth: 12, floorHeight: 8, seed }));
+      const bottomRow = plan.floor.y + plan.floor.height - 1;
+      expect(cellAt(plan, plan.arrival.x, bottomRow), `seed ${seed}`).toBe('floor');
+      expect(plan.exit.y).toBe(plan.room.y + plan.room.height - 1);
+      for (let y = plan.arrival.y; y <= plan.exit.y; y++) {
+        expect(cellAt(plan, plan.arrival.x, y), `seed ${seed} row ${y}`).toBe('floor');
+      }
+    }
+  });
+
+  it('refuses a doorway column a corner cut took away, and names the ones left', () => {
+    // Find a seed whose shape rules a column out, then ask for that column.
+    let refused = false;
+    for (let seed = 1; seed <= 200 && !refused; seed++) {
+      const plan = planInterior(options({ floorWidth: 12, floorHeight: 8, seed }));
+      const bottomRow = plan.floor.height - 1;
+      for (let dx = 0; dx < plan.floor.width; dx++) {
+        if (plan.floorMask[bottomRow][dx]) continue;
+        expect(() =>
+          planInterior(options({ floorWidth: 12, floorHeight: 8, seed, doorOffsetX: dx }))
+        ).toThrow(/does not reach the front of the room/);
+        refused = true;
+        break;
+      }
+    }
+    expect(refused, 'no seed in 200 produced a bottom-row cut to test the refusal').toBe(true);
   });
 });
 

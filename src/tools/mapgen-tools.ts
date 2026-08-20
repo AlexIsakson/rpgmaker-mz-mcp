@@ -74,8 +74,13 @@ export function registerMapgenTools(server: McpServer): void {
         .describe('dungeon: how many times to try placing a room; higher is denser'),
       minRoomSize: z.number().int().positive().default(3).describe('dungeon: smallest room side'),
       maxRoomSize: z.number().int().positive().default(8).describe('dungeon: largest room side'),
-      irregularRoomChance: z.number().min(0).max(1).default(0.35)
-        .describe('dungeon: share of rooms carved as two overlapping rectangles, so L- or T-shaped'),
+      irregularRoomChance: z.number().min(0).max(1).default(0.445)
+        .describe(
+          'dungeon: share of rooms that are not boxes, with one to four corners taken out. The ' +
+          'default is the share of hand-made *interior* room cores with a corner missing ' +
+          '(85 of 191) — the dungeon sample maps only offer whole floor plans to measure, not ' +
+          'single chambers, so this is stated from the nearest thing the corpus settles.'
+        ),
       deadEndAttempts: z.number().int().min(0).optional()
         .describe(
           'dungeon: tries at cutting a passage that leads nowhere. Defaults to 0.4 per map tile, ' +

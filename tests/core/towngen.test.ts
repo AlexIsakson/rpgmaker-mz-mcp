@@ -10,6 +10,7 @@ import {
   type TownOptions,
   type TownPlan,
 } from '../../src/core/towngen.js';
+import { RAGGED_DEFAULTS } from '../../src/core/ragged.js';
 import type { Rect } from '../../src/core/autotile.js';
 
 function options(over: Partial<TownOptions> = {}): TownOptions {
@@ -219,11 +220,39 @@ describe('both sides of the street', () => {
 
   it('stays single-sided on a band too short for two rows', () => {
     // floor((7 - 1) / 2) = 3, below the 4-row minimum, so the option is inert
-    // rather than producing two rows that overlap. This is the default band.
+    // rather than producing two rows that overlap. This is the default band,
+    // held at a fixed height — with variation on, a band can roll taller than 7
+    // and then it is not too short any more, which is the next test.
     for (const seed of SEEDS) {
-      const plan = planTown(options({ seed, bandHeight: 7, bothSidesOfStreet: true }));
+      const plan = planTown(
+        options({ seed, bandHeight: 7, bandHeightVariation: 0, bothSidesOfStreet: true })
+      );
       expect(plan.buildings.every((b) => b.doorSide === 'bottom'), `seed ${seed}`).toBe(true);
     }
+  });
+
+  it('decides two rows band by band, not once for the whole town', () => {
+    // The budgets come from the band's own height now that heights vary, so a
+    // town can hold a 9-row band with two rows in it beside a 5-row band with
+    // one. Deciding it once from the `bandHeight` argument would have made
+    // every band in the town agree, which is the grid this is removing.
+    let sawTwoSided = false;
+    let sawSingleSided = false;
+    for (const seed of SEEDS) {
+      const plan = planTown(
+        options({ seed, bandHeight: 7, bandHeightVariation: 2, bothSidesOfStreet: true })
+      );
+      for (const band of plan.bands) {
+        const inBand = plan.buildings.filter(
+          (b) => b.rect.y >= band.y && b.rect.y < band.y + band.height
+        );
+        if (inBand.length === 0) continue;
+        if (inBand.some((b) => b.doorSide === 'top')) sawTwoSided = true;
+        else sawSingleSided = true;
+      }
+    }
+    expect(sawTwoSided).toBe(true);
+    expect(sawSingleSided).toBe(true);
   });
 
   it('is off by default, so an unchanged call still builds bands', () => {
@@ -297,6 +326,96 @@ describe('both sides of the street', () => {
         // And never inside the building it belongs to.
         expect(inRect(shop.building.rect, c.x, c.y), `seed ${seed}`).toBe(false);
       }
+    }
+  });
+});
+
+describe('blocks that are not a grid', () => {
+  /**
+   * P5-10. The pitch was the last grid left in the town: P5-09 made every
+   * street *edge* turn, but every band was `bandHeight` tall, so every block
+   * was the same size. The corpus number behind the default variation of 2 is
+   * the roof bounding box across the 293 sample maps — 233 components, height
+   * median 3 and p90 5.
+   */
+  it('gives a town blocks of more than one height', () => {
+    // Measured over these 25 seeds on a 44x46 map: 24 of 25 towns hold more
+    // than one block height, all 25 hold a different sequence of them, and the
+    // heights land 5:22 6:24 7:29 8:16 9:12 across every band of every seed.
+    // The fixed-pitch control has exactly one height in the whole sweep — 7.
+    let varied = 0;
+    const sequences = new Set<string>();
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed, width: 44, height: 46 }));
+      expect(plan.bands.length, `seed ${seed}`).toBeGreaterThan(2);
+      if (new Set(plan.bands.map((b) => b.height)).size > 1) varied++;
+      sequences.add(plan.bands.map((b) => b.height).join(','));
+    }
+    expect(varied).toBeGreaterThanOrEqual(20);
+    expect(sequences.size).toBe(SEEDS.length);
+  });
+
+  it('keeps every band inside the range asked for', () => {
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed, width: 44, height: 46, bandHeight: 7 }));
+      // The last band takes what is left, so it may be short; the rest may not.
+      for (const band of plan.bands.slice(0, -1)) {
+        expect(band.height, `seed ${seed}`).toBeGreaterThanOrEqual(5);
+        expect(band.height, `seed ${seed}`).toBeLessThanOrEqual(9);
+      }
+      for (const band of plan.bands) expect(band.height).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  it('restores the fixed pitch when the variation is zero', () => {
+    // Every band but the last is exactly bandHeight. The last takes whatever is
+    // left, which is the same rule as with variation on and the reason a town
+    // no longer wastes the strip below its bottom road — so it may be shorter,
+    // never taller.
+    for (const seed of SEEDS) {
+      for (const [w, h] of [[44, 46], [44, 34], [60, 50], [30, 30]] as const) {
+        const plan = planTown(options({ seed, width: w, height: h, bandHeightVariation: 0 }));
+        for (const band of plan.bands.slice(0, -1)) {
+          expect(band.height, `seed ${seed} ${w}x${h}`).toBe(TOWN_DEFAULTS.bandHeight);
+        }
+        const last = plan.bands[plan.bands.length - 1];
+        expect(last.height, `seed ${seed} ${w}x${h}`).toBeLessThanOrEqual(TOWN_DEFAULTS.bandHeight);
+      }
+    }
+  });
+
+  it('leaves the cross streets where they were, whatever the bands do', () => {
+    // Cross streets depend on the usable width alone and are drawn from the rng
+    // first, so varying the band heights cannot move them.
+    for (const seed of SEEDS) {
+      const verticals = (plan: TownPlan) =>
+        plan.roads.filter((r) => r.height > r.width).map((r) => r.x).sort((a, b) => a - b);
+      const varied = planTown(options({ seed, width: 44, height: 46 }));
+      const fixed = planTown(options({ seed, width: 44, height: 46, bandHeightVariation: 0 }));
+      expect(verticals(varied), `seed ${seed}`).toEqual(verticals(fixed));
+    }
+  });
+
+  it('still keeps every street boundary inside the hand-made p99', () => {
+    // The regression that variation exposed: a road flush against the bottom of
+    // the usable area has nowhere for its lower edge to bend into, and seed 5 of
+    // a 44x46 town measured a 25-tile straight run against a corpus p99 of 9.
+    for (const seed of SEEDS) {
+      for (const [w, h] of [[44, 46], [44, 34], [60, 50], [30, 30]] as const) {
+        const plan = planTown(options({ seed, width: w, height: h }));
+        expect(plan.roadLongestRun, `seed ${seed} ${w}x${h}`).toBeLessThanOrEqual(
+          RAGGED_DEFAULTS.maxRun
+        );
+        expect(plan.warnings, `seed ${seed} ${w}x${h}`).toEqual([]);
+      }
+    }
+  });
+
+  it('is still reproducible from its seed', () => {
+    for (const seed of SEEDS) {
+      expect(planTown(options({ seed, width: 44, height: 46 })).bands).toEqual(
+        planTown(options({ seed, width: 44, height: 46 })).bands
+      );
     }
   });
 });
@@ -385,6 +504,76 @@ describe('streets that are not ruled lines', () => {
 });
 
 describe('decoration placement', () => {
+  it('never seals a tile of ground off from the rest', () => {
+    // P5-43. The gap between two neighbouring houses is randInt(rng, 1, 3)
+    // wide, so a third of them are one tile; a prop landing above such a gap
+    // and another below it leaves the tile between them walkable, visible and
+    // unreachable. Measured over 12 seeds of a 44x46 town driven through the
+    // real server: **0 of 12 with the decoration pass off, 4 of 12 with it on
+    // and no guard, 0 of 12 with it.** check_map_walkability stayed quiet
+    // throughout, because it declines to report an island under 3 tiles.
+    //
+    // Asserted here against the plan's own model of solid ground — buildings,
+    // and the rows of a frame prop below its walk-under top row.
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed, width: 44, height: 46 }));
+      const solid: boolean[][] = Array.from({ length: plan.height }, () =>
+        new Array<boolean>(plan.width).fill(false)
+      );
+      for (const b of plan.buildings) {
+        for (let y = b.rect.y; y < b.rect.y + b.rect.height; y++) {
+          for (let x = b.rect.x; x < b.rect.x + b.rect.width; x++) solid[y][x] = true;
+        }
+      }
+      for (const f of plan.frameSlots) {
+        for (let dy = 1; dy < TOWN_DEFAULTS.framePropHeight; dy++) {
+          if (f.y + dy < plan.height) solid[f.y + dy][f.x] = true;
+        }
+      }
+      for (const d of plan.decorSlots) solid[d.y][d.x] = true;
+
+      let total = 0;
+      let start: { x: number; y: number } | null = null;
+      for (let y = 0; y < plan.height; y++) {
+        for (let x = 0; x < plan.width; x++) {
+          if (solid[y][x]) continue;
+          total++;
+          start ??= { x, y };
+        }
+      }
+      expect(start, `seed ${seed}`).not.toBeNull();
+
+      const seen = Array.from({ length: plan.height }, () =>
+        new Array<boolean>(plan.width).fill(false)
+      );
+      const stack = [start!];
+      seen[start!.y][start!.x] = true;
+      let reached = 0;
+      while (stack.length > 0) {
+        const { x, y } = stack.pop()!;
+        reached++;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= plan.width || ny >= plan.height) continue;
+          if (solid[ny][nx] || seen[ny][nx]) continue;
+          seen[ny][nx] = true;
+          stack.push({ x: nx, y: ny });
+        }
+      }
+      expect(reached, `seed ${seed}: ${total - reached} tile(s) sealed off`).toBe(total);
+    }
+  });
+
+  it('still decorates the town rather than refusing everything', () => {
+    // The guard drops slots, so the check that it has not quietly emptied the
+    // decoration pass: 12 seeds of a 44x46 town keep 25-40 props each.
+    for (const seed of SEEDS) {
+      const plan = planTown(options({ seed, width: 44, height: 46 }));
+      expect(plan.decorSlots.length, `seed ${seed}`).toBeGreaterThan(15);
+    }
+  });
+
   it('never puts a prop on a building or in the street', () => {
     // The placement-audit finding, enforced before anything is written: props
     // used to land on bakery walls and across roofs.

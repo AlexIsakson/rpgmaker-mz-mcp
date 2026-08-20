@@ -2772,7 +2772,175 @@ against.
 two houses, leaving a tile of ground the player can see and never reach. It is **not caused by
 this change** — it turned up on 1 of 12 seeds with ragged streets and 1 of 12 with ruled ones,
 which is the measurement that settles it as pre-existing — but a player would notice it, so it is
-P5-43 rather than a paragraph.
+P5-43 rather than a paragraph. **P5-10 came back for it** — see below.
+
+### A room that is not a box
+
+P5-07 measured the shape of a hand-made map, P5-08 spent it on roofs and P5-09 on ground
+boundaries. This is P5-10, and it spends it on the thing a boundary *encloses*: interior rooms,
+town blocks and dungeon rooms were all rectangles. One shared pure module,
+[`src/core/room-shape.ts`](src/core/room-shape.ts), and three generators using it.
+
+#### What a hand-made room actually is
+
+The raw question flatters any generator that cuts a doorway, so it is the wrong one. A room's own
+doorway channel already makes its layer-0 footprint non-rectangular — 15.6% of hand-made interior
+floor regions are rectangles, and `generate_interior` would have scored the same before this
+change without a single thing about it varying. So every floor region of 8+ tiles across the 139
+interior maps was reduced to its **core**: opened with a 2x2 structuring element, which erodes
+away doorway channels and one-tile corridors and leaves the body of the room.
+
+| of 191 interior room cores | |
+|---|---|
+| exactly a rectangle | 81 (42.4%) |
+| **missing at least one bounding-box corner** | **85 (44.5%)** |
+| non-rectangular some other way | 25 (13.1%) |
+| core fill of its bounding box | median 93% |
+
+So the dominant non-rectangular room is *a rectangle with corners taken out of it* — the same
+shape family P5-08 found for roofs, arrived at independently. How many corners:
+
+| corners cut | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| cores | 106 | 26 | 27 | 5 | 27 |
+
+Over all 203 individual cuts, a cut is **a median 0.24 of the room's width and 0.25 of its
+height** (p10 0.08/0.10, p90 0.54/0.57), measured as a fraction so it scales. Those two rows are
+`CORPUS_CORNER_WEIGHTS` and `SHAPE_DEFAULTS` verbatim. The 27 cores with all four corners cut are
+the bevelled hall — a real hand-made room, not a tail case.
+
+**Connectivity is an argument, not an audit.** A rectangle with blocks removed at its corners has
+a contiguous interval of cells in every row, because a cut can only take a prefix and a suffix.
+`minSpan` keeps every row and column non-empty, so some row survives at full width and every
+other row's interval meets it. The mask is 4-connected by construction. The tests assert it over
+300 seeds and six sizes anyway, because an argument is not a test.
+
+#### Interiors: the walls follow the silhouette
+
+`planInterior` now takes `cutCorners` (**on by default**, reproducing the 106:85 ratio rather than
+shaping every room) and builds its walls per column instead of per row. Every column of a
+corner-cut mask is one unbroken run of floor, so each column has exactly one back wall above it
+and one front wall below it and there is nothing to disambiguate.
+
+**Everything the module already claimed still holds cell for cell**, and that is a golden test
+rather than a promise: a 12x8 rectangle comes out of the generalised builder identical to the
+hand-written layout, tile for tile.
+
+Generalising the front wall needed one new measurement. The band beneath the bottom ring was
+drawn the full width of the room, *including* under the side wall columns, and it was not obvious
+whether that was the corpus or a convenience. It is the corpus. Taking every bottom-left room
+corner in the 139 interior maps that has a wall face below it, the cell one column further out on
+the same face row is **another face in 186 of 231 cases (80.5%)** and a wall top in the other 45.
+So the front face spreads sideways along its row, and the builder does that.
+
+Three smaller things the shape forced, each a refusal or a guard rather than a hope:
+
+- **`INTERIOR_MIN_SPAN` is 3, not the module's default of 2.** A room narrower than three has no
+  wall either side of its doorway, which is already why `floorWidth < 3` is refused outright; a
+  cut that took the floor's bottom row to two would reintroduce exactly that on some seed. Asking
+  for three makes it unreachable, at the cost of leaving a 3-wide room the rectangle it has to be.
+- **The doorway goes in a column that reaches the floor's bottom row**, because any other column's
+  front wall stops short of the room's own bottom and a channel cut down it would open into the
+  void partway up the map. An offset a corner took away is **refused, and the refusal names the
+  columns that are left**. The ends of that run are *not* excluded: the silhouette is the floor
+  grown a column each way, so every such column already has wall either side, which is why a door
+  at offset 0 of a rectangular room still works exactly as it did.
+- **Furniture slots are filtered so that any prefix of them is safe.** A rectangle could not really
+  be sealed by single-tile furniture against its walls, so this never had to exist; a three-wide
+  wing can be. Each slot is tested against every slot already kept, and reachability is measured
+  from the arrival tile rather than from any floor cell.
+
+#### Town: the pitch was the last grid left
+
+P5-09 made every street *edge* turn, so no boundary in a generated town runs straight for more
+than 7 tiles. The **pitch** was untouched: every band was `bandHeight` tall, so every block in the
+town was the same size. `bandHeightVariation` defaults to **2**, and the corpus is the reason —
+`scripts/measure-map-shape.mjs` now reports the bounding box of every roof it finds, and across
+233 components the height is **median 3, p90 5**, max 26. A hand-made building is typically 3 rows
+of roof and sometimes 5, so a band has to vary by about two rows for both to fit in one, and with
+a fixed band only ever one of them does.
+
+Measured over 25 seeds of a 44x46 town: **24 of 25 towns hold more than one block height, all 25
+hold a different sequence of them**, and band heights land 5:22 6:24 7:29 8:16 9:12 across every
+band of every seed. The fixed-pitch control has exactly one height in the whole sweep — 7. The
+two-rows-per-band decision moved with it: budgets come from *each band's own* height, so a town
+can hold a 9-row band with two rows in it beside a 5-row band with one, where before every band in
+the town agreed because they were all the same size.
+
+**Two things had to move to make it safe, and both were found by measuring rather than by
+reading.**
+
+*The cross streets are now drawn from the rng before the band heights.* They depend on the usable
+width alone, so drawing them first means a change to how tall the bands are cannot move them — the
+same discipline the ragging pass already follows. Without it, varying the bands shifted the whole
+stream and a 25-wide map lost its last building to a cross street that had moved.
+
+*One row is held back below the last road.* A street flush against the bottom of the usable area
+has nowhere for its lower edge to bend into, because `raggedRect` may only grow inside the town,
+so that edge comes out as a single straight run the width of the map. Fixed bands only landed
+there on some arithmetic; varying them made it common, and **seed 5 of a 44x46 town measured a
+25-tile straight run against the corpus p99 of 9** before that line existed.
+
+#### Dungeon: the corpus cannot answer the question, and says so
+
+`irregularRoomChance` keeps its name and its meaning — the share of rooms that are not boxes — and
+its default rises from 0.35 to **0.445**. The shape behind it is now `cutRoomCorners`, so a room
+can lose one to four corners instead of only being two overlapping rectangles.
+
+**0.445 is stated, not measured, and the distinction matters.** It is the interior figure, 85 of
+191. The dungeon corpus cannot answer the same question: its layer-0 floor regions are *whole
+floor plans* rather than single chambers — 77 regions across the 55 dungeon-tileset maps, 1.4 per
+map. Measured the same way as the interiors, only **3 of 66 dungeon cores (4.5%) are rectangles
+and 60 of 66 (90.9%) are missing a corner**, with a median fill of 57% against the interiors' 93%.
+That says a dungeon's *layout* should be nothing like a rectangle, which the room-and-corridor
+construction and the three metrics at the top of `mapgen.ts` already answer. It says nothing about
+one chamber. So the value is stated as the nearest thing the corpus does settle, and marked as
+such in the code.
+
+One thing the shape broke and had to fix: **the room anchor is read back out of the mask** rather
+than computed as the rectangle's centre. Corridors run between anchors, and a corner cut can put
+the centre on rock — a corridor ending on rock joins nothing, which is how a shaped room could
+silently split a dungeon in two. The old two-rectangle form already needed this for the same
+reason; the new one needs a search outward from the centre instead of a fixed choice.
+
+#### P5-43, taken because this task was blocked by it
+
+**A decor prop sealing a one-tile alley is P5-09's finding, and P5-10 made it four times as
+likely.** The gap between two neighbouring houses is `randInt(rng, 1, 3)` tiles, so a third of
+them are one tile wide; a prop landing above such a gap and another below it leaves the tile
+between them walkable, visible and unreachable. Driving the real server over 12 seeds of a 44x46
+town:
+
+| | seeds with a tile cut off |
+|---|---|
+| decoration pass off | **0 of 12** |
+| variable bands, no guard | **4 of 12** |
+| variable bands, with the guard | **0 of 12** |
+
+P5-10's *done when* is that the walkability audit still reports one connected area, so this was
+not something to file and walk past. The earlier note on P5-43 said the fix had to know the prop's
+passability and so belonged where the tileset flags are. That is true of a **repair** — of
+deciding whether a prop already placed is blocking, which the plan cannot know. It is not true of
+**refusing the slot in the first place**: that asks whether the ground would still hold together
+*if every prop were solid*, which needs no flag at all. Where a prop turns out to be passable the
+guard costs one piece of decoration and nothing else, and the guarantee holds whatever the props
+are. 12 seeds keep 25 to 40 props each, so the decoration pass is not quietly empty.
+
+The ground it walks is every tile that is not a building and not the **solid** part of a frame
+prop — only the rows below a frame prop's top row, since the player walks under the canopy, which
+is the same fact P5-09 used to keep streets out of the border band. Getting that wrong in either
+direction costs a prop, never a hole, because the walk only ever refuses slots.
+
+#### What is still open
+
+The interior corpus is the only one that could be measured at *room* scale, so the corner
+distribution it produced is doing duty for dungeon chambers too, marked as stated. A town block's
+height is grounded in roof heights rather than in a direct measurement of hand-made block pitch —
+the sample maps do not label a block, and inferring one from street spacing was judged too fragile
+to claim. And a bottom corner cut out of an interior gives it a **stepped front wall**, which the
+corpus has no example of either way: the 27 four-corner cores are bevelled by a tile or two rather
+than notched to the room's own bottom. It renders correctly and reads as a bay, but it is not a
+thing the sample maps can be said to do.
 
 ### What the map points at
 

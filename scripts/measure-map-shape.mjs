@@ -323,6 +323,11 @@ let roofComponents = 0;
 let roofRect = 0;
 let roofNonRect = 0;
 const roofSizes = [];
+// P5-10: how much does a building's own size vary? A generated town gives every
+// band the same height, so every block in it is the same height; this is the
+// spread the corpus has instead.
+const roofBoxW = [];
+const roofBoxH = [];
 const innerCornerCells = new Map();
 const nonRectFill = [];
 const roofByLayer = new Map();
@@ -356,6 +361,8 @@ for (const { file, map: m, tileset } of maps) {
       roofByLayer.set(z, (roofByLayer.get(z) ?? 0) + 1);
 
       const box = bbox(cells);
+      roofBoxW.push(box.width);
+      roofBoxH.push(box.height);
       const isRect = cells.length === box.width * box.height;
       if (isRect) roofRect++;
       else {
@@ -441,6 +448,12 @@ console.log(`roof components of 4+ tiles: ${roofComponents}`);
 console.log(`  by layer: ${[...roofByLayer.entries()].sort().map(([z, n]) => `z${z} ${n}`).join(', ')}`);
 const rs = stats(roofSizes);
 console.log(`  size: median ${rs.median}, p90 ${rs.p90}, max ${rs.max} tiles`);
+const rbw = stats(roofBoxW);
+const rbh = stats(roofBoxH);
+console.log(
+  `  bounding box: width min ${rbw.min} median ${rbw.median} p90 ${rbw.p90} max ${rbw.max}; ` +
+    `height min ${rbh.min} median ${rbh.median} p90 ${rbh.p90} max ${rbh.max}`
+);
 console.log(`  rectangular footprint:     ${roofRect}  ${pct(roofRect, roofComponents)}%`);
 console.log(`  NOT rectangular:           ${roofNonRect}  ${pct(roofNonRect, roofComponents)}%`);
 if (nonRectFill.length) {

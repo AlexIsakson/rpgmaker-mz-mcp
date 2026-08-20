@@ -114,6 +114,62 @@ describe('generateDungeon', () => {
     }
   });
 
+  it('carves rooms that are not all boxes', () => {
+    // P5-10. `irregularRoomChance` defaults to 0.445 — the share of hand-made
+    // *interior* room cores with a corner missing, 85 of 191, stated rather
+    // than measured because the dungeon sample maps only offer whole floor
+    // plans to measure and not single chambers.
+    let shaped = 0;
+    let boxes = 0;
+    for (let seed = 1; seed <= 60; seed++) {
+      const layout = generateDungeon({
+        width: 45, height: 35, seed, roomAttempts: 60, deadEndAttempts: 0,
+      });
+      for (const room of layout.rooms) {
+        let filled = 0;
+        for (let y = room.y; y < room.y + room.height; y++) {
+          for (let x = room.x; x < room.x + room.width; x++) if (layout.floor[y][x]) filled++;
+        }
+        // A corridor can run through a room's bounding box and fill a cell the
+        // shape took out, so only a shortfall proves a cut; a full box does not
+        // prove the absence of one. Counting both directions is enough to show
+        // the generator emits more than one shape.
+        if (filled < room.width * room.height) shaped++;
+        else boxes++;
+      }
+    }
+    expect(shaped).toBeGreaterThan(0);
+    expect(boxes).toBeGreaterThan(0);
+    expect(shaped / (shaped + boxes)).toBeGreaterThan(0.2);
+  });
+
+  it('leaves every room a box when the chance is zero', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const layout = generateDungeon({
+        width: 45, height: 35, seed, roomAttempts: 60,
+        irregularRoomChance: 0, deadEndAttempts: 0,
+      });
+      for (const room of layout.rooms) {
+        for (let y = room.y; y < room.y + room.height; y++) {
+          for (let x = room.x; x < room.x + room.width; x++) {
+            expect(layout.floor[y][x], `seed ${seed} at ${x},${y}`).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it('anchors a corridor on floor even when the room centre is rock', () => {
+    // Corridors run between anchors, and a corridor ending on rock joins
+    // nothing — which is how a shaped room could silently split a dungeon in
+    // two. The connectivity sweep below is the property; this is the reason.
+    for (let seed = 1; seed <= 60; seed++) {
+      const layout = generateDungeon({ width: 45, height: 35, seed, roomAttempts: 60 });
+      expect(layout.floor[layout.start.y][layout.start.x], `seed ${seed}`).toBe(true);
+      expect(layoutStats(layout).fullyConnected, `seed ${seed}`).toBe(true);
+    }
+  });
+
   it('starts the player on an open tile', () => {
     for (const seed of [1, 5, 20]) {
       const layout = generateDungeon({ width: 40, height: 30, seed });

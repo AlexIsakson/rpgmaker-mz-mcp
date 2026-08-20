@@ -137,7 +137,16 @@ export function registerTowngenTools(server: McpServer): void {
         .describe(
           'Height of a row of buildings plus the gap above it. With bothSidesOfStreet on, a ' +
           'band this tall holds two rows back to back once floor((bandHeight - 1) / 2) is at ' +
-          'least the shortest legal building.'
+          'least the shortest legal building. Each band is drawn around this rather than fixed ' +
+          'at it — see bandHeightVariation.'
+        ),
+      bandHeightVariation: z.number().int().min(0).max(8)
+        .default(TOWN_DEFAULTS.bandHeightVariation)
+        .describe(
+          'How far a single band may stray from bandHeight, so the blocks are not all one ' +
+          'size. Default 2, from the corpus: the 233 roof footprints in the sample maps are ' +
+          'a median of 3 rows tall and a p90 of 5, so a band has to vary by about two rows for ' +
+          'both to fit in one. 0 restores the fixed pitch.'
         ),
       bothSidesOfStreet: z.boolean().default(TOWN_DEFAULTS.bothSidesOfStreet)
         .describe(
@@ -327,6 +336,7 @@ export function registerTowngenTools(server: McpServer): void {
             border: args.border,
             roadWidth: args.roadWidth,
             bandHeight: args.bandHeight,
+            bandHeightVariation: args.bandHeightVariation,
             minBuildingWidth: args.minBuildingWidth,
             maxBuildingWidth: args.maxBuildingWidth,
             minBuildingHeight: args.minBuildingHeight,

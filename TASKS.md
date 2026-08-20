@@ -8,9 +8,9 @@ task after it.
 Scope is Phase 5 only. Phase 4's remaining database-integrity rules and the engine tier
 (Phases 6–7) are deliberately out of scope here — see [ROADMAP.md](ROADMAP.md).
 
-**Plan: 9 / 25.** The Phase 5 features this backlog was written for.
+**Plan: 10 / 25.** The Phase 5 features this backlog was written for.
 
-**Found while working: 15 / 17.** Defects turned up while doing the above, listed at the end.
+**Found while working: 16 / 17.** Defects turned up while doing the above, listed at the end.
 
 Two numbers, not one: most commits so far went on defects rather than on the plan,
 and a single combined figure hid that. The discovered list is a byproduct of the verification
@@ -579,12 +579,37 @@ maps — do P5-07 first, and let it decide the shape of the three that follow.
   standable tiles all in one connected area.
   See [A boundary that turns](ROADMAP.md#a-boundary-that-turns).
 
-- [ ] **P5-10 — Rooms and blocks that are not boxes**
+- [x] **P5-10 — Rooms and blocks that are not boxes**
   Interior rooms are a single rectangle; town blocks are a grid; dungeon rooms are axis-aligned
   boxes. Apply P5-07's findings to all three. Connectivity must still be guaranteed *before*
   writing, which is the existing argument for corridors and cross-streets.
   *Done when:* rooms and blocks vary in shape across seeds and the walkability audit still
   reports one connected area.
+  *Done:* one shared pure module, `src/core/room-shape.ts`, spent in all three. The raw
+  rectangularity question turned out to be the wrong one — a room's own doorway already makes its
+  footprint non-rectangular, so 15.6% would have been "passed" without anything varying. Opening
+  each hand-made interior floor region with a 2x2 element to get its **core** gives the real
+  answer: **81 of 191 cores (42.4%) are rectangles and 85 (44.5%) are missing a bounding-box
+  corner**, with corners cut 106/26/27/5/27 and a cut a median 0.24 x 0.25 of the room over 203
+  of them. Connectivity is an argument rather than an audit — a corner-cut mask has a contiguous
+  interval in every row, so it is 4-connected by construction.
+  **Interiors** build their walls per column now and take any silhouette; the 12x8 rectangle comes
+  out of the generalised builder identical tile for tile, which is a golden test. Generalising the
+  front wall needed one new count — the face runs full width under the side wall column in **186
+  of 231 cases (80.5%)**. The doorway refuses an offset a corner took away and names the ones
+  left, and furniture slots are now filtered so any prefix of them keeps the room whole.
+  **Town** blocks vary: `bandHeightVariation` defaults to 2, from the 233 sample roofs being
+  median 3 rows tall and p90 5. **24 of 25 towns hold more than one block height and all 25 hold a
+  different sequence**, against exactly one height in the whole fixed-pitch sweep. Two fixes fell
+  out: cross streets are drawn before band heights so varying them cannot move the streets, and a
+  row is held back below the last road because a street flush against the usable edge has nowhere
+  to bend — seed 5 measured a **25-tile straight run against the corpus p99 of 9** without it.
+  **Dungeon** rooms lose one to four corners; `irregularRoomChance` goes 0.35 -> 0.445 and is
+  marked **stated, not measured**, because the dungeon corpus only offers whole floor plans (3 of
+  66 cores rectangular, 90.9% missing a corner) and cannot speak about one chamber.
+  Verified by PNG over stdio MCP — town varied against a fixed-pitch control, a shaped interior,
+  a shaped dungeon — with 12 seeds of a 44x46 town reporting **0 tiles cut off**.
+  See [A room that is not a box](ROADMAP.md#a-room-that-is-not-a-box).
 
 ## M4 — Content depth
 
@@ -713,7 +738,7 @@ for one that was deliberately not filed.
   *Note:* the other half of encounter zones is `encounterList`, which no tool writes at all —
   that belongs with P5-17, and until it exists a regioned map has nothing to gate.
 
-- [ ] **P5-43 — A prop can seal a gap the player can see into**
+- [x] **P5-43 — A prop can seal a gap the player can see into**
   *(turned up by P5-09.)* `generate_town` puts decoration on free ground beside something, and
   the gap between two neighbouring houses is `randInt(rng, 1, 3)` tiles wide. When that gap is
   one tile and a prop lands above and below it, the tile between them is walkable, visible, and
@@ -727,3 +752,16 @@ for one that was deliberately not filed.
   belongs where the tileset flags are.
   *Done when:* a generated town leaves no walkable tile cut off from the rest, across seeds, and
   the sweep that proves it is the same one P5-09 used.
+  *Done, by P5-10, which was blocked by it.* Varying the band heights moved this from **0 of 12
+  seeds to 4 of 12**, and P5-10's *done when* is that the audit reports one connected area, so it
+  could not be filed and walked past. The measurement that isolates it: with the decoration pass
+  off, **0 of 12** seeds strand a tile; with it on and no guard, **4 of 12**, always exactly one
+  tile in a one-tile alley between two houses.
+  The note above was right about a **repair** and wrong about a **refusal**. Deciding whether a
+  prop already placed is blocking does need the tileset flags. Refusing the slot does not: the
+  plan asks whether the ground would still hold together *if every prop were solid*, which needs
+  no flag at all, and errs only toward placing one prop fewer. `keepGroundJoined` in `towngen.ts`
+  tests each slot against every slot already kept — they seal a gap in pairs, so one at a time is
+  not enough — over the ground minus the buildings and minus the **solid** rows of a frame prop,
+  the top row being the one the player walks under. **0 of 12 seeds after**, with 25-40 props
+  still placed per town.

@@ -5,6 +5,7 @@ import {
   type Rect,
 } from './autotile.js';
 import { refreshWallShapes } from './wall-autotile.js';
+import { cutRoomCorners, CORPUS_CORNER_WEIGHTS } from './room-shape.js';
 
 /**
  * Layout generation. These produce a plain floor/solid mask; turning that into
@@ -113,8 +114,21 @@ export interface DungeonOptions {
   minRoomSize?: number;
   maxRoomSize?: number;
   /**
-   * Chance a room is carved as two overlapping rectangles rather than one, so
-   * it comes out L- or T-shaped.
+   * Chance a room comes out as something other than a box — one to four corners
+   * taken out of it by {@link cutRoomCorners}, which is where the shape and its
+   * measurements live.
+   *
+   * **The default is 0.445, and it is borrowed rather than measured here.**
+   * That figure is the share of *interior* room cores with a corner missing
+   * (85 of 191). The dungeon corpus cannot answer the same question: its
+   * layer-0 floor regions are whole floor plans rather than single chambers —
+   * 77 regions across the 55 dungeon-tileset maps, 1.4 per map, of which only
+   * 3 of 66 cores (4.5%) are rectangles and the median fills 57% of its
+   * bounding box. That says a dungeon's *layout* should be nothing like a
+   * rectangle, which the room-and-corridor construction and the three metrics
+   * in the table above already answer; it says nothing about one chamber.
+   * So this is a stated value, not a measured one, and it is stated as the
+   * nearest thing the corpus does settle.
    */
   irregularRoomChance?: number;
   /**
@@ -149,7 +163,7 @@ export function generateDungeon(options: DungeonOptions): GeneratedLayout {
     roomAttempts = 40,
     minRoomSize = 3,
     maxRoomSize = 8,
-    irregularRoomChance = 0.35,
+    irregularRoomChance = 0.445,
     // Scaled to the map: a fixed count leaves a big map bare and hammers a
     // small one. 0.4 per tile lands near the 5.2 dead ends per 100 floor tiles
     // the hand-made maps carry.
@@ -166,14 +180,6 @@ export function generateDungeon(options: DungeonOptions): GeneratedLayout {
    * land in the notch, and a corridor ending on solid rock joins nothing.
    */
   const anchors: { x: number; y: number }[] = [];
-
-  const carveRect = (rect: Rect): void => {
-    for (let y = rect.y; y < rect.y + rect.height; y++) {
-      for (let x = rect.x; x < rect.x + rect.width; x++) {
-        if (x >= 0 && y >= 0 && x < width && y < height) floor[y][x] = true;
-      }
-    }
-  };
 
   const carveH = (x1: number, x2: number, y: number): void => {
     for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
@@ -209,29 +215,28 @@ export function generateDungeon(options: DungeonOptions): GeneratedLayout {
 
     if (rooms.some((room) => rectsOverlap(candidate, room, 1))) continue;
 
-    // An irregular room is two rectangles inside the same envelope, so the
-    // spacing check above still holds and only the shape changes.
-    let anchor: { x: number; y: number };
-    if (w >= 4 && h >= 4 && rng() < irregularRoomChance) {
-      const splitW = randInt(rng, 2, w - 1);
-      const splitH = randInt(rng, 2, h - 1);
-      const first: Rect = { x: candidate.x, y: candidate.y, width: splitW, height: h };
-      const second: Rect = {
-        x: rng() < 0.5 ? candidate.x : candidate.x + w - (w - splitW + 1),
-        y: candidate.y + h - splitH,
-        width: w - splitW + 1,
-        height: splitH,
-      };
-      carveRect(first);
-      carveRect(second);
-      anchor = { x: first.x + Math.floor(first.width / 2), y: first.y + Math.floor(first.height / 2) };
-    } else {
-      carveRect(candidate);
-      anchor = {
-        x: candidate.x + Math.floor(candidate.width / 2),
-        y: candidate.y + Math.floor(candidate.height / 2),
-      };
+    // A shaped room is corners taken out of the same envelope, so the spacing
+    // check above still holds and only the silhouette changes.
+    //
+    // The anchor is read back out of the mask rather than computed as the
+    // rectangle's centre: a corner cut can put that centre on rock, and a
+    // corridor ending on rock joins nothing. It was already this way for the
+    // old two-rectangle form, for the same reason.
+    const shaped = rng() < irregularRoomChance;
+    const shape = cutRoomCorners(w, h, rng, {
+      cornerWeights: shaped
+        ? [0, ...CORPUS_CORNER_WEIGHTS.slice(1)]
+        : [1, 0, 0, 0, 0],
+    });
+    for (let dy = 0; dy < h; dy++) {
+      for (let dx = 0; dx < w; dx++) {
+        if (!shape.mask[dy][dx]) continue;
+        const x = candidate.x + dx;
+        const y = candidate.y + dy;
+        if (x >= 0 && y >= 0 && x < width && y < height) floor[y][x] = true;
+      }
     }
+    const anchor = nearestFloorInRoom(shape, candidate);
 
     if (rooms.length > 0) {
       const previous = anchors[anchors.length - 1];
@@ -255,6 +260,37 @@ export function generateDungeon(options: DungeonOptions): GeneratedLayout {
   const start = anchors[0] ?? { x: Math.floor(width / 2), y: Math.floor(height / 2) };
 
   return { width, height, floor, rooms, start };
+}
+
+/**
+ * A cell that is definitely floor inside a shaped room, as close to its middle
+ * as the shape allows.
+ *
+ * Corridors run between these rather than between room centres, because the
+ * centre of a room with a corner taken out of it can land on rock and a
+ * corridor that ends on rock joins nothing. Searching outward from the centre
+ * keeps corridors short and keeps them arriving somewhere sensible.
+ */
+function nearestFloorInRoom(
+  shape: { width: number; height: number; mask: boolean[][] },
+  rect: Rect
+): { x: number; y: number } {
+  const cx = Math.floor(shape.width / 2);
+  const cy = Math.floor(shape.height / 2);
+  let best: { x: number; y: number } | null = null;
+  let bestDistance = Infinity;
+  for (let dy = 0; dy < shape.height; dy++) {
+    for (let dx = 0; dx < shape.width; dx++) {
+      if (!shape.mask[dy][dx]) continue;
+      const distance = Math.abs(dx - cx) + Math.abs(dy - cy);
+      if (distance >= bestDistance) continue;
+      bestDistance = distance;
+      best = { x: rect.x + dx, y: rect.y + dy };
+    }
+  }
+  // cutRoomCorners never empties the mask, so this fallback is unreachable; it
+  // is here so the type is honest rather than asserted away.
+  return best ?? { x: rect.x, y: rect.y };
 }
 
 const STEPS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];

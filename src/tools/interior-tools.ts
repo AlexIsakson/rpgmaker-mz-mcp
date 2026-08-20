@@ -201,7 +201,14 @@ export function registerInteriorTools(server: McpServer): void {
       margin: z.number().int().min(0).default(1).describe('Void border around the room'),
       doorOffsetX: z.number().int().min(0).optional()
         .describe('Doorway column across the floor. Defaults to the middle.'),
-      seed: z.number().int().default(1).describe('Seed for furniture placement'),
+      seed: z.number().int().default(1).describe('Seed for the room shape and furniture'),
+      cutCorners: z.boolean().default(true)
+        .describe(
+          'Take corners out of the floor so the room is not a box. On by default and '+
+          'reproducing the corpus: 106 of 191 hand-made room cores have no corner cut and '+
+          '85 do, so a little over half of all seeds still come out rectangular. Off gives '+
+          'a rectangle every time.'
+        ),
       linkFromMapId: z.number().int().positive().optional()
         .describe('Map holding the door that should lead here'),
       linkFromEventId: z.number().int().positive().optional()
@@ -238,6 +245,7 @@ export function registerInteriorTools(server: McpServer): void {
             margin: args.margin,
             doorOffsetX: args.doorOffsetX ?? null,
             seed: args.seed,
+            cutCorners: args.cutCorners,
           });
         } catch (error) {
           if (error instanceof InteriorError) return errorResult(error.message);
@@ -377,7 +385,14 @@ export function registerInteriorTools(server: McpServer): void {
       floorWidth: z.number().int().min(3).default(7).describe('Walkable floor width'),
       floorHeight: z.number().int().min(2).default(5).describe('Walkable floor height'),
       margin: z.number().int().min(0).default(1).describe('Void border around each room'),
-      seed: z.number().int().default(1).describe('Seed for furniture placement'),
+      seed: z.number().int().default(1).describe('Seed for the room shape and furniture'),
+      cutCorners: z.boolean().default(true)
+        .describe(
+          'Take corners out of the floor so the room is not a box. On by default and '+
+          'reproducing the corpus: 106 of 191 hand-made room cores have no corner cut and '+
+          '85 do, so a little over half of all seeds still come out rectangular. Off gives '+
+          'a rectangle every time.'
+        ),
       namePrefix: z.string().default('Interior').describe('Name given to the new maps'),
       relink: z.boolean().default(false)
         .describe('Also rebuild doors that already lead somewhere. Off by default, so hand-made links survive.'),
@@ -415,6 +430,7 @@ export function registerInteriorTools(server: McpServer): void {
             margin: args.margin,
             doorOffsetX: null,
             seed: args.seed,
+            cutCorners: args.cutCorners,
           });
         } catch (error) {
           if (error instanceof InteriorError) return errorResult(error.message);
@@ -455,6 +471,7 @@ export function registerInteriorTools(server: McpServer): void {
             margin: args.margin,
             doorOffsetX: null,
             seed: args.seed + door.id,
+            cutCorners: args.cutCorners,
           });
 
           const result = buildInterior(interiorMap, roomPlan, style, catalogue, {

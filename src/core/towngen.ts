@@ -62,6 +62,26 @@ export interface TownOptions {
   roadWidth: number;
   /** Height of a building band, including the gap above the buildings. */
   bandHeight: number;
+  /**
+   * How far a single band's height may stray from {@link bandHeight}.
+   *
+   * **This is the town's grid, and it is the last one left.** P5-09 made every
+   * street edge turn, so no boundary in a generated town runs straight for more
+   * than 7 tiles — but the *pitch* was untouched: every band was `bandHeight`
+   * tall, so every block in the town was the same size, and a block that can
+   * only ever hold a 4-6 tile building is why the render still read as ruled
+   * paper under the ragged edges.
+   *
+   * **Two, from the corpus.** `scripts/measure-map-shape.mjs` measures the
+   * bounding box of every roof in the 293 sample maps: 233 components, height
+   * **median 3, p90 5**, max 26. A hand-made building is typically 3 rows of
+   * roof and sometimes 5, so the band that holds one has to vary by about two
+   * rows for both to fit — and with a fixed band only one of them ever does.
+   *
+   * Zero restores the fixed pitch, which is the control the measurement below
+   * was taken against.
+   */
+  bandHeightVariation: number;
   minBuildingWidth: number;
   maxBuildingWidth: number;
   minBuildingHeight: number;
@@ -111,6 +131,7 @@ export const TOWN_DEFAULTS: Omit<TownOptions, 'width' | 'height' | 'seed'> = {
   border: 3,
   roadWidth: 2,
   bandHeight: 7,
+  bandHeightVariation: 2,
   minBuildingWidth: 4,
   maxBuildingWidth: 7,
   minBuildingHeight: 4,
@@ -191,7 +212,7 @@ function shuffle<T>(rng: () => number, items: T[]): T[] {
 
 export function planTown(options: TownOptions): TownPlan {
   const {
-    width, height, seed, border, roadWidth, bandHeight,
+    width, height, seed, border, roadWidth, bandHeight, bandHeightVariation,
     minBuildingWidth, maxBuildingWidth, minBuildingHeight, maxBuildingHeight,
     wallHeight, crossStreets, decorDensity, framePropHeight, bothSidesOfStreet,
     raggedRoads,
@@ -240,19 +261,13 @@ export function planTown(options: TownOptions): TownPlan {
   }
 
   // --- streets ---
-  const roads: Rect[] = [];
-  const bands: Rect[] = [];
-  for (let y = usable.y; y + bandHeight + roadWidth <= usable.y + usable.height; ) {
-    bands.push({ x: usable.x, y, width: usable.width, height: bandHeight });
-    // Roads span the full map so they reach the edge and become entrances.
-    roads.push({ x: 0, y: y + bandHeight, width, height: roadWidth });
-    y += bandHeight + roadWidth;
-  }
-  if (bands.length === 0) {
-    throw new TownError('The map is too short to hold a single band of buildings and its road.');
-  }
-
   // Cross streets: spread across the usable width, jittered, never touching.
+  //
+  // They are decided **before** the band heights, and the ordering is
+  // deliberate: they depend on the usable width alone, so drawing them first
+  // means a change to how tall the bands are cannot move them. That is the same
+  // discipline the ragging pass already follows, where the street edges reach
+  // the rng only once every house has drawn from it.
   const verticals: Rect[] = [];
   const slotWidth = Math.floor(usable.width / crossStreets);
   if (slotWidth < roadWidth + minBuildingWidth + 2) {
@@ -267,17 +282,53 @@ export function planTown(options: TownOptions): TownPlan {
     const x = hi > lo ? randInt(rng, lo, hi) : lo;
     verticals.push({ x, y: 0, width: roadWidth, height });
   }
-  roads.push(...verticals);
+
+  // **Each band gets its own height**, so the town's blocks are not all one
+  // size. The floor is `minHeight + 1` — the shortest band that still leaves a
+  // building a row of clearance, which is the same bound the argument check
+  // above applies to `bandHeight` itself — so a variation wider than the band
+  // can absorb makes bands shorter down to that floor and no further.
+  const bandFloor = minHeight + 1;
+  const bandCeiling = bandHeight + bandHeightVariation;
+  const roads: Rect[] = [...verticals];
+  const bands: Rect[] = [];
+  for (let y = usable.y; ; ) {
+    const wanted = bandHeightVariation > 0
+      ? randInt(rng, Math.max(bandFloor, bandHeight - bandHeightVariation), bandCeiling)
+      : bandHeight;
+    // The last band on the map takes whatever is left rather than being
+    // dropped: a tall roll near the bottom edge would otherwise cost the town a
+    // whole row of houses, which is a bigger change to the map than the band
+    // height it came from.
+    //
+    // One row is held back below the last road. A street flush against the
+    // bottom of the usable area has nowhere for its lower edge to bend into —
+    // `raggedRect` may only grow inside the town — so that edge comes out as one
+    // straight run the width of the map. Fixed bands only landed there on some
+    // arithmetic; varying them made it common, and seed 5 of a 44x46 town
+    // measured a **25-tile straight run against the corpus p99 of 9** before
+    // this line existed.
+    const room = usable.y + usable.height - y - roadWidth - 1;
+    if (room < bandFloor) break;
+    const bandRows = Math.min(wanted, room);
+    bands.push({ x: usable.x, y, width: usable.width, height: bandRows });
+    // Roads span the full map so they reach the edge and become entrances.
+    roads.push({ x: 0, y: y + bandRows, width, height: roadWidth });
+    y += bandRows + roadWidth;
+  }
+  if (bands.length === 0) {
+    throw new TownError('The map is too short to hold a single band of buildings and its road.');
+  }
 
   // --- buildings ---
   // The two rows of a band get separate height budgets with one spare row
   // between them, so a north-facing roof never touches the south-facing one
   // behind it. Both budgets have to hold the shortest legal building, or the
   // band stays single-sided rather than emitting two rows that overlap.
-  const northBudget = Math.floor((bandHeight - 1) / 2);
-  const southBudget = bandHeight - 1 - northBudget;
-  const twoSided =
-    bothSidesOfStreet && northBudget >= minHeight && southBudget >= minHeight;
+  const budgetsFor = (rows: number) => {
+    const north = Math.floor((rows - 1) / 2);
+    return { north, south: rows - 1 - north };
+  };
 
   const buildings: TownBuilding[] = [];
 
@@ -341,11 +392,16 @@ export function planTown(options: TownOptions): TownPlan {
     // Band 0 has the map's border above it, not a road, so its top edge has
     // nothing to face. Every later band sits directly under the previous
     // band's road — `band.y - 1` is that road's last row.
-    const northRow = twoSided && index > 0;
+    //
+    // The two budgets are worked out from *this* band's height, so a short band
+    // stays single-sided while a tall one beside it takes two rows.
+    const { north: northBudget, south: southBudget } = budgetsFor(band.height);
+    const northRow =
+      bothSidesOfStreet && index > 0 && northBudget >= minHeight && southBudget >= minHeight;
 
     for (const segment of segments) {
       if (northRow) layRow(band, segment, 'top', northBudget);
-      layRow(band, segment, 'bottom', northRow ? southBudget : bandHeight - 1);
+      layRow(band, segment, 'bottom', northRow ? southBudget : band.height - 1);
     }
   }
 
@@ -427,6 +483,28 @@ export function planTown(options: TownOptions): TownPlan {
     }
   }
 
+  // --- frame ---
+  // The outermost ring is left clear so the strip outside the trees stays
+  // joined to the roads that cut through them; framing props fill the rest of
+  // the border band.
+  const frameSlots: Slot[] = [];
+  const used: boolean[][] = Array.from({ length: height }, () => new Array<boolean>(width).fill(false));
+  const inFrame = (x: number, y: number): boolean =>
+    x >= 1 && y >= 1 && x < width - 1 && y < height - 1 && !inRect(usable, x, y);
+
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      if (!inFrame(x, y) || used[y][x]) continue;
+      let fits = true;
+      for (let dy = 0; dy < framePropHeight; dy++) {
+        if (!inFrame(x, y + dy) || used[y + dy][x] || onRoad(x, y + dy)) fits = false;
+      }
+      if (!fits) continue;
+      for (let dy = 0; dy < framePropHeight; dy++) used[y + dy][x] = true;
+      frameSlots.push({ x, y });
+    }
+  }
+
   // --- decoration ---
   // Only free ground inside the town, so nothing lands on a roof or in the
   // street — the placement audit finding, applied before anything is written
@@ -455,35 +533,133 @@ export function planTown(options: TownOptions): TownPlan {
       (nextTo(x, y) ? near : far).push({ x, y });
     }
   }
+  // **A prop may not seal ground the player can see into.** This is P5-43, and
+  // it was measured rather than assumed: with the decoration pass turned off,
+  // 0 of 12 seeds of a 44x46 town leave a walkable tile cut off; with it on and
+  // no guard, 4 of 12 do — always exactly one tile, always the one-tile alley
+  // between two houses with a prop landing above it and below it. The gap
+  // between neighbours is `randInt(rng, 1, 3)` wide, so a one-tile alley is a
+  // third of them.
+  //
+  // The guard is on the *slot*, not a repair afterwards, and that is what makes
+  // it work where the earlier attempt did not. A repair pass has to decide
+  // whether a prop already placed is blocking, which the plan cannot know — it
+  // sees a prop, not the tileset flag that says whether the player walks
+  // through it. Refusing a slot needs no such knowledge: it asks whether the
+  // ground would still hold together **if every prop were solid**, and drops
+  // the slot when it would not. Where a prop turns out to be passable that
+  // costs one piece of decoration and nothing else; the guarantee holds
+  // whatever the props are.
+  //
+  // Each slot is tested against every slot already kept, because the caller
+  // gets the whole list and the tiles seal each other in pairs.
   const wanted = Math.floor((near.length + far.length) * decorDensity);
-  const decorSlots = [...shuffle(rng, near), ...shuffle(rng, far)].slice(0, wanted);
-
-  // --- frame ---
-  // The outermost ring is left clear so the strip outside the trees stays
-  // joined to the roads that cut through them; framing props fill the rest of
-  // the border band.
-  const frameSlots: Slot[] = [];
-  const used: boolean[][] = Array.from({ length: height }, () => new Array<boolean>(width).fill(false));
-  const inFrame = (x: number, y: number): boolean =>
-    x >= 1 && y >= 1 && x < width - 1 && y < height - 1 && !inRect(usable, x, y);
-
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      if (!inFrame(x, y) || used[y][x]) continue;
-      let fits = true;
-      for (let dy = 0; dy < framePropHeight; dy++) {
-        if (!inFrame(x, y + dy) || used[y + dy][x] || onRoad(x, y + dy)) fits = false;
-      }
-      if (!fits) continue;
-      for (let dy = 0; dy < framePropHeight; dy++) used[y + dy][x] = true;
-      frameSlots.push({ x, y });
-    }
-  }
+  const decorSlots = keepGroundJoined(
+    [...shuffle(rng, near), ...shuffle(rng, far)],
+    wanted,
+    { width, height, onBuilding, frameSlots, framePropHeight }
+  );
 
   return {
     width, height, roads, roadMask, roadLongestRun, bands, buildings,
     decorSlots, frameSlots, warnings,
   };
+}
+
+/**
+ * Choose decoration slots that leave the ground in one piece.
+ *
+ * The ground here is every tile of the map that is not a building and not the
+ * *solid* part of a frame prop. That second exclusion is the one worth stating:
+ * the tree line is laid as `framePropHeight`-tall props whose **top row the
+ * player walks under** — the same fact P5-09 used to keep streets out of the
+ * border band — so only the rows below the top are treated as blocking here.
+ * Getting that wrong in either direction costs a prop, never a hole: the walk
+ * only ever refuses slots.
+ *
+ * Slots are taken in the order given until `wanted` have been kept, so a
+ * refused slot is replaced by the next candidate rather than shrinking the
+ * decoration budget.
+ */
+function keepGroundJoined(
+  slots: Slot[],
+  wanted: number,
+  map: {
+    width: number;
+    height: number;
+    onBuilding: boolean[][];
+    frameSlots: Slot[];
+    framePropHeight: number;
+  }
+): Slot[] {
+  const { width, height, onBuilding, frameSlots, framePropHeight } = map;
+
+  const ground: boolean[][] = Array.from({ length: height }, () =>
+    new Array<boolean>(width).fill(false)
+  );
+  let total = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (onBuilding[y][x]) continue;
+      ground[y][x] = true;
+      total++;
+    }
+  }
+  for (const slot of frameSlots) {
+    for (let dy = 1; dy < framePropHeight; dy++) {
+      const y = slot.y + dy;
+      if (y >= 0 && y < height && ground[y][slot.x]) {
+        ground[y][slot.x] = false;
+        total--;
+      }
+    }
+  }
+
+  const blocked: boolean[][] = Array.from({ length: height }, () =>
+    new Array<boolean>(width).fill(false)
+  );
+  let blockedCount = 0;
+
+  const joined = (): boolean => {
+    let start: [number, number] | null = null;
+    for (let y = 0; y < height && start === null; y++) {
+      for (let x = 0; x < width; x++) {
+        if (ground[y][x] && !blocked[y][x]) { start = [x, y]; break; }
+      }
+    }
+    if (start === null) return true;
+
+    const seen = Array.from({ length: height }, () => new Array<boolean>(width).fill(false));
+    const queue: [number, number][] = [start];
+    seen[start[1]][start[0]] = true;
+    let reached = 0;
+    while (queue.length > 0) {
+      const [x, y] = queue.pop()!;
+      reached++;
+      for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]] as [number, number][]) {
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        if (seen[ny][nx] || !ground[ny][nx] || blocked[ny][nx]) continue;
+        seen[ny][nx] = true;
+        queue.push([nx, ny]);
+      }
+    }
+    return reached === total - blockedCount;
+  };
+
+  const kept: Slot[] = [];
+  for (const slot of slots) {
+    if (kept.length >= wanted) break;
+    if (!ground[slot.y]?.[slot.x] || blocked[slot.y][slot.x]) continue;
+    blocked[slot.y][slot.x] = true;
+    blockedCount++;
+    if (joined()) {
+      kept.push(slot);
+    } else {
+      blocked[slot.y][slot.x] = false;
+      blockedCount--;
+    }
+  }
+  return kept;
 }
 
 /**
